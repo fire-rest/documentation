@@ -11,7 +11,7 @@
 
 ## Internacionalización (obligatorio)
 
-Este sitio tiene **tres idiomas**: **español (por defecto)**, **inglés** y **portugués**.
+Este sitio tiene **tres idiomas**: **inglés (por defecto)**, **español** y **portugués**.
 
 ### Regla principal
 
@@ -20,15 +20,15 @@ Siempre que **añadas, edites o elimines** contenido de documentación:
 1. **Replica el cambio en los tres idiomas** (`es/`, `en/`, `pt/`) con la **misma estructura de rutas** (mismos nombres de archivo y carpetas).
 2. Si una página solo aplica a un idioma (excepcional), coméntalo en el PR y mantén paridad en `docs.json` solo donde corresponda; por defecto asume **paridad completa**.
 3. Actualiza **`docs.json`** si cambias la navegación: cada idioma tiene su bloque en `navigation.languages` con sus pestañas (`tabs`) y listas de páginas.
-4. **Barra superior (navbar)**: este sitio usa **dos capas** para que los botones se vean y se traduzcan: (a) un **`navbar` en la raíz** de `docs.json` con el idioma por defecto (español: Soporte + Panel); (b) otro **`navbar` al final de cada** bloque en `navigation.languages` (después de `tabs`), con **Support**/**Soporte**/**Suporte** (enlace `mailto`) y el botón **Dashboard**/**Panel**/**Painel** hacia el dashboard. **No** pongas el `navbar` *antes* de `tabs` en cada idioma: en el tema `mint` el orden comprobado es `footer` → `tabs` → `navbar`. Solo dos acciones: soporte y dashboard (sin enlace extra “Comenzar” a menos que el producto lo pida de nuevo).
+4. **Barra superior (navbar)**: este sitio usa **dos capas** para que los botones se vean y se traduzcan: (a) un **`navbar` en la raíz** de `docs.json` con el idioma por defecto (inglés: Support + Dashboard); (b) otro **`navbar` al final de cada** bloque en `navigation.languages` (después de `tabs`), con **Support**/**Soporte**/**Suporte** (enlace `mailto`) y el botón **Dashboard**/**Panel**/**Painel** hacia el dashboard. **No** pongas el `navbar` *antes* de `tabs` en cada idioma: en el tema `mint` el orden comprobado es `footer` → `tabs` → `navbar`. Solo dos acciones: soporte y dashboard (sin enlace extra “Comenzar” a menos que el producto lo pida de nuevo).
 5. En los MDX, usa enlaces internos con **prefijo de idioma**: `/es/...`, `/en/...`, `/pt/...` según el archivo donde estés.
 6. Fragmentos reutilizables en `snippets/`: si el texto es visible para el usuario, valora **`snippet-intro.es.mdx`**, **`snippet-intro.pt.mdx`** y el **`snippet-intro.mdx`** base para inglés, o un solo snippet compartido si el contenido es idéntico en todos los idiomas.
 
 ### Estructura de carpetas
 
 ```text
-es/index.mdx          → URL: /es/ (idioma por defecto)
-en/index.mdx          → URL: /en/
+en/index.mdx          → URL: /en/ (idioma por defecto)
+es/index.mdx          → URL: /es/
 pt/index.mdx          → URL: /pt/
 ```
 
@@ -36,7 +36,7 @@ Misma lógica para `quickstart`, `development`, `essentials/*`, `ai-tools/*`, `a
 
 ### Idioma por defecto
 
-El español es el idioma por defecto (`"language": "es"` y `"default": true` en `docs.json`). Las nuevas páginas deben existir al menos en **es**, y en condiciones normales también en **en** y **pt**.
+El inglés es el idioma por defecto (`"language": "en"` y `"default": true` en `docs.json`). Las nuevas páginas deben existir al menos en **en**, y en condiciones normales también en **es** y **pt**.
 
 ## Terminología
 

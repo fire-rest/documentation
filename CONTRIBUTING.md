@@ -6,8 +6,8 @@ Gracias por contribuir. Esta guía explica el flujo habitual y cómo respetar la
 
 | Idioma     | Carpeta | Uso en `docs.json`      |
 | ---------- | ------- | ------------------------ |
-| Español    | `es/`   | Por defecto (`default`)  |
-| Inglés     | `en/`   | `language`: `en`         |
+| Inglés     | `en/`   | Por defecto (`default`)  |
+| Español    | `es/`   | `language`: `es`         |
 | Portugués  | `pt/`   | `language`: `pt`         |
 
 Las rutas públicas llevan prefijo: `/es/...`, `/en/...`, `/pt/...`.
@@ -25,7 +25,7 @@ Las rutas públicas llevan prefijo: `/es/...`, `/en/...`, `/pt/...`.
 
 5. **Navegación**: si añades o renombras una página, edita **`docs.json`** en los tres bloques de `navigation.languages` (pestañas y grupos correspondientes) y mantén los nombres de grupo alineados con el idioma de cada bloque.
 
-6. **Barra superior (Soporte + Panel / Support + Dashboard, etc.)**: mantén un **`navbar` en la raíz** (textos en español, idioma por defecto) **y** un **`navbar` por idioma** al **final** de cada entrada en `navigation.languages` (después del array `tabs`), con las etiquetas traducidas. Dos acciones: enlace de soporte (`mailto`) y botón al dashboard. Si cambias etiquetas o URLs, actualiza la raíz y los tres bloques de idioma.
+6. **Barra superior (Soporte + Panel / Support + Dashboard, etc.)**: mantén un **`navbar` en la raíz** (textos en inglés, idioma por defecto) **y** un **`navbar` por idioma** al **final** de cada entrada en `navigation.languages` (después del array `tabs`), con las etiquetas traducidas. Dos acciones: enlace de soporte (`mailto`) y botón al dashboard. Si cambias etiquetas o URLs, actualiza la raíz y los tres bloques de idioma.
 
 7. **Fragmentos** (`snippets/`): si importas un snippet con texto visible, crea variantes por idioma o reutiliza uno neutro; alinea con lo descrito en `AGENTS.md`.
 
