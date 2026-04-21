@@ -1,0 +1,80 @@
+---
+title: "Order injection"
+description: "Inject orders into Fire via the API."
+---
+
+Your system can inject orders into Fire using the Orders API. Fire then manages the order lifecycle and sends status updates back via webhooks.
+
+## Flow
+
+```
+Your system receives an order → Your system injects it into Fire → Fire confirms
+```
+
+## Injecting an order
+
+```http
+POST /v1/orders
+Authorization: Bearer <your_api_key>
+Content-Type: application/json
+```
+
+```json
+{
+  "channel_id": "channel_abc123",
+  "external_order_id": "uber_order_9876",
+  "customer": {
+    "name": "Jane Doe",
+    "phone": "+1555000111"
+  },
+  "items": [
+    {
+      "product_id": "prod_001",
+      "quantity": 2,
+      "unit_price": 1200,
+      "modifiers": []
+    }
+  ],
+  "delivery": {
+    "type": "delivery",
+    "address": "123 Main St"
+  },
+  "total": 2400
+}
+```
+
+{/* TODO: Insert complete order payload schema once confirmed by Fire team */}
+
+### Required fields
+
+| Field | Description |
+|---|---|
+| `channel_id` | The Fire sales channel ID (from [Sales channels](/en/configuration/sales-channels)) |
+| `external_order_id` | Your own order ID — used to correlate status updates |
+| `items` | Array of ordered products with quantities and prices |
+
+### Response
+
+```json
+{
+  "id": "fire_order_abc",
+  "external_order_id": "uber_order_9876",
+  "status": "received",
+  "created_at": "2025-01-15T14:30:00Z"
+}
+```
+
+Store the `id` returned by Fire to correlate future `order.status_changed` events.
+
+## Error handling
+
+| Status | Meaning |
+|---|---|
+| `400` | Invalid payload — check required fields |
+| `404` | Unknown `channel_id` — re-fetch channels |
+| `409` | Duplicate `external_order_id` — order already exists |
+| `5xx` | Fire-side error — retry with exponential backoff |
+
+<Warning>
+  Do not send the same order twice with the same `external_order_id`. Fire will reject duplicates with a `409`.
+</Warning>

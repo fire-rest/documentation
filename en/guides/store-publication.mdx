@@ -1,0 +1,103 @@
+---
+title: "Store publication"
+description: "Handle store events from Fire: updates, deletions, and bulk syncs."
+---
+
+Fire emits three types of store events. Your system should handle all three:
+
+| Event | When |
+|---|---|
+| [`store.updated`](/en/webhook-reference/store-updated) | A single store's configuration changed |
+| [`store.deleted`](/en/webhook-reference/store-deleted) | A store was removed from Fire |
+| [`stores.sync`](/en/webhook-reference/stores-sync) | Bulk sync — onboarding or mass configuration changes |
+
+## store.updated
+
+Emitted whenever a single store changes. The payload contains the full store and channel configuration.
+
+```
+Fire emits store.updated → Your system receives event → Your system updates downstream
+```
+
+Your endpoint receives:
+
+```json
+{
+  "event": "store.updated",
+  "id": "evt_abc123",
+  "created_at": "2025-01-15T14:30:00Z",
+  "data": {
+    "stores": [ ... ],
+    "channels": [ ... ]
+  }
+}
+```
+
+The `data` object is ready to be forwarded. No additional Fire API calls needed. See [`store.updated`](/en/webhook-reference/store-updated) for the full schema.
+
+<Steps>
+  <Step title="Verify the signature">
+    Validate `X-Fire-Signature`. See [Authentication](/en/authentication).
+  </Step>
+  <Step title="Acknowledge immediately">
+    Return `200 OK` before doing any work.
+  </Step>
+  <Step title="Update downstream">
+    Pass `data` to your downstream system. The payload is self-contained — no transformation required.
+  </Step>
+</Steps>
+
+## store.deleted
+
+Emitted when a store is explicitly removed from Fire. This is the only way Fire signals a store deletion — there is no ambiguity.
+
+```
+Fire emits store.deleted → Your system receives event → Your system removes store downstream
+```
+
+Your endpoint receives:
+
+```json
+{
+  "event": "store.deleted",
+  "id": "evt_abc124",
+  "created_at": "2025-01-15T15:00:00Z",
+  "data": {
+    "storeId": 805,
+    "vendorId": 16,
+    "storeChannels": [ "0F049503-85CF-E511-80C6-000D3A3261F3" ]
+  }
+}
+```
+
+Use `storeId` and `storeChannels` to identify and remove the store in each downstream system. See [`store.deleted`](/en/webhook-reference/store-deleted) for the full schema.
+
+## stores.sync
+
+Emitted when Fire needs to propagate many stores at once — during initial onboarding or after a mass configuration change. Fire splits large batches automatically (up to 50 stores per event) and emits them sequentially.
+
+```
+Fire emits stores.sync (batch 1 of N) → Your system processes batch → repeat until batchIndex = batchTotal
+```
+
+Your endpoint receives:
+
+```json
+{
+  "event": "stores.sync",
+  "id": "evt_abc125",
+  "created_at": "2025-01-15T15:05:00Z",
+  "data": {
+    "batchIndex": 1,
+    "batchTotal": 3,
+    "stores": [ ... ],
+    "channels": [ ... ]
+  }
+}
+```
+
+Process each batch independently. Use `batchIndex` and `batchTotal` to track progress if your system needs to know when the full sync is complete. Each batch is retried independently on failure. See [`stores.sync`](/en/webhook-reference/stores-sync) for the full schema.
+
+## Idempotency
+
+You may receive the same event more than once due to retries. Make your processing idempotent — handling the same event twice should produce the same result.
