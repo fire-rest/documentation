@@ -2,6 +2,8 @@
 
 Use the starter kit to get your docs deployed and ready to customize.
 
+This project is configured for **multiple languages** in `docs.json`: **Spanish (default)**, **English**, and **Portuguese**. Content lives under `es/`, `en/`, and `pt/` with the same file layout in each locale.
+
 Click the green **Use this template** button at the top of this repo to copy the Mintlify starter kit. The starter kit contains examples with
 
 - Guide pages
@@ -22,7 +24,7 @@ npx skills add https://mintlify.com/docs
 
 This command installs Mintlify's documentation skill for your configured AI tools like Claude Code, Cursor, Windsurf, and others. The skill includes component reference, writing standards, and workflow guidance.
 
-See the [AI tools guides](/ai-tools) for tool-specific setup.
+See the AI tools guides for your locale (default Spanish): [es/ai-tools/cursor](/es/ai-tools/cursor), [en/ai-tools/cursor](/en/ai-tools/cursor), [pt/ai-tools/cursor](/pt/ai-tools/cursor).
 
 ## Development
 

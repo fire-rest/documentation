@@ -1,34 +1,69 @@
-> **Customize this file**: Tailor this template to your project by noting specific contribution types you're looking for, adding a Code of Conduct, or adjusting the writing guidelines to match your style.
+# Contribuir a la documentación
 
-# Contribute to the documentation
+Gracias por contribuir. Esta guía explica el flujo habitual y cómo respetar la **documentación en tres idiomas** (español, inglés y portugués).
 
-Thank you for your interest in contributing to our documentation! This guide will help you get started.
+## Idiomas del sitio
 
-## How to contribute
+| Idioma     | Carpeta | Uso en `docs.json`      |
+| ---------- | ------- | ------------------------ |
+| Español    | `es/`   | Por defecto (`default`)  |
+| Inglés     | `en/`   | `language`: `en`         |
+| Portugués  | `pt/`   | `language`: `pt`         |
 
-### Option 1: Edit directly on GitHub
+Las rutas públicas llevan prefijo: `/es/...`, `/en/...`, `/pt/...`.
 
-1. Navigate to the page you want to edit
-2. Click the "Edit this file" button (the pencil icon)
-3. Make your changes and submit a pull request
+## Qué hacer al cambiar contenido (flujo manual)
 
-### Option 2: Local development
+1. **Localiza o crea el mismo archivo** en `es/`, `en/` y `pt/`  
+   Ejemplo: si editas `es/essentials/markdown.mdx`, actualiza también `en/essentials/markdown.mdx` y `pt/essentials/markdown.mdx`.
 
-1. Fork and clone this repository
-2. Install the Mintlify CLI: `npm i -g mint`
-3. Create a branch for your changes
-4. Make changes
-5. Navigate to the docs directory and run `mint dev`
-6. Preview your changes at `http://localhost:3000`
-7. Commit your changes and submit a pull request
+2. **Traduce** el texto visible (títulos, párrafos, etiquetas de componentes). Los **bloques de código** suelen mantenerse iguales salvo comentarios que deban traducirse.
 
-For more details on local development, see our [development guide](development.mdx).
+3. **Frontmatter**: traduce `title` y `description` en cada idioma.
 
-## Writing guidelines
+4. **Enlaces internos** en cada MDX deben usar el prefijo del idioma de esa página, por ejemplo en la versión en español: `href="/es/quickstart"`; en inglés: `href="/en/quickstart"`.
 
-- **Use active voice**: "Run the command" not "The command should be run"
-- **Address the reader directly**: Use "you" instead of "the user"
-- **Keep sentences concise**: Aim for one idea per sentence
-- **Lead with the goal**: Start instructions with what the user wants to accomplish
-- **Use consistent terminology**: Don't alternate between synonyms for the same concept
-- **Include examples**: Show, don't just tell
+5. **Navegación**: si añades o renombras una página, edita **`docs.json`** en los tres bloques de `navigation.languages` (pestañas y grupos correspondientes) y mantén los nombres de grupo alineados con el idioma de cada bloque.
+
+6. **Barra superior (Soporte + Panel / Support + Dashboard, etc.)**: mantén un **`navbar` en la raíz** (textos en español, idioma por defecto) **y** un **`navbar` por idioma** al **final** de cada entrada en `navigation.languages` (después del array `tabs`), con las etiquetas traducidas. Dos acciones: enlace de soporte (`mailto`) y botón al dashboard. Si cambias etiquetas o URLs, actualiza la raíz y los tres bloques de idioma.
+
+7. **Fragmentos** (`snippets/`): si importas un snippet con texto visible, crea variantes por idioma o reutiliza uno neutro; alinea con lo descrito en `AGENTS.md`.
+
+8. Antes de abrir el PR, en la raíz del repo ejecuta:
+
+   ```bash
+   mint validate
+   mint broken-links
+   ```
+
+## Formas de contribuir
+
+### Opción 1: Editar en GitHub
+
+1. Abre el archivo en la rama por defecto.
+2. Edita con el lápiz y crea una rama si te lo pide la UI.
+3. Asegúrate de tocar **las tres rutas de idioma** si el cambio aplica a todo el sitio.
+4. Abre un pull request.
+
+### Opción 2: Desarrollo local
+
+1. Haz fork y clona el repositorio.
+2. Instala la CLI: `npm i -g mint`.
+3. Crea una rama para tus cambios.
+4. Edita los MDX en `es/`, `en/` y `pt/` según corresponda.
+5. Ejecuta `mint dev` y revisa en `http://localhost:3000` (cambia de idioma con el selector del sitio).
+6. `mint validate` y `mint broken-links`.
+7. Commit y pull request.
+
+Para detalles del entorno local, la guía equivalente está en las páginas `development` de cada idioma (por ejemplo `es/development.mdx`).
+
+## Guía de estilo (resumen)
+
+- Voz activa: «Ejecuta el comando», no «El comando debe ejecutarse».
+- Dirige al lector con «tú» o tratamiento acordado al producto.
+- Frases cortas; una idea por frase.
+- Empieza por el objetivo del usuario.
+- Terminología consistente entre idiomas (mismo concepto, traducción estable).
+- Incluye ejemplos cuando ayuden.
+
+Si tienes dudas sobre componentes Mintlify, consulta la [documentación de Mintlify](https://mintlify.com/docs).
