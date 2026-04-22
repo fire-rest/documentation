@@ -3,28 +3,68 @@ title: "Authentication"
 description: "How to authenticate requests to the Fire API and verify incoming webhook events."
 ---
 
+Fire uses two mechanisms for authentication: a login flow to obtain a Bearer token for API calls, and a signature-based mechanism to verify incoming webhook events.
+
 ## API authentication
 
-All requests to the Fire API must include a Bearer token in the `Authorization` header.
+Calling the Fire API requires two credentials on every request:
+
+| Header | Value |
+|---|---|
+| `x-api-key` | Your Fire API key |
+| `Authorization` | `Bearer <access_token>` |
+
+The `x-api-key` identifies your integration. The Bearer token proves your session is authenticated. You obtain the token by calling the login endpoint.
+
+### Step 1 — Get an access token
+
+Call [`POST /auth/login`](/en/api-reference/login) with your API key in the header and your credentials in the body:
 
 ```http
-Authorization: Bearer <your_api_key>
+POST https://api.fire.rest/v1/auth/login
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "username": "<your_username>",
+  "password": "<your_password>"
+}
 ```
 
-{/* TODO: Add instructions for generating an API key from the Fire dashboard */}
+The response returns an access token and its lifetime:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expiresIn": 3600
+}
+```
+
+### Step 2 — Use the token in every request
+
+Include both headers in all subsequent API calls:
+
+```http
+POST https://api.fire.rest/v1/orders
+x-api-key: <your_api_key>
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json
+```
 
 <Note>
-  API keys are created from the Fire dashboard under **Settings → API Keys**. Contact your Fire account team if you do not have access.
+  Tokens expire after `expiresIn` seconds. Re-authenticate before expiry to avoid `401` errors on in-flight requests.
 </Note>
 
-## Webhook verification
+### Where to get your credentials
 
-When Fire sends a webhook event to your endpoint, it signs the request so you can verify it came from Fire.
+API keys and account credentials are managed from the Fire dashboard under **Settings → API Keys**. Contact your Fire account team if you do not have access.
 
-{/* TODO: Add the actual signature mechanism (HMAC header name, algorithm, and verification example) once confirmed by the Fire team */}
+## Webhook signature verification
+
+When Fire sends an event to your endpoint, it signs the request so you can verify it came from Fire and was not tampered with.
 
 <Warning>
-  Always verify the webhook signature before processing an event. Skipping this step exposes your endpoint to spoofed requests.
+  Always verify the signature before processing an event. Skipping this step exposes your endpoint to spoofed requests.
 </Warning>
 
 ### Verification steps
@@ -37,7 +77,7 @@ When Fire sends a webhook event to your endpoint, it signs the request so you ca
     Compute an HMAC-SHA256 of the raw request body using your webhook secret as the key.
   </Step>
   <Step title="Compare signatures">
-    Compare the computed signature with the value in the header. If they match, the request is authentic.
+    Compare the computed signature with the value in the header using a constant-time comparison. If they match, the request is authentic.
   </Step>
 </Steps>
 
@@ -56,4 +96,6 @@ function verifySignature(rawBody, signature, secret) {
 }
 ```
 
-Your webhook secret is set when you register your endpoint in the Fire dashboard under **Settings → Endpoints**.
+Your webhook secret is configured when you register your endpoint in the Fire dashboard under **Settings → Endpoints**.
+
+{/* TODO: Confirm X-Fire-Signature format and algorithm with the Fire team */}

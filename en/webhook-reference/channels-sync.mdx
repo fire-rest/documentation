@@ -1,0 +1,98 @@
+---
+title: "channels.sync"
+description: "Batch event that delivers the full channel catalog for an account. Used for initial sync and periodic reconciliation."
+---
+
+Fire emits `channels.sync` when a full channel catalog needs to be synchronized — typically during onboarding or after a bulk configuration change. The event is delivered in batches of up to 50 channels. Use `batchIndex` and `batchTotal` to track progress.
+
+## Payload
+
+```json
+{
+  "event": "channels.sync",
+  "id": "evt_abc202",
+  "created_at": "2025-01-15T10:00:00Z",
+  "data": {
+    "account": "1",
+    "country": "6",
+    "vendorId": 16,
+    "batchIndex": 1,
+    "batchTotal": 1,
+    "channels": [
+      {
+        "channelId": "CH-IFOOD-001",
+        "code": "IFOOD",
+        "name": "iFood",
+        "description": "Orders received via iFood marketplace",
+        "active": "ACTIVE",
+        "authType": "API_KEY",
+        "baseUrl": "https://api.ifood.com.br",
+        "createdAt": "2025-01-15T10:00:00.000Z",
+        "updatedAt": "2025-01-15T10:00:00.000Z"
+      },
+      {
+        "channelId": "CH-RAPPI-001",
+        "code": "RAPPI",
+        "name": "Rappi",
+        "description": "Orders received via Rappi marketplace",
+        "active": "ACTIVE",
+        "authType": "API_KEY",
+        "baseUrl": "https://microservices.dev.rappi.com",
+        "createdAt": "2025-01-15T10:00:00.000Z",
+        "updatedAt": "2025-01-15T10:00:00.000Z"
+      },
+      {
+        "channelId": "CH-KIOSK-001",
+        "code": "KIOSK",
+        "name": "Kiosk",
+        "description": "In-store orders via kiosk",
+        "active": "ACTIVE",
+        "authType": "NONE",
+        "baseUrl": null,
+        "createdAt": "2025-01-15T10:00:00.000Z",
+        "updatedAt": "2025-01-15T10:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+## Fields
+
+### `data`
+
+| Field | Type | Description |
+|---|---|---|
+| `account` | string | Account identifier — required by downstream systems |
+| `country` | string | Country identifier — required by downstream systems |
+| `vendorId` | integer | Brand identifier |
+| `batchIndex` | integer | 1-based index of this batch |
+| `batchTotal` | integer | Total number of batches in this sync |
+| `channels` | object[] | Array of channel objects — same schema as [`channel.updated`](/en/webhook-reference/channel-updated#dataChannel) |
+
+## Batching
+
+Each batch contains up to 50 channels. When `batchTotal > 1`, multiple events are emitted sequentially. Process and retry each batch independently — a failed batch does not block others.
+
+```
+batchIndex: 1 / batchTotal: 3  →  channels 1–50
+batchIndex: 2 / batchTotal: 3  →  channels 51–100
+batchIndex: 3 / batchTotal: 3  →  channels 101–120
+```
+
+## Usage
+
+<Steps>
+  <Step title="Verify the signature">
+    Validate `X-Fire-Signature`. See [Authentication](/en/authentication).
+  </Step>
+  <Step title="Acknowledge immediately">
+    Return `200 OK` before processing.
+  </Step>
+  <Step title="Replace your channel catalog for this batch">
+    Upsert all channels in the batch using `channelId` as the key.
+  </Step>
+  <Step title="After the last batch">
+    When `batchIndex === batchTotal`, any `channelId` in your local store that was not present in any batch can be considered removed.
+  </Step>
+</Steps>
