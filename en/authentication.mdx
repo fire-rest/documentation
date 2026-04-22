@@ -61,23 +61,40 @@ API keys and account credentials are managed from the Fire dashboard under **Set
 
 ## Webhook signature verification
 
-When Fire sends an event to your endpoint, it signs the request so you can verify it came from Fire and was not tampered with.
+Every event Fire sends is signed so your system can confirm it genuinely came from Fire and was not tampered with in transit.
+
+### How it works
+
+When you register your endpoint in the Fire dashboard, Fire generates a **webhook secret** — a random string that only you and Fire know. It never travels in any request.
+
+Each time Fire sends an event, it uses that secret to compute a signature of the request body and attaches it as the `X-Fire-Signature` header. Your system does the same calculation on the body it receives and compares the result:
+
+```
+Fire:         secret + body  →  signature  →  sends in X-Fire-Signature header
+Your system:  secret + body received  →  recompute  →  compare
+```
+
+If the signatures match, the request is authentic. If they don't, discard it.
 
 <Warning>
-  Always verify the signature before processing an event. Skipping this step exposes your endpoint to spoofed requests.
+  Always verify the signature before processing an event. Skipping this step exposes your endpoint to spoofed requests from anyone who knows your URL.
 </Warning>
+
+### Setup
+
+When you register your webhook endpoint in the Fire dashboard under **Settings → Endpoints**, Fire displays the webhook secret for that endpoint. Copy it and store it securely in your system — you will need it to verify every incoming request.
 
 ### Verification steps
 
 <Steps>
-  <Step title="Extract the signature header">
-    Fire includes a signature in the `X-Fire-Signature` request header.
+  <Step title="Read the signature header">
+    Extract the value from the `X-Fire-Signature` header on the incoming request.
   </Step>
-  <Step title="Compute the expected signature">
-    Compute an HMAC-SHA256 of the raw request body using your webhook secret as the key.
+  <Step title="Recompute the signature">
+    Using your webhook secret, compute HMAC-SHA256 of the **raw request body** (before any JSON parsing).
   </Step>
-  <Step title="Compare signatures">
-    Compare the computed signature with the value in the header using a constant-time comparison. If they match, the request is authentic.
+  <Step title="Compare">
+    Compare the computed value with the header value using a constant-time comparison. If they match, process the event. If not, return `400` and discard it.
   </Step>
 </Steps>
 
@@ -96,6 +113,8 @@ function verifySignature(rawBody, signature, secret) {
 }
 ```
 
-Your webhook secret is configured when you register your endpoint in the Fire dashboard under **Settings → Endpoints**.
+<Note>
+  Use the **raw body bytes** for the HMAC computation — not a parsed or re-serialized version of the JSON. Parsing and re-serializing can alter whitespace or key ordering and cause valid signatures to fail verification.
+</Note>
 
 {/* TODO: Confirm X-Fire-Signature format and algorithm with the Fire team */}
