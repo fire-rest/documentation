@@ -1,0 +1,223 @@
+---
+title: "Integration Flows"
+description: "Como seu sistema assina eventos do Fire. Um flow é um grafo de nós que você configura no dashboard — seu nó HTTP é dono da requisição que chega ao seu endpoint."
+---
+
+Um **Integration Flow** é o mecanismo de assinatura de eventos do Fire. Em vez de uma URL global de webhook, você configura um ou mais flows no dashboard, cada um com escopo de um account/vendor/loja específico e escutando um trigger type específico. Quando dispara um evento que combina, o Fire roda cada flow ativo em paralelo.
+
+Esta página cobre o modelo ponta a ponta: regras de matching, estrutura do grafo do flow, o que o nó HTTP controla e como o body template referencia o trigger data.
+
+## Como funciona o matching
+
+Quando dispara um evento de negócio dentro do Fire, o runtime consulta cada flow ativo cujos critérios combinam:
+
+```mermaid
+flowchart LR
+    A([order.completed<br/>dispara para loja BR-SP-001]) --> B[Combina flows ativos<br/>onde account, vendor,<br/>triggerType, storeCode coincidem]
+    B --> C[Roda cada match<br/>em paralelo]
+```
+
+Um flow é selecionado quando **tudo** o seguinte é verdade:
+
+| Campo | Regra de match |
+|---|---|
+| `accountId` | Igual ao account dono da entidade |
+| `vendorId` | Igual ao brand/vendor dono da loja |
+| `triggerType` | Igual ao tipo de evento (`order.completed`, `order.cancelled`, `fiscal.authorized.br`, `fiscal.cancelled.br`) |
+| `storeCodes` | Vazio (combina todas as lojas) ou contém o código da loja do evento |
+| `isActive` | `true` |
+
+Você pode ter **múltiplos flows ativos para o mesmo trigger** — eles rodam independentes. Use isso para distribuir eventos a vários serviços downstream sem mudanças de código (ex.: um flow por consumidor: ERP, analítica, cache fiscal, message broker).
+
+## A definição do flow
+
+Uma flow definition é um grafo armazenado como JSON. O nó trigger é o ponto de entrada; nós seguintes consomem o trigger context.
+
+```ts
+{
+  startNodeId: string,
+  nodes: Array<{
+    id: string,
+    type: "trigger" | "http" | "condition" | "log" | ...,
+    position: { x, y },         // layout do dashboard
+    data: { /* config específico do nó */ },
+  }>,
+  edges: Array<{
+    id: string,
+    source: string,             // node id
+    target: string,
+    sourceHandle?: string,       // ex.: "200", "_error"
+  }>,
+}
+```
+
+### Nó trigger
+
+O ponto de partida. Sua única config relevante é `triggerType`:
+
+```json
+{
+  "id": "trigger",
+  "type": "trigger",
+  "data": { "triggerType": "order.completed" }
+}
+```
+
+### Nó HTTP
+
+Este é o nó que chega ao seu endpoint. Sua config controla a requisição inteira:
+
+```json
+{
+  "id": "send_to_webhook",
+  "type": "http",
+  "data": {
+    "method": "POST",
+    "url": "https://your-service.example.com/fire/events",
+    "headers": {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer {{secret.fire_webhook_token}}"
+    },
+    "body": "{{seu body template}}",
+    "auth": { "type": "bearer", "token": "..." },
+    "timeout": 30000,
+    "retryOnFailure": true,
+    "retryCount": 3,
+    "statusRoutes": [
+      { "id": "ok",  "statusCode": 200, "label": "OK",   "responseMapping": [...] },
+      { "id": "err", "statusCode": 5,   "label": "Server error" }
+    ]
+  }
+}
+```
+
+Cada campo é opcional exceto `method` e `url`. `body`, `headers` e `auth` são avaliados como templates contra o [trigger context](#trigger-context).
+
+### Outros tipos de nó
+
+Além de trigger e HTTP, os flows podem incluir:
+
+| Tipo | Propósito |
+|---|---|
+| `condition` | Ramifica com uma expressão `{{trigger.data.*}}` — paths distintos para casos distintos |
+| `log` | Emite uma linha de log para rastreabilidade (visível em **Settings → Integration Flows → Executions**) |
+| `transform` | Reformata data com JavaScript antes de passar para um nó seguinte |
+| Internal nodes | Chama serviços internos do Fire (emit fiscal, status update, etc.) — usado para orquestração cross-tenant |
+
+Um flow típico de "send to webhook" tem: trigger → log → HTTP → log (sucesso/erro). Veja o exemplo **Webhook Test — Full Order Data** do dashboard para um ponto de partida executável.
+
+## Trigger context
+
+Cada template de nó pode referenciar o **trigger context**, gerado pelo runtime quando o flow roda:
+
+```ts
+{
+  trigger: {
+    event: {
+      id: string,         // UUID de execução do flow — sua chave de idempotência
+      type: string,       // "order.completed" | "order.cancelled" | "fiscal.authorized.br" | "fiscal.cancelled.br"
+      createdAt: string,  // ISO 8601 UTC
+    },
+    data: V4Snapshot,     // payload específico do evento — veja cada página de referência
+  },
+  execution: { id: string, /* metadata de execução */ },
+  flow:      { id: string, name: string },
+  queue:     { id, attempt, triggerEntityId, triggerType },
+}
+```
+
+Você referencia qualquer path com a sintaxe mustache `{{}}`: `{{trigger.event.id}}`, `{{trigger.data.orderId}}`, `{{trigger.data.store.code}}`, `{{flow.name}}`, `{{queue.attempt}}`.
+
+A resolução de paths percorre o trigger context como um objeto JavaScript. Indexar arrays funciona (`{{trigger.data.payments.totals[0].total}}`). Para arrays de tamanho desconhecido, use `{{trigger.data.orderLines.length}}`.
+
+## Body templates
+
+O campo `body` no nó HTTP é a **única** coisa que determina o que seu endpoint recebe. O Fire substitui os paths `{{...}}` do trigger context e faz POST do resultado.
+
+Não há **envelope Fire fixo** forçado pelo sistema. Mas o dashboard inclui um template canônico de exemplo do qual a maioria dos times parte:
+
+```json
+{
+  "event": {
+    "id":        "{{trigger.event.id}}",
+    "type":      "{{trigger.event.type}}",
+    "createdAt": "{{trigger.event.createdAt}}"
+  },
+  "data": "{{trigger.data}}",
+  "_meta": {
+    "executionId":     "{{execution.id}}",
+    "flowId":          "{{flow.id}}",
+    "flowName":        "{{flow.name}}",
+    "attempt":         "{{queue.attempt}}",
+    "triggerEntityId": "{{queue.triggerEntityId}}"
+  }
+}
+```
+
+Se você usar este template, seu endpoint recebe exatamente o body documentado em [Visão geral de eventos](/pt/events/overview) e em cada página de referência. Se customizar, o body é o que seu template renderizar.
+
+<Note>
+  Quando um path de template resolve para um objeto ou array (ex.: `"{{trigger.data}}"`), o runtime preserva o tipo JSON em vez de serializar para string. Então `"data": "{{trigger.data}}"` produz um objeto JSON aninhado real no wire, não um blob string.
+</Note>
+
+## Autenticação
+
+O Fire não assina requisições de saída com HMAC hoje. Autentique configurando credenciais no nó HTTP do flow:
+
+| Tipo de auth | Quando usar |
+|---|---|
+| `bearer` | Um Bearer token estático ou rotativo que seu endpoint valida. |
+| `api_key` | Um API key por header (ex.: `x-api-key`). |
+| `oauth2_client_credentials` | Seu endpoint está atrás de OAuth2; o Fire busca e cacheia access tokens automaticamente, refrescando ao expirar. |
+| `none` | Sem auth (só aceitável se seu endpoint estiver protegido de outra forma, ex.: mTLS, VPC). |
+
+Veja [Entrega e retentativas](/pt/events/delivery#autenticacao) para o setup.
+
+## Status routes
+
+O nó HTTP pode distribuir para diferentes nós seguintes baseado no status da resposta:
+
+```json
+"statusRoutes": [
+  { "id": "ok",  "statusCode": 200, "label": "OK",
+    "responseMapping": [ { "responsePath": "status", "outputField": "webhookStatus", "type": "string" } ] },
+  { "id": "client", "statusCode": 4, "label": "Client error" },
+  { "id": "server", "statusCode": 5, "label": "Server error" }
+]
+```
+
+`statusCode` combina por prefixo de dígito: `2` combina todos os `2xx`, `4` combina todos os `4xx`, `200` combina apenas `200`. Cada route pode extrair valores do body de resposta via `responseMapping` e expô-los a nós seguintes.
+
+## Isolamento por tenant
+
+Cada linha de flow carrega `accountId` e `vendorId` — o runtime nunca roda um flow entre tenants. O isolamento é feito a nível de DB (modelo FLAT: colunas `account_id`, `vendor_id` em `integration_flows`). Quando você configura um flow, ele tem escopo no seu tenant por padrão; você não pode assinar eventos de outro account.
+
+## Ativação, versionamento e dry-run
+
+- Os flows têm uma flag `is_active` — toggle para começar ou parar de receber eventos sem deletar o flow.
+- Cada save cria uma nova `version`. Versões passadas são mantidas para auditoria; apenas a última versão ativa roda.
+- O botão **Probar Flujo** do dashboard roda um flow com um payload sintético (`GENERIC_SAMPLE_PAYLOAD` ou um cenário por país) sem afetar dados reais — perfeito para verificar body templates antes de ir para produção.
+
+## Padrões comuns
+
+- **Um flow por consumidor.** Se você tem três serviços downstream (ERP, analítica, broker), use três flows com o mesmo trigger e três nós HTTP apontando para cada um. Adicionar/remover um consumidor vira uma mudança de dashboard, não de código.
+- **Fan-out condicional.** Use um nó `condition` depois do trigger para ramificar em `{{trigger.data.store.locationInfo.country.code}}` e rotear pedidos brasileiros para um endpoint fiscal-aware enquanto envia outros países a um genérico.
+- **Routing por loja.** Defina `storeCodes` no flow para limitá-lo a lojas específicas, ou use o filtro de lojas do dashboard para limitar o firing.
+- **Mapeamento de eventos.** Se seu sistema usa outros nomes de evento, transforme o type no body template: `"event_name": "fire.{{trigger.event.type}}"`.
+
+## Próximo
+
+<CardGroup cols={2}>
+  <Card title="Visão geral de eventos" icon="bell" href="/pt/events/overview">
+    O modelo event-driven completo e o envelope.
+  </Card>
+  <Card title="Entrega e retentativas" icon="repeat" href="/pt/events/delivery">
+    Timeouts, retentativas, dead-letter, idempotência.
+  </Card>
+  <Card title="Tratar eventos de pedido" icon="bolt" href="/pt/guides/handle-order-events">
+    Walkthrough: construir um handler de webhook em 10 minutos.
+  </Card>
+  <Card title="order.completed" icon="receipt" href="/pt/events/order-completed">
+    A referência completa do snapshot V4 do pedido.
+  </Card>
+</CardGroup>

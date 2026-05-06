@@ -1,0 +1,80 @@
+---
+title: "Injeção de pedidos"
+description: "Injete pedidos no Fire via API."
+---
+
+Seu sistema pode injetar pedidos no Fire usando a API de Orders. O Fire então gerencia o ciclo de vida do pedido e envia as atualizações de status de volta via webhooks.
+
+## Fluxo
+
+```
+Seu sistema recebe um pedido → Seu sistema injeta no Fire → Fire confirma
+```
+
+## Injetar um pedido
+
+```http
+POST /v1/orders
+Authorization: Bearer <your_api_key>
+Content-Type: application/json
+```
+
+```json
+{
+  "channel_id": "channel_abc123",
+  "external_order_id": "uber_order_9876",
+  "customer": {
+    "name": "Jane Doe",
+    "phone": "+1555000111"
+  },
+  "items": [
+    {
+      "product_id": "prod_001",
+      "quantity": 2,
+      "unit_price": 1200,
+      "modifiers": []
+    }
+  ],
+  "delivery": {
+    "type": "delivery",
+    "address": "123 Main St"
+  },
+  "total": 2400
+}
+```
+
+{/* TODO: Insert complete order payload schema once confirmed by Fire team */}
+
+### Campos obrigatórios
+
+| Campo | Descrição |
+|---|---|
+| `channel_id` | O ID do canal de venda do Fire (de [Canais de venda](/pt/configuration/sales-channels)) |
+| `external_order_id` | Seu próprio ID de pedido — usado para correlacionar as atualizações de status |
+| `items` | Array de produtos pedidos com quantidades e preços |
+
+### Resposta
+
+```json
+{
+  "id": "fire_order_abc",
+  "external_order_id": "uber_order_9876",
+  "status": "received",
+  "created_at": "2025-01-15T14:30:00Z"
+}
+```
+
+Armazene o `id` devolvido pelo Fire para correlacionar eventos `order.status_changed` futuros.
+
+## Tratamento de erros
+
+| Status | Significado |
+|---|---|
+| `400` | Payload inválido — verifique os campos obrigatórios |
+| `404` | `channel_id` desconhecido — re-obtenha os canais |
+| `409` | `external_order_id` duplicado — o pedido já existe |
+| `5xx` | Erro do lado do Fire — refaça a chamada com backoff exponencial |
+
+<Warning>
+  Não envie o mesmo pedido duas vezes com o mesmo `external_order_id`. O Fire rejeitará duplicatas com um `409`.
+</Warning>

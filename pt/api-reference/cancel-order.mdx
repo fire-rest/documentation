@@ -1,0 +1,166 @@
+---
+title: "Cancelar pedido"
+api: "POST https://api.fire.rest/v1/orders/{orderId}/cancel"
+description: "Cancela um pedido previamente injetado. Idempotente em chamadas subsequentes; dispara o evento `order.cancelled` para os seus Integration Flows quando o pedido transiciona para CANCELLED."
+authMethod: "bearer"
+---
+
+Cancela um pedido que foi injetado previamente via [`POST /v1/orders`](/pt/api-reference/orders). O Fire transiciona o status do pedido para `CANCELLED`, registra metadata de auditoria (quem, quando, por quê) e dispara o evento [`order.cancelled`](/pt/events/order-cancelled) para os seus Integration Flows.
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `orders:write`.
+</ParamField>
+
+## Path parameters
+
+<ParamField path="orderId" type="string" required>
+  UUID interno do pedido no Fire — mesmo valor que `data.orderId` no evento [`order.completed`](/pt/events/order-completed) deste pedido. **Não** é o `externalOrderId` que você usou na injeção.
+</ParamField>
+
+## Corpo da requisição
+
+<ParamField body="reason" type="string" required>
+  Razão free-text para o cancelamento. Mínimo 5 caracteres, máximo 500. Fica registrada em `cancellation.cancellationReason` do payload do evento `order.cancelled` resultante.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/v1/orders/21ec1f6c-c301-4528-b999-7836c1d21c6c/cancel
+x-api-key: <sua_api_key>
+Content-Type: application/json
+
+{
+  "reason": "Cliente solicitou cancelamento — pedido duplicado"
+}
+```
+</RequestExample>
+
+## Resposta
+
+<ResponseField name="id" type="string">
+  UUID interno do pedido no Fire — coincide com o `orderId` que você cancelou.
+</ResponseField>
+
+<ResponseField name="cancellationId" type="string">
+  UUID do registro de auditoria do cancelamento. Estável através de retentativas; coincide com `cancellation.cancellationId` no evento `order.cancelled` resultante.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Sempre `"CANCELLED"` em resposta bem-sucedida.
+</ResponseField>
+
+<ResponseField name="cancelledAt" type="string">
+  Timestamp ISO 8601 UTC de quando o cancelamento foi registrado.
+</ResponseField>
+
+<ResponseField name="cancelledBy" type="string">
+  Identificador do principal que realizou o cancelamento. Para callers via API key: `"api-key:<keyId>"`.
+</ResponseField>
+
+<ResponseField name="cancellationReason" type="string">
+  Eco do `reason` enviado no body.
+</ResponseField>
+
+<ResponseField name="cancellationSource" type="string">
+  Sempre `"adapter"` para cancelamentos feitos por este endpoint. (Outras fontes são `"backoffice"` para cancelamentos do dashboard e `"api"` para chamadas internas diretas.)
+</ResponseField>
+
+<ResponseField name="cancelledFlowsCount" type="number">
+  Quantidade de execuções de Integration Flow em voo que foram canceladas como parte desta operação. Os flows pendentes para o pedido são abortados antes do novo evento `order.cancelled` disparar, evitando entregas conflitantes.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "id": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
+  "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
+  "status": "CANCELLED",
+  "cancelledAt": "2026-05-06T16:32:00.000Z",
+  "cancelledBy": "api-key:k_ab12cd34",
+  "cancellationReason": "Cliente solicitou cancelamento — pedido duplicado",
+  "cancellationSource": "adapter",
+  "cancelledFlowsCount": 2
+}
+```
+
+```json 400 — erro de validação
+{
+  "error": {
+    "code": "validation_error",
+    "message": "reason must be between 5 and 500 characters"
+  }
+}
+```
+
+```json 401 — API key faltando ou inválida
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key"
+  }
+}
+```
+
+```json 403 — scope incorreto
+{
+  "error": {
+    "code": "forbidden",
+    "message": "API key is missing the orders:write scope"
+  }
+}
+```
+
+```json 404 — pedido não encontrado
+{
+  "error": {
+    "code": "not_found",
+    "message": "Order 21ec1f6c-c301-4528-b999-7836c1d21c6c was not found"
+  }
+}
+```
+
+```json 409 — estado inválido
+{
+  "error": {
+    "code": "conflict",
+    "message": "Order cannot be cancelled — current status is CANCELLED"
+  }
+}
+```
+</ResponseExample>
+
+## Regras de cancelamento
+
+O pedido deve estar em um estado que permita cancelamento. O Fire retorna `409 Conflict` quando:
+
+- O status do pedido não é `OPEN` nem `COMPLETED` (ex.: já foi cancelado).
+- O status fiscal é `processing`, `error`, `cancelling` ou `cancelled` — há uma transição fiscal em voo ou terminal que impede cancelamento seguro.
+- O dia de negócio do pedido está fechado e o pedido pertence a um dia de negócio anterior.
+
+Para pedidos brasileiros fiscal-enabled que já estavam autorizados na SEFAZ, este endpoint **inicia** o cancelamento: `order.cancelled` dispara imediatamente, e um evento separado [`fiscal.cancelled.br`](/pt/events/fiscal-cancelled-br) dispara depois quando a SEFAZ confirma o cancelamento. Veja o [lifecycle de cancelamento de pedido](/pt/events/order-cancelled#lifecycle-relativo-a-outros-eventos).
+
+## O que acontece após uma chamada bem-sucedida
+
+1. **O status do pedido** transiciona para `CANCELLED` e a linha de auditoria é escrita.
+2. **Os flows pendentes para este pedido são abortados** — `cancelledFlowsCount` reflete quantos.
+3. **O evento `order.cancelled` é despachado** — seus Integration Flows recebem o evento com o snapshot V4 do pedido mais o bloco `cancellation`.
+4. **Para pedidos BR fiscal-enabled**: uma solicitação de cancelamento downstream é enfileirada para a autoridade fiscal. Quando a SEFAZ confirma, dispara `fiscal.cancelled.br`.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Injetar pedido" icon="paper-plane" href="/pt/api-reference/orders">
+    O endpoint que criou o pedido que este cancela.
+  </Card>
+  <Card title="Evento order.cancelled" icon="ban" href="/pt/events/order-cancelled">
+    O evento outbound que seus Integration Flows recebem após um cancelamento bem-sucedido.
+  </Card>
+  <Card title="Evento fiscal.cancelled.br" icon="file-circle-xmark" href="/pt/events/fiscal-cancelled-br">
+    Apenas Brasil — dispara depois quando a SEFAZ confirma.
+  </Card>
+  <Card title="Autenticação" icon="lock" href="/pt/authentication">
+    Como funcionam API keys, scopes e vendor binding.
+  </Card>
+</CardGroup>

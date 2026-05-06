@@ -1,0 +1,124 @@
+---
+title: "channels.sync"
+description: "Evento por lotes que entrega el catálogo completo de canales para una cuenta. Se usa para sync inicial y reconciliación periódica."
+---
+
+Fire emite `channels.sync` cuando hay que sincronizar un catálogo completo de canales — típicamente durante el onboarding o tras un cambio masivo de configuración. El evento se entrega en lotes de hasta 50 canales. Usa `batchIndex` y `batchTotal` para seguir el progreso.
+
+## Payload
+
+```json
+{
+  "event": "channels.sync",
+  "id": "evt_abc202",
+  "createdAt": "2025-01-15T10:00:00Z",
+  "data": {
+    "account": "1",
+    "country": "6",
+    "vendorId": 16,
+    "batchIndex": 1,
+    "batchTotal": 1,
+    "channels": [
+      {
+        "channelId": "CH-IFOOD-001",
+        "code": "IFOOD",
+        "name": "iFood",
+        "description": "Orders received via iFood marketplace",
+        "active": "ACTIVE",
+        "authType": "API_KEY",
+        "baseUrl": "https://api.ifood.com.br",
+        "services": [
+          {
+            "code": "DELIVERY",
+            "serviceId": "3",
+            "referenceName": "Domicilios iFood"
+          },
+          {
+            "code": "TAKEAWAY",
+            "serviceId": "1",
+            "referenceName": "Retiro en tienda"
+          }
+        ],
+        "createdAt": "2025-01-15T10:00:00.000Z",
+        "updatedAt": "2025-01-15T10:00:00.000Z"
+      },
+      {
+        "channelId": "CH-RAPPI-001",
+        "code": "RAPPI",
+        "name": "Rappi",
+        "description": "Orders received via Rappi marketplace",
+        "active": "ACTIVE",
+        "authType": "API_KEY",
+        "baseUrl": "https://microservices.dev.rappi.com",
+        "services": [
+          {
+            "code": "DELIVERY",
+            "serviceId": "3",
+            "referenceName": "Domicilios Rappi"
+          }
+        ],
+        "createdAt": "2025-01-15T10:00:00.000Z",
+        "updatedAt": "2025-01-15T10:00:00.000Z"
+      },
+      {
+        "channelId": "CH-KIOSK-001",
+        "code": "KIOSK",
+        "name": "Kiosk",
+        "description": "In-store orders via kiosk",
+        "active": "ACTIVE",
+        "authType": "NONE",
+        "baseUrl": null,
+        "services": [
+          {
+            "code": "TAKEAWAY",
+            "serviceId": "1",
+            "referenceName": "Retiro en tienda"
+          }
+        ],
+        "createdAt": "2025-01-15T10:00:00.000Z",
+        "updatedAt": "2025-01-15T10:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+## Campos
+
+### `data`
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `account` | string | Identificador de cuenta — requerido por sistemas downstream |
+| `country` | string | Identificador de país — requerido por sistemas downstream |
+| `vendorId` | integer | Identificador de la marca |
+| `batchIndex` | integer | Índice 1-based de este lote |
+| `batchTotal` | integer | Número total de lotes en esta sincronización |
+| `channels` | object[] | Array de objetos de canal — mismo esquema que [`channel.updated`](/es/webhook-reference/channel-updated#datachannel) |
+
+## Lotes
+
+Cada lote contiene hasta 50 canales. Cuando `batchTotal > 1`, los eventos se emiten secuencialmente. Procesa y reintenta cada lote de forma independiente — un lote fallido no bloquea a los demás.
+
+```
+batchIndex: 1 / batchTotal: 3  →  canales 1–50
+batchIndex: 2 / batchTotal: 3  →  canales 51–100
+batchIndex: 3 / batchTotal: 3  →  canales 101–120
+```
+
+## Uso
+
+<Steps>
+  <Step title="Verifica la firma">
+    Valida `X-Fire-Signature`. Consulta [Autenticación](/es/authentication).
+  </Step>
+  <Step title="Confirma de inmediato">
+    Devuelve `200 OK` antes de procesar.
+  </Step>
+  <Step title="Reemplaza tu catálogo de canales para este lote">
+    Haz upsert de todos los canales del lote usando `channelId` como clave.
+  </Step>
+  <Step title="Después del último lote">
+    Cuando `batchIndex === batchTotal`, cualquier `channelId` en tu store local que no estuviera presente en ningún lote puede considerarse eliminado.
+  </Step>
+</Steps>

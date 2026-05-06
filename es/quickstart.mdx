@@ -1,80 +1,144 @@
 ---
-title: "Inicio rápido"
-description: "Crea documentación excelente en minutos"
+title: "Quickstart"
+description: "Pon tu integración con Fire a funcionar end to end — recibir eventos e inyectar órdenes."
 ---
 
-## Empieza en tres pasos
+Esta guía te lleva por los pasos mínimos para tener una integración funcionando con Fire: recibir eventos de orden a través de un Integration Flow e inyectar órdenes vía la API REST.
 
-Pon tu sitio de documentación en marcha en local y haz tu primera personalización.
+## Prerrequisitos
 
-### Paso 1: Entorno local
+- Credenciales de API desde el dashboard de Fire (consulta [Autenticación](/es/authentication))
+- Un endpoint HTTPS accesible públicamente
+- Acceso al dashboard en **Settings → Integration Flows**
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clona el repositorio">
-    Durante el onboarding creaste un repositorio en GitHub con el contenido si aún no tenías uno. Encontrarás el enlace en tu [panel](https://dashboard.mintlify.com).
-    
-    Para clonar el repositorio y poder previsualizar cambios, sigue la guía [Clonar un repositorio](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) en la documentación de GitHub.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Inicia el servidor de vista previa">
-    1. Instala la CLI de Mintlify: `npm i -g mint`
-    2. Ve al directorio de documentación y ejecuta: `mint dev`
-    3. Abre `http://localhost:3000` para ver la documentación en vivo.
-    
-    <Tip>La vista previa se actualiza automáticamente al editar archivos.</Tip>
-  </Accordion>
-</AccordionGroup>
+## Paso 1: Configurar un Integration Flow
 
-### Paso 2: Despliega tus cambios
+En el dashboard de Fire, ve a **Settings → Integration Flows → New flow**, luego:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Instala la app de GitHub">
-    Instala la aplicación de Mintlify para GitHub desde tu [panel](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    La app despliega automáticamente los cambios en tu sitio de documentación.
-</Accordion>
-<Accordion icon="palette" title="Actualiza nombre y colores">
-    Como primer cambio, actualiza el nombre y los colores del sitio.
+- **Trigger:** elige `order.completed`
+- **Scope:** account, vendor y opcionalmente tiendas específicas
+- **Nodo HTTP:** agrega uno y configura
+  - Método: `POST`
+  - URL: tu endpoint HTTPS
+  - Headers: `Content-Type: application/json` (más cualquier header de auth — Bearer token / API key)
+  - Body: pega el template canónico de ejemplo que el dashboard incluye (produce `{ event, data, _meta }`)
+- **Activa** el flow
 
-    1. Abre `docs.json` en tu editor.
-    2. Cambia el campo `"name"` al nombre de tu proyecto.
-    3. Actualiza `"colors"` para que coincidan con tu marca.
-    4. Guarda y comprueba al instante en `http://localhost:3000`.
+Para un walkthrough de 10 minutos con detalle paso a paso, consulta [Manejar eventos de orden](/es/guides/handle-order-events).
 
-    <Tip>¡Prueba a cambiar el color primario para ver la diferencia de inmediato!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Tip>
+  Durante el desarrollo puedes usar una herramienta como [ngrok](https://ngrok.com) para exponer un servidor local a internet. Pega la URL HTTPS de ngrok como URL del nodo HTTP del flow.
+</Tip>
 
-### Paso 3: Publicar
+## Paso 2: Obtener tus canales de venta
 
-<Accordion icon="rocket" title="Publica tu documentación">
-  1. Haz commit y push de tus cambios.
-  2. Tu documentación se actualizará y estará en línea en pocos momentos.
-</Accordion>
+Si tu integración inyecta órdenes, necesitas mapear los IDs de canal de Fire con los identificadores de tu agregador.
+
+```http
+GET /v1/sales-channels
+Authorization: Bearer <tu_api_key>
+```
+
+Cachea la lista de canales y úsala para resolver el canal correcto al inyectar órdenes.
+
+Consulta [Canales de venta](/es/configuration/sales-channels) para la guía completa de mapeo.
+
+## Paso 3: Manejar el evento
+
+Tu endpoint recibirá peticiones `POST` desde tu flow cada vez que una orden se complete. La forma del body es la que el template del body de tu flow renderiza. Con el template canónico, eso es:
+
+```json
+{
+  "event": {
+    "id": "0d6e8a1c-1e7a-4b4f-8a3a-74ab0e9a9b21",
+    "type": "order.completed",
+    "createdAt": "2026-05-06T01:22:59.902Z"
+  },
+  "data": {
+    "orderId": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
+    "orderCode": "OC-br-001",
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "store": { /* ... */ },
+    "client": { /* ... */ },
+    "payments": { /* ... */ },
+    "orderLines": [ /* ... */ ],
+    "fulfillment": { /* ... */ }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "attempt": "1" }
+}
+```
+
+Un handler mínimo:
+
+```js
+import express from "express";
+
+const app = express();
+const seen = new Map(); // reemplaza por Redis/DB en producción
+
+app.post("/fire/events", express.json(), async (req, res) => {
+  const { event, data } = req.body ?? {};
+  if (!event?.id) return res.status(400).end();
+
+  // 1. Confirma rápido (Fire hace timeout a los 30s)
+  res.status(200).end();
+
+  // 2. Deduplica por event.id
+  if (seen.has(event.id)) return;
+  seen.set(event.id, Date.now());
+
+  // 3. Despacha por type
+  switch (event.type) {
+    case "order.completed":      return onOrderCompleted(data);
+    case "order.cancelled":      return onOrderCancelled(data);
+    case "fiscal.authorized.br": return onFiscalAuthorized(data);
+    case "fiscal.cancelled.br":  return onFiscalCancelled(data);
+  }
+});
+
+app.listen(8080);
+```
+
+Consulta [`order.completed`](/es/events/order-completed) para la referencia campo por campo del payload.
+
+## Paso 4: Inyectar órdenes
+
+Cuando tu sistema recibe una orden (de un agregador o cualquier otra fuente), inyéctala en Fire.
+
+```http
+POST /v1/orders
+Authorization: Bearer <tu_api_key>
+Content-Type: application/json
+
+{
+  "channelId": "channel_uber",
+  "externalOrderId": "uber_order_xyz",
+  "...": "ver la referencia completa"
+}
+```
+
+Una vez que la orden alcance `status=COMPLETED` y `paymentStatus=SUCCEEDED`, tu flow se dispara y tu handler corre. Si la orden se cancela después, recibirás `order.cancelled`.
+
+Consulta [Inyectar orden](/es/api-reference/orders) para la referencia completa del payload.
+
+## Paso 5: Agregar eventos fiscales (solo Brasil)
+
+Si operas en Brasil y tienes emisión fiscal habilitada para una tienda, agrega un segundo flow con trigger `fiscal.authorized.br` (y otro con `fiscal.cancelled.br`) — mismo endpoint HTTPS, mismo template — para recibir el contexto del documento fiscal.
 
 ## Próximos pasos
 
-Con la documentación en marcha, explora estas funciones:
-
 <CardGroup cols={2}>
-
-<Card title="Escribir contenido" icon="pen-to-square" href="/es/essentials/markdown">
-  Aprende la sintaxis MDX y empieza a escribir.
-</Card>
-
-<Card title="Personalizar estilo" icon="palette" href="/es/essentials/settings">
-  Adapta la documentación a tu marca.
-</Card>
-
-<Card title="Añadir ejemplos de código" icon="square-code" href="/es/essentials/code">
-  Incluye bloques de código con resaltado de sintaxis.
-</Card>
-
-<Card title="Documentación de API" icon="code" href="/es/api-reference/introduction">
-  Genera documentación de API desde especificaciones OpenAPI.
-</Card>
-
+  <Card title="Manejar eventos de orden" icon="bolt" href="/es/guides/handle-order-events">
+    Walkthrough detallado con auth e idempotencia.
+  </Card>
+  <Card title="Resumen de eventos" icon="bell" href="/es/events/overview">
+    Envelope, headers, reintentos, dedup.
+  </Card>
+  <Card title="Referencia order.completed" icon="receipt" href="/es/events/order-completed">
+    Esquema de payload completo con los bloques fiscales BR.
+  </Card>
+  <Card title="Referencia API" icon="code" href="/es/api-reference/introduction">
+    Inyectar órdenes y consultar canales de venta.
+  </Card>
 </CardGroup>
-
-<Note>
-  **¿Necesitas ayuda?** Consulta la [documentación completa](https://mintlify.com/docs) o únete a la [comunidad](https://mintlify.com/community).
-</Note>

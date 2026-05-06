@@ -5,36 +5,44 @@ description: "Core building blocks you need to understand before integrating wit
 
 ## Fire
 
-Fire is the restaurant management OS and the source of truth for all restaurant data: stores, menus, products, and sales channels. Any change made in Fire is the authoritative version that must be propagated to downstream systems.
+Fire is the restaurant management OS and the source of truth for orders, stores, menus, products, and sales channels. Any change made in Fire is the authoritative version that may produce events your system can react to.
 
 ## Your system
 
 Your system is the integration you build. It connects to Fire by:
 
-- Receiving events from Fire and acting on them (publishing to aggregators, syncing a billing system or ERP, triggering internal workflows, etc.)
-- Injecting orders into Fire when needed
+- **Receiving events** from Fire through one or more Integration Flows, and acting on them (publishing to aggregators, syncing a billing system or ERP, triggering internal workflows, etc.).
+- **Injecting orders** into Fire when needed.
 
 The integration interface is the same regardless of what your system does with the data.
 
 ## Sales channels
 
-Sales channels are the aggregators (iFood, Keeta, 99, Rappi, etc.) configured inside Fire for a given store. Each channel has a unique ID within Fire. If your system needs to publish menus to aggregators or inject orders, it must fetch the channel list and map Fire channel IDs to the corresponding aggregator identifiers.
+Sales channels are the aggregators (iFood, Keeta, 99, Rappi, etc.) and direct channels (POS, kiosk, app, web) configured inside Fire for a given store. Each channel has a unique ID inside Fire. If your system needs to inject orders or map them to upstream systems, it must fetch the channel list once and keep it cached.
 
-## Webhooks
+## Events
 
-Webhooks are HTTP POST requests that Fire sends to your registered endpoint when an event occurs. Fire emits webhook events for:
+Fire emits **four** event types in production today:
 
-- **Store updates** — a store's information changed and must be re-published
-- **Menu updates** — a menu was updated and must be re-published to one or more channels
-- **Product updates** — a product was updated and must be re-published
-- **Order status changes** — the status of an order changed inside Fire
+| Event | When it fires |
+|---|---|
+| [`order.completed`](/en/events/order-completed) | An injected order is fully received and paid (`status=COMPLETED`, `paymentStatus=SUCCEEDED`). |
+| [`order.cancelled`](/en/events/order-cancelled) | An injected order is cancelled from the backoffice or via an external adapter. |
+| [`fiscal.authorized.br`](/en/events/fiscal-authorized-br) | Brazil only — SEFAZ authorizes the order's fiscal document via your fiscal provider. |
+| [`fiscal.cancelled.br`](/en/events/fiscal-cancelled-br) | Brazil only — SEFAZ confirms cancellation of a previously authorized fiscal document. |
 
-Each event payload is self-contained — it includes all the data your system needs to act without additional API calls.
+Each event payload is self-contained — it includes the full V4 order snapshot (and, for fiscal events, the fiscal block) so your system can act without additional API calls. See [Events overview](/en/events/overview) for the envelope and delivery model.
+
+## Integration Flows
+
+An **Integration Flow** is how your system subscribes to events. You configure flows in the Fire dashboard under **Settings → Integration Flows**, scoping each flow to your account, vendor, and (optionally) specific stores. A flow is a graph of nodes — typically a trigger followed by an HTTP node that POSTs the event body to your URL — but it can also transform, branch, log, or call internal Fire services before reaching out.
+
+A flow's HTTP node owns the request: method, URL, headers, authentication, and **the body template** that defines what your endpoint receives. Fire does not impose a fixed envelope — most teams start from the canonical example template the dashboard ships with.
 
 ## Orders
 
-Orders are injected into Fire via the API. Each order payload must include the Fire sales channel ID so that Fire can associate it with the correct aggregator and restaurant configuration.
+Orders are injected into Fire via the REST API. Each order payload must include the Fire sales channel ID so that Fire can associate it with the correct channel and store configuration. Once injected and paid, the order produces an `order.completed` event; cancellations produce `order.cancelled`.
 
 ## Webhook endpoint
 
-The HTTPS URL on your side that receives Fire webhook events. You register it in the Fire dashboard under **Settings → Endpoints**.
+The HTTPS URL on your side that receives requests from a flow's HTTP node. Unlike a global webhook endpoint, **you can have a different URL per flow** if you want to fan out events to different services (e.g. one URL for fiscal events, another for order events). You configure each URL in the dashboard when setting up the flow.

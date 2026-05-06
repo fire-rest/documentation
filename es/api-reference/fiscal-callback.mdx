@@ -1,0 +1,414 @@
+---
+title: "Callback fiscal"
+api: "POST https://api.fire.rest/v1/webhooks/fiscal/callback"
+description: "Endpoint inbound al que tu proveedor fiscal hace POST cuando un documento fiscal cambia de estado. Multipaís (BR, CO, EC, CL, AR, VE). Actualiza el estado fiscal de la orden dentro de Fire y — para Brasil — dispara los eventos de orden downstream."
+authMethod: "bearer"
+---
+
+Este endpoint es **inbound** — tu proveedor fiscal le hace POST cada vez que un documento fiscal es autorizado, rechazado, denegado, cancelado o falla. Es la **API canónica multipaís de fiscal callback** que acepta payloads de BR, CO, EC, CL, AR, VE. Fire valida el payload, actualiza el estado fiscal de la orden en `fiscal_documents` y `orders.fiscal`, y despacha eventos outbound `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` a tus Integration Flows.
+
+## Cómo complementa `order.completed` y `order.cancelled`
+
+`order.completed` y `order.cancelled` llevan el **estado de negocio** de una orden. El callback fiscal lleva el **estado fiscal** (autorización SEFAZ / DIAN / SRI / SII / AFIP / SENIAT). Juntos forman este lifecycle:
+
+```mermaid
+flowchart LR
+    A([Orden pagada]) --> B([order.completed])
+    B --> C[Tu proveedor fiscal<br/>emite el documento]
+    C --> D([POST /v1/webhooks/fiscal/callback])
+    D --> E[Fire actualiza fiscal_documents<br/>+ orders.fiscal JSONB]
+    E -. solo BR .-> F([fiscal.authorized.br event])
+```
+
+Después de procesar el callback, el **siguiente** `order.completed` o `order.cancelled` para el mismo `orderId` refleja el estado fiscal actualizado en:
+
+- `data.store.storeFiscalConfig` — contexto del emisor (CNPJ / NIT / RUC / RUT / CUIT / RIF…)
+- `data.payments.metadata.fiscal` — agregados fiscales totales (BR populado; otros países `null`)
+- `data.orderLines[].metadata.fiscal` — clasificación fiscal por línea (BR populado; otros `null`)
+
+Para Brasil específicamente, también se emite un evento `fiscal.authorized.br` (o `fiscal.cancelled.br`) separado con las referencias del documento SEFAZ en `data.fiscal`.
+
+<Note>
+  **Hoy, solo `fiscal.authorized.br` y `fiscal.cancelled.br` están cableados como eventos outbound.** El endpoint valida y guarda callbacks para los 6 países (CO, EC, CL, AR, VE, BR), y el estado fiscal actualizado aparece en el siguiente evento `order.completed` / `order.cancelled` sin importar el país. Los eventos `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` para CO/EC/CL/AR/VE están en camino.
+</Note>
+
+## Autenticación
+
+Este endpoint requiere una **API key con scope `webhooks:fiscal`**, vendor-scoped al account dueño de la orden. Las keys sin scope o solo a nivel account se rechazan con `403 Forbidden`.
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire. Générala desde el dashboard en **Settings → API Keys → Developer keys**, con scope `webhooks:fiscal` y un binding de vendor para el account cuyas órdenes esta key puede actualizar.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  Opcional `Bearer <token>`. No se requiere para este endpoint hoy, pero está reservado para futuros tokens emitidos por proveedor.
+</ParamField>
+
+## Body de la petición
+
+El body es un objeto JSON con estos campos top-level. La forma del `document` está **discriminada por `countryCode`** — ver [Documento por país](#documento-por-pais) abajo.
+
+<ParamField body="countryCode" type="string" required>
+  Código de país ISO 3166-1 alpha-2. Uno de `BR`, `CO`, `EC`, `CL`, `AR`, `VE`. Determina las reglas de validación del objeto `document`.
+</ParamField>
+
+<ParamField body="eventType" type="string" required>
+  Estado del documento. Uno de:
+  - `authorized` — la autoridad fiscal aprobó el documento
+  - `cancelled` — un documento previamente autorizado fue cancelado
+  - `rejected` — el documento fue rechazado (validación, schema, firma)
+  - `denied` — la autoridad denegó la solicitud (típicamente fallo permanente de regla de negocio)
+  - `error` — ocurrió un error no recuperable en el proveedor o autoridad
+
+  Cuando `eventType` es `authorized` o `cancelled`, el campo `document` es **requerido**. Cuando es `rejected`, `denied` o `error`, el campo `error` es **requerido**.
+</ParamField>
+
+<ParamField body="providerEventId" type="string" required>
+  Llave de idempotencia. Debe ser único por `(provider_code, providerEventId)` — los duplicados devuelven HTTP `200` con `outcome: "duplicate"` sin reprocesar. Usa el ID nativo del evento del proveedor si está disponible; si no, un UUID.
+</ParamField>
+
+<ParamField body="occurredAt" type="string" required>
+  Timestamp ISO 8601 UTC de cuándo ocurrió el evento en la autoridad fiscal (no cuándo el proveedor envió el callback).
+</ParamField>
+
+<ParamField body="orderId" type="string" required>
+  UUID de la orden en Fire. Coincide con `data.orderId` en los eventos `order.completed` y `order.cancelled`. Fire lo usa para encontrar el documento fiscal existente.
+</ParamField>
+
+<ParamField body="eventId" type="string" required>
+  UUID para correlación de intentos de emisión. Fire lo usa para hacer match del callback con un intento específico de emisión y deduplicar intentos paralelos.
+</ParamField>
+
+<ParamField body="document" type="object">
+  El documento fiscal autorizado / cancelado. **Requerido** cuando `eventType` es `authorized` o `cancelled`. La forma varía por país — ver [Documento por país](#documento-por-pais).
+</ParamField>
+
+<ParamField body="error" type="object">
+  Contexto de error para resultados negativos. **Requerido** cuando `eventType` es `rejected`, `denied` o `error`.
+
+  <Expandable title="error">
+    <ParamField body="code" type="string">
+      Código de error opcional del proveedor/autoridad (p. ej. `DIAN_42`, `cStat_204`).
+    </ParamField>
+    <ParamField body="message" type="string" required>
+      Mensaje legible. Mínimo 1 carácter.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="providerSpecific" type="object">
+  Bag free-form para extras específicos del proveedor (respuesta raw, IDs internos, etc.). No validado; pasa al log de auditoría.
+</ParamField>
+
+## Documento por país
+
+La forma requerida del campo `document` depende del `countryCode`. Todas las variantes comparten campos base (`docType`, `docSubtype`) más identificadores específicos del país requeridos por esa autoridad.
+
+<Tabs>
+  <Tab title="Brasil (BR)">
+    Documentos fiscales brasileños (NF-e / NFC-e). Usa este código de país al enviar callbacks desde tu proveedor fiscal o cualquier otro proveedor BR.
+
+    | Campo | Tipo | Requerido | Notas |
+    |---|---|---|---|
+    | `chaveAcesso` | string | ✓ | Exactamente 44 dígitos — chave de acceso SEFAZ |
+    | `protocolo` | string | ✓ | Protocolo de autorización SEFAZ |
+    | `numero` | int / string | ✓ | Número de documento |
+    | `serie` | int / string \| null | | Serie del documento (codificada en chave) |
+    | `modelo` | `55` / `65` \| null | | `55` = NF-e, `65` = NFC-e |
+    | `cnpjEmitente` | string \| null | | CNPJ del emisor |
+
+    ```json
+    {
+      "countryCode": "BR",
+      "eventType": "authorized",
+      "providerEventId": "evt-br-1",
+      "occurredAt": "2026-04-26T14:32:11.000Z",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "document": {
+        "docType": "invoice",
+        "docSubtype": "nfce",
+        "chaveAcesso": "35260229062609000177650500000000011000000010",
+        "protocolo": "141210001176277",
+        "numero": 1,
+        "serie": 50,
+        "modelo": 65
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Colombia (CO)">
+    Documentos fiscales colombianos (DIAN).
+
+    | Campo | Tipo | Requerido | Notas |
+    |---|---|---|---|
+    | `cufe` | string | ✓ | Código fiscal único DIAN |
+    | `prefijo` | string | ✓ | Prefijo del documento |
+    | `numeroDian` | string | ✓ | Número de documento DIAN |
+    | `qrCode` | string (URL) \| null | | QR para el documento impreso |
+
+    ```json
+    {
+      "countryCode": "CO",
+      "eventType": "authorized",
+      "providerEventId": "evt-co-1",
+      "occurredAt": "2026-04-26T14:32:11.000Z",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "document": {
+        "docType": "invoice",
+        "docSubtype": "factura",
+        "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
+        "prefijo": "C012",
+        "numeroDian": "C012-001"
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Ecuador (EC)">
+    Documentos fiscales ecuatorianos (SRI).
+
+    | Campo | Tipo | Requerido | Notas |
+    |---|---|---|---|
+    | `claveAcceso` | string | ✓ | Exactamente 49 dígitos — clave de acceso SRI |
+    | `numeroAutorizacion` | string | ✓ | Número de autorización SRI |
+    | `ambiente` | `'1'` / `'2'` \| null | | `1` = pruebas, `2` = producción |
+
+    ```json
+    {
+      "countryCode": "EC",
+      "eventType": "authorized",
+      "providerEventId": "evt-ec-1",
+      "occurredAt": "2026-04-26T14:32:11.000Z",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "document": {
+        "docType": "invoice",
+        "docSubtype": "factura",
+        "claveAcceso": "0102030405060708091011121314151617181920212223242",
+        "numeroAutorizacion": "AUT-EC-001",
+        "ambiente": "2"
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Chile (CL)">
+    Documentos fiscales chilenos (SII DTE).
+
+    | Campo | Tipo | Requerido | Notas |
+    |---|---|---|---|
+    | `folio` | int / string | ✓ | Número de folio del DTE |
+    | `ted` | string | ✓ | TED (Timbre Electrónico) — base64 o fragmento XML |
+    | `tipoDte` | int / string | ✓ | Tipo DTE (p. ej. `33` = factura electrónica) |
+    | `trackId` | string \| null | | Track ID SII para queries de seguimiento |
+
+    ```json
+    {
+      "countryCode": "CL",
+      "eventType": "authorized",
+      "providerEventId": "evt-cl-1",
+      "occurredAt": "2026-04-26T14:32:11.000Z",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "document": {
+        "docType": "invoice",
+        "docSubtype": "factura",
+        "folio": 12345,
+        "ted": "<TED>...base64-or-xml...</TED>",
+        "tipoDte": 33
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Argentina (AR)">
+    Documentos fiscales argentinos (AFIP).
+
+    | Campo | Tipo | Requerido | Notas |
+    |---|---|---|---|
+    | `cae` | string | ✓ | Código de Autorización Electrónico |
+    | `fechaVtoCae` | string | ✓ | Fecha de vencimiento del CAE |
+    | `puntoVenta` | int / string | ✓ | Número de punto de venta |
+    | `numeroComprobante` | int / string | ✓ | Número del documento |
+    | `tipoComprobante` | int / string | ✓ | Tipo de documento (`1` = factura A, …) |
+
+    ```json
+    {
+      "countryCode": "AR",
+      "eventType": "authorized",
+      "providerEventId": "evt-ar-1",
+      "occurredAt": "2026-04-26T14:32:11.000Z",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "document": {
+        "docType": "invoice",
+        "docSubtype": "factura_a",
+        "cae": "74256178925412",
+        "fechaVtoCae": "2026-05-31",
+        "puntoVenta": 1,
+        "numeroComprobante": 12345,
+        "tipoComprobante": 1
+      }
+    }
+    ```
+  </Tab>
+
+  <Tab title="Venezuela (VE)">
+    Documentos fiscales venezolanos (SENIAT).
+
+    | Campo | Tipo | Requerido | Notas |
+    |---|---|---|---|
+    | `numeroControl` | string | ✓ | Número del rango de control emitido por SENIAT |
+    | `numeroFactura` | string | ✓ | Número de factura |
+    | `rifEmisor` | string \| null | | RIF del emisor |
+
+    ```json
+    {
+      "countryCode": "VE",
+      "eventType": "authorized",
+      "providerEventId": "evt-ve-1",
+      "occurredAt": "2026-04-26T14:32:11.000Z",
+      "orderId": "550e8400-e29b-41d4-a716-446655440000",
+      "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "document": {
+        "docType": "invoice",
+        "docSubtype": "factura",
+        "numeroControl": "00-00012345",
+        "numeroFactura": "12345"
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Resultados negativos (`rejected`, `denied`, `error`)
+
+Para estados no autorizados, omite `document` y provee `error`. El `countryCode` sigue aplicando (valida el routing); el documento no se requiere porque no hay artefacto autorizado.
+
+```json Rechazado
+{
+  "countryCode": "CO",
+  "eventType": "rejected",
+  "providerEventId": "evt-co-2",
+  "occurredAt": "2026-04-26T14:32:11.000Z",
+  "orderId": "550e8400-e29b-41d4-a716-446655440000",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "document": null,
+  "error": {
+    "code": "DIAN_42",
+    "message": "CUFE inválido"
+  }
+}
+```
+
+## Respuesta
+
+<ResponseField name="received" type="boolean">
+  Siempre `true` cuando la petición llegó al handler.
+</ResponseField>
+
+<ResponseField name="receiptId" type="string">
+  UUID de la fila escrita en `fiscal_event_logs`. Úsalo para correlacionar con logs internos de Fire al debuggear.
+</ResponseField>
+
+<ResponseField name="outcome" type="string">
+  Resultado final:
+  - `updated` — documento fiscal encontrado y status transicionado exitosamente
+  - `idempotent` — el documento ya está en el estado solicitado; sin cambio aplicado
+  - `regression` — la transición solicitada movería el documento a un estado anterior; rechazada (igual `200`)
+  - `notFound` — no existía documento fiscal todavía; uno fue auto-creado usando el callback como fuente de verdad
+  - `duplicate` — `providerEventId` ya fue procesado; respuesta cacheada devuelta
+  - `error` — procesado con errores (solo para fallos internos inesperados; HTTP igual `200` para prevenir tormentas de retry)
+</ResponseField>
+
+<ResponseField name="documentId" type="string">
+  UUID de la fila `fiscal_documents` afectada. Devuelto cuando `outcome` es `updated`, `idempotent`, `regression` o `notFound`.
+</ResponseField>
+
+<ResponseField name="processingMs" type="number">
+  Tiempo de procesamiento del lado servidor en milisegundos.
+</ResponseField>
+
+<ResponseExample>
+```json 200 — éxito
+{
+  "received": true,
+  "receiptId": "9b2a3c4d-7e8f-4a1b-9c2d-3e4f5a6b7c8d",
+  "outcome": "updated",
+  "documentId": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+  "processingMs": 47
+}
+```
+
+```json 200 — duplicado
+{
+  "received": true,
+  "outcome": "duplicate",
+  "processingMs": 3
+}
+```
+
+```json 400 — error de validación
+{
+  "error": {
+    "code": "validation_error",
+    "message": "BR chaveAcesso must be 44 digits"
+  }
+}
+```
+
+```json 401 — API key faltante o inválida
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key"
+  }
+}
+```
+
+```json 403 — scope incorrecto
+{
+  "error": {
+    "code": "forbidden",
+    "message": "webhooks:fiscal scope requires a vendor-scoped API key (accountId binding missing). Generate one from /developers/firepos-api-management."
+  }
+}
+```
+</ResponseExample>
+
+## Idempotencia
+
+Fire deduplica callbacks por `(provider_code, providerEventId)` — un índice parcial único en `fiscal_event_logs`. Los replays devuelven `200` con `outcome: "duplicate"` sin más procesamiento. Envía siempre el mismo `providerEventId` para reintentos; nunca generes uno nuevo para el mismo evento lógico.
+
+## Concurrencia
+
+Las transiciones de estado en `fiscal_documents` usan **locking optimista**. Si dos callbacks para el mismo documento llegan concurrentes, uno tiene éxito y el otro resuelve a `idempotent` o `regression` según el orden. El merge de `orders.fiscal` JSONB es atómico.
+
+## Qué pasa después de una llamada exitosa
+
+1. **La fila `fiscal_documents` se hace upsert** con el nuevo status y referencias del documento (`chaveAcesso`, `protocolo`, `cufe`, `cae`, etc., según país).
+2. **La columna `orders.fiscal` JSONB se mergea** con la misma data — visible en el siguiente evento `order.completed` / `order.cancelled` para el mismo `orderId`, sin importar el país.
+3. **Se despacha un trigger outbound** con `triggerType = 'fiscal.authorized.{cc}'` (para `eventType=authorized`) o `'fiscal.cancelled.{cc}'` (para `eventType=cancelled`). Los Integration Flows activos para ese trigger corren y hacen POST a tu endpoint.
+
+  - **Hoy**, solo `fiscal.authorized.br` y `fiscal.cancelled.br` están cableados. Disparan cuando un callback authorized/cancelled para una tienda BR se procesa.
+  - **Para CO/EC/CL/AR/VE**, los eventos outbound equivalentes aún no están cableados — los callbacks se validan y guardan, y el estado fiscal se refleja en el siguiente `order.completed` / `order.cancelled` para la misma orden.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="order.completed" icon="receipt" href="/es/events/order-completed">
+    Ve dónde aterriza el estado fiscal dentro del snapshot V4 de la orden.
+  </Card>
+  <Card title="fiscal.authorized.br" icon="file-invoice" href="/es/events/fiscal-authorized-br">
+    Evento outbound BR-only disparado por este callback.
+  </Card>
+  <Card title="Inyectar orden" icon="paper-plane" href="/es/api-reference/orders">
+    El endpoint de inyección que crea la orden que este callback actualiza.
+  </Card>
+  <Card title="Autenticación" icon="lock" href="/es/authentication">
+    Cómo funcionan API keys, scopes y vendor binding.
+  </Card>
+</CardGroup>

@@ -1,0 +1,254 @@
+---
+title: "Cash reconciliations"
+api: "POST https://api.fire.rest/v1/cash-management/reconciliations"
+description: "Record a cash count from your operator/cashier and let Fire compute the discrepancy against the system-tracked cash. Also returns past reconciliations via GET."
+authMethod: "bearer"
+---
+
+Record an end-of-shift or end-of-day cash count for a store and have Fire compare it against what the system says should be on hand. Fire computes the discrepancy (`SHORTAGE`, `OVERAGE`, or `MATCH`), categorises the cause, and stores the result in `cash_reconciliations` for audit and downstream reporting.
+
+This page covers two operations on the same path: **POST** to record a new reconciliation, **GET** to list reconciliations for a store/day/operator.
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key.
+  - **POST** — requires the `cash-management:write` scope.
+  - **GET** — requires the `cash-management:read` scope.
+
+  The key **must be vendor-scoped** (account binding required). System-only keys are rejected with `403`.
+</ParamField>
+
+## POST — Record a reconciliation
+
+### Request body
+
+<ParamField body="storeId" type="string" required>
+  UUID of the store the reconciliation belongs to. Must belong to the API key's account/vendor — Fire returns `400` (with hide-existence behavior — `404`-equivalent) otherwise.
+</ParamField>
+
+<ParamField body="businessDayDate" type="string">
+  Business day in `YYYY-MM-DD`. Defaults to the store's current operational day. Use this to record a reconciliation for a past day (e.g. retroactive corrections) — Fire flags the result with `details.post_close: true` if the day is already closed.
+</ParamField>
+
+<ParamField body="operatorUid" type="string">
+  Operator/cashier ID. Optional. Use it when the reconciliation is for a specific cashier shift; omit when reconciling the whole store-day.
+</ParamField>
+
+<ParamField body="currency" type="string" required>
+  ISO 4217 code (e.g. `BRL`, `USD`, `ARS`, `CLP`, `COP`, `VES`). Length 3.
+</ParamField>
+
+<ParamField body="declaredCash" type="number" required>
+  Operator-declared amount of cash on hand. Non-negative decimal. Fire compares this against `systemCash` (the amount the system thinks should be on hand based on sales and payments) to compute the discrepancy.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  Categorical cause of any discrepancy. One of:
+  - `WRONG_CHANGE_GIVEN`
+  - `COUNTING_ERROR`
+  - `INCOMPLETE_CUSTOMER_PAYMENT`
+  - `MINOR_UNIDENTIFIED_DIFFERENCE`
+  - `THEFT_SUSPECTED`
+  - `UNRECORDED_PAYMENT`
+  - `OTHER`
+
+  Required even when there is no discrepancy — for matched counts, use `MINOR_UNIDENTIFIED_DIFFERENCE` or `OTHER` per your operations policy.
+</ParamField>
+
+<ParamField body="notes" type="string">
+  Free-text. Up to 2000 characters. Use it to capture extra context (operator name, shift notes, etc.).
+</ParamField>
+
+<ParamField body="authorizationTokenId" type="string">
+  UUID of an authorization token. When present, marks the reconciliation as "requiring/having approval" — typically used for `THEFT_SUSPECTED` or large `SHORTAGE` cases that need supervisor sign-off.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/v1/cash-management/reconciliations
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "storeId": "550e8400-e29b-41d4-a716-446655440000",
+  "businessDayDate": "2026-05-06",
+  "operatorUid": "op-cashier-123",
+  "currency": "BRL",
+  "declaredCash": 1250.50,
+  "reason": "COUNTING_ERROR",
+  "notes": "Short count during evening close — customer overpayment uncounted"
+}
+```
+</RequestExample>
+
+### POST response
+
+<ResponseField name="id" type="string">UUID of the reconciliation row.</ResponseField>
+<ResponseField name="accountId" type="string">Account that owns the store.</ResponseField>
+<ResponseField name="vendorId" type="string | null">Vendor scope, when applicable.</ResponseField>
+<ResponseField name="storeId" type="string">Echo of the request.</ResponseField>
+<ResponseField name="businessDayDate" type="string">`YYYY-MM-DD`.</ResponseField>
+<ResponseField name="operatorUid" type="string | null">Echo of the request.</ResponseField>
+<ResponseField name="currency" type="string">ISO 4217.</ResponseField>
+<ResponseField name="systemCash" type="number">
+  Computed amount of cash the system says should be on hand for this scope (store + day + optional operator). Derived from approved cash payments minus change given, plus opening float.
+</ResponseField>
+<ResponseField name="declaredCash" type="number">Echo of the request.</ResponseField>
+<ResponseField name="discrepancy" type="number">
+  `declaredCash - systemCash`. Negative for shortage, positive for overage, zero for match.
+</ResponseField>
+<ResponseField name="discrepancyType" type="string">
+  `MATCH` (zero), `SHORTAGE` (declared less than system), or `OVERAGE` (declared more than system).
+</ResponseField>
+<ResponseField name="authorizationTokenId" type="string | null">Echo or `null`.</ResponseField>
+<ResponseField name="reportedBy" type="string">
+  Identity of the principal that recorded this reconciliation. For API-key callers: `"apikey:<keyId>"`.
+</ResponseField>
+<ResponseField name="reportedAt" type="string">ISO 8601 UTC.</ResponseField>
+<ResponseField name="details" type="object">
+  <Expandable title="details">
+    <ResponseField name="reason" type="string">Echo of the request.</ResponseField>
+    <ResponseField name="notes" type="string | null">Echo of the request.</ResponseField>
+    <ResponseField name="post_close" type="boolean">`true` when the reconciliation was recorded after the business day was closed.</ResponseField>
+    <ResponseField name="authorization" type="object | null">When `authorizationTokenId` was provided and validated, has `{ approved_by, approved_at }`.</ResponseField>
+  </Expandable>
+</ResponseField>
+<ResponseField name="createdAt" type="string">ISO 8601 UTC.</ResponseField>
+<ResponseField name="updatedAt" type="string">ISO 8601 UTC.</ResponseField>
+
+<ResponseExample>
+```json 201 — recorded with shortage
+{
+  "id": "660e8400-e29b-41d4-a716-446655440001",
+  "accountId": "100",
+  "vendorId": "v_blueco_br",
+  "storeId": "550e8400-e29b-41d4-a716-446655440000",
+  "businessDayDate": "2026-05-06",
+  "operatorUid": "op-cashier-123",
+  "currency": "BRL",
+  "systemCash": 1300.75,
+  "declaredCash": 1250.50,
+  "discrepancy": -50.25,
+  "discrepancyType": "SHORTAGE",
+  "authorizationTokenId": null,
+  "reportedBy": "apikey:k_ab12cd34",
+  "reportedAt": "2026-05-06T16:45:30.000Z",
+  "details": {
+    "reason": "COUNTING_ERROR",
+    "notes": "Short count during evening close — customer overpayment uncounted",
+    "post_close": false,
+    "authorization": null
+  },
+  "createdAt": "2026-05-06T16:45:30.000Z",
+  "updatedAt": "2026-05-06T16:45:30.000Z"
+}
+```
+
+```json 400 — invalid storeId / not in your vendor
+{
+  "error": {
+    "code": "validation_error",
+    "message": "storeId not found in your scope"
+  }
+}
+```
+
+```json 403 — system-only key
+{
+  "error": {
+    "code": "forbidden",
+    "message": "cash-management endpoints require a vendor-scoped API key"
+  }
+}
+```
+</ResponseExample>
+
+## GET — List reconciliations
+
+Returns reconciliations matching the filters.
+
+### Query parameters
+
+<ParamField query="storeId" type="string" required>
+  UUID of the store. Must belong to your API key's account/vendor.
+</ParamField>
+
+<ParamField query="businessDayDate" type="string">
+  `YYYY-MM-DD`. Returns reconciliations recorded for this specific business day. Mutually exclusive with `from`/`to`.
+</ParamField>
+
+<ParamField query="operatorUid" type="string">
+  Filter to a single operator/cashier.
+</ParamField>
+
+<ParamField query="from" type="string">
+  `YYYY-MM-DD`. Inclusive lower bound for the range filter. Use with `to`.
+</ParamField>
+
+<ParamField query="to" type="string">
+  `YYYY-MM-DD`. Inclusive upper bound. Use with `from`.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://api.fire.rest/v1/cash-management/reconciliations?storeId=550e8400-e29b-41d4-a716-446655440000&businessDayDate=2026-05-06
+x-api-key: <your_api_key>
+```
+</RequestExample>
+
+### GET response
+
+<ResponseField name="reconciliations" type="object[]">
+  Array of reconciliation records — same shape as the POST response data.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "reconciliations": [
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440001",
+      "accountId": "100",
+      "vendorId": "v_blueco_br",
+      "storeId": "550e8400-e29b-41d4-a716-446655440000",
+      "businessDayDate": "2026-05-06",
+      "operatorUid": "op-cashier-123",
+      "currency": "BRL",
+      "systemCash": 1300.75,
+      "declaredCash": 1250.50,
+      "discrepancy": -50.25,
+      "discrepancyType": "SHORTAGE",
+      "authorizationTokenId": null,
+      "reportedBy": "apikey:k_ab12cd34",
+      "reportedAt": "2026-05-06T16:45:30.000Z",
+      "details": {
+        "reason": "COUNTING_ERROR",
+        "notes": "Short count during evening close",
+        "post_close": false,
+        "authorization": null
+      },
+      "createdAt": "2026-05-06T16:45:30.000Z",
+      "updatedAt": "2026-05-06T16:45:30.000Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+## Common patterns
+
+- **End-of-shift flow.** Call POST with the operator's declared count when their shift closes. Display `discrepancy` and `discrepancyType` to the supervisor for sign-off.
+- **End-of-day reconcile.** Call POST without `operatorUid` for a store-wide cash count after all shifts have closed.
+- **Audit trail.** Use GET with a date range to pull all reconciliations for a store across a period — useful for monthly or quarterly cash audits.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Expected cash" icon="cash-register" href="/en/api-reference/cash-expected">
+    Compute the system-tracked expected cash for a store/day before recording the count.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/en/authentication">
+    How vendor-scoped API keys and `cash-management:*` scopes work.
+  </Card>
+</CardGroup>

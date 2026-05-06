@@ -1,0 +1,103 @@
+---
+title: "Publicação de lojas"
+description: "Trate os eventos de loja do Fire: atualizações, exclusões e sincronizações em massa."
+---
+
+O Fire emite três tipos de eventos de loja. Seu sistema deve tratar todos os três:
+
+| Evento | Quando |
+|---|---|
+| [`store.updated`](/pt/webhook-reference/store-updated) | A configuração de uma única loja mudou |
+| [`store.deleted`](/pt/webhook-reference/store-deleted) | Uma loja foi removida do Fire |
+| [`stores.sync`](/pt/webhook-reference/stores-sync) | Sincronização em massa — onboarding ou mudanças massivas de configuração |
+
+## store.updated
+
+Emitido sempre que uma única loja muda. O payload contém a configuração completa da loja e dos canais.
+
+```
+Fire emite store.updated → Seu sistema recebe o evento → Seu sistema atualiza downstream
+```
+
+Seu endpoint recebe:
+
+```json
+{
+  "event": "store.updated",
+  "id": "evt_abc123",
+  "created_at": "2025-01-15T14:30:00Z",
+  "data": {
+    "stores": [ ... ],
+    "channels": [ ... ]
+  }
+}
+```
+
+O objeto `data` está pronto para ser encaminhado. Nenhuma chamada adicional à API do Fire é necessária. Veja [`store.updated`](/pt/webhook-reference/store-updated) para o esquema completo.
+
+<Steps>
+  <Step title="Verifique a assinatura">
+    Valide `X-Fire-Signature`. Veja [Autenticação](/pt/authentication).
+  </Step>
+  <Step title="Confirme imediatamente">
+    Retorne `200 OK` antes de qualquer trabalho.
+  </Step>
+  <Step title="Atualize downstream">
+    Passe `data` para seu sistema downstream. O payload é autocontido — não requer transformação.
+  </Step>
+</Steps>
+
+## store.deleted
+
+Emitido quando uma loja é explicitamente removida do Fire. Esta é a única forma como o Fire sinaliza uma exclusão de loja — não há ambiguidade.
+
+```
+Fire emite store.deleted → Seu sistema recebe o evento → Seu sistema remove a loja downstream
+```
+
+Seu endpoint recebe:
+
+```json
+{
+  "event": "store.deleted",
+  "id": "evt_abc124",
+  "created_at": "2025-01-15T15:00:00Z",
+  "data": {
+    "storeId": 805,
+    "vendorId": 16,
+    "storeChannels": [ "0F049503-85CF-E511-80C6-000D3A3261F3" ]
+  }
+}
+```
+
+Use `storeId` e `storeChannels` para identificar e remover a loja em cada sistema downstream. Veja [`store.deleted`](/pt/webhook-reference/store-deleted) para o esquema completo.
+
+## stores.sync
+
+Emitido quando o Fire precisa propagar muitas lojas de uma vez — durante o onboarding inicial ou após uma mudança massiva de configuração. O Fire divide lotes grandes automaticamente (até 50 lojas por evento) e os emite sequencialmente.
+
+```
+Fire emite stores.sync (lote 1 de N) → Seu sistema processa o lote → repita até batchIndex = batchTotal
+```
+
+Seu endpoint recebe:
+
+```json
+{
+  "event": "stores.sync",
+  "id": "evt_abc125",
+  "created_at": "2025-01-15T15:05:00Z",
+  "data": {
+    "batchIndex": 1,
+    "batchTotal": 3,
+    "stores": [ ... ],
+    "channels": [ ... ]
+  }
+}
+```
+
+Processe cada lote de forma independente. Use `batchIndex` e `batchTotal` para acompanhar o progresso se seu sistema precisar saber quando a sincronização completa terminar. Cada lote é reenviado de forma independente em caso de falha. Veja [`stores.sync`](/pt/webhook-reference/stores-sync) para o esquema completo.
+
+## Idempotência
+
+Você pode receber o mesmo evento mais de uma vez devido a retentativas. Faça seu processamento idempotente — tratar o mesmo evento duas vezes deve produzir o mesmo resultado.
