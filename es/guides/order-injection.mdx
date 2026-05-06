@@ -1,0 +1,80 @@
+---
+title: "Inyección de órdenes"
+description: "Inyecta órdenes en Fire vía la API."
+---
+
+Tu sistema puede inyectar órdenes en Fire usando la API de Orders. Fire luego administra el ciclo de vida de la orden y envía las actualizaciones de estado de vuelta vía webhooks.
+
+## Flujo
+
+```
+Tu sistema recibe una orden → Tu sistema la inyecta en Fire → Fire confirma
+```
+
+## Inyectar una orden
+
+```http
+POST /v1/orders
+Authorization: Bearer <your_api_key>
+Content-Type: application/json
+```
+
+```json
+{
+  "channel_id": "channel_abc123",
+  "external_order_id": "uber_order_9876",
+  "customer": {
+    "name": "Jane Doe",
+    "phone": "+1555000111"
+  },
+  "items": [
+    {
+      "product_id": "prod_001",
+      "quantity": 2,
+      "unit_price": 1200,
+      "modifiers": []
+    }
+  ],
+  "delivery": {
+    "type": "delivery",
+    "address": "123 Main St"
+  },
+  "total": 2400
+}
+```
+
+{/* TODO: Insert complete order payload schema once confirmed by Fire team */}
+
+### Campos requeridos
+
+| Campo | Descripción |
+|---|---|
+| `channel_id` | El ID del canal de venta de Fire (de [Canales de venta](/es/configuration/sales-channels)) |
+| `external_order_id` | Tu propio ID de orden — usado para correlacionar las actualizaciones de estado |
+| `items` | Array de productos pedidos con cantidades y precios |
+
+### Respuesta
+
+```json
+{
+  "id": "fire_order_abc",
+  "external_order_id": "uber_order_9876",
+  "status": "received",
+  "created_at": "2025-01-15T14:30:00Z"
+}
+```
+
+Guarda el `id` devuelto por Fire para correlacionar futuros eventos `order.status_changed`.
+
+## Manejo de errores
+
+| Estado | Significado |
+|---|---|
+| `400` | Payload inválido — revisa los campos requeridos |
+| `404` | `channel_id` desconocido — vuelve a obtener los canales |
+| `409` | `external_order_id` duplicado — la orden ya existe |
+| `5xx` | Error del lado de Fire — reintenta con backoff exponencial |
+
+<Warning>
+  No envíes la misma orden dos veces con el mismo `external_order_id`. Fire rechazará los duplicados con un `409`.
+</Warning>

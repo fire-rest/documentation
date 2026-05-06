@@ -1,80 +1,144 @@
 ---
-title: "Início rápido"
-description: "Crie documentação excelente em minutos"
+title: "Quickstart"
+description: "Coloque sua integração com o Fire no ar de ponta a ponta — receber eventos e injetar pedidos."
 ---
 
-## Comece em três passos
+Este guia te leva pelos passos mínimos para ter uma integração funcionando com o Fire: receber eventos de pedido através de um Integration Flow e injetar pedidos via API REST.
 
-Coloque seu site de documentação em execução localmente e faça sua primeira personalização.
+## Pré-requisitos
 
-### Etapa 1: Ambiente local
+- Credenciais de API do dashboard do Fire (veja [Autenticação](/pt/authentication))
+- Um endpoint HTTPS acessível publicamente
+- Acesso ao dashboard em **Settings → Integration Flows**
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone o repositório">
-    No onboarding você criou um repositório no GitHub com o conteúdo, se ainda não tinha um. O link está no seu [painel](https://dashboard.mintlify.com).
-    
-    Para clonar o repositório e pré-visualizar alterações, siga o guia [Clonar um repositório](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) na documentação do GitHub.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Inicie o servidor de pré-visualização">
-    1. Instale a CLI do Mintlify: `npm i -g mint`
-    2. Entre no diretório da documentação e execute: `mint dev`
-    3. Abra `http://localhost:3000` para ver a documentação ao vivo.
-    
-    <Tip>A pré-visualização atualiza automaticamente ao editar arquivos.</Tip>
-  </Accordion>
-</AccordionGroup>
+## Passo 1: Configurar um Integration Flow
 
-### Etapa 2: Implante suas alterações
+No dashboard do Fire, vá em **Settings → Integration Flows → New flow**, e então:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Instale o app do GitHub">
-    Instale o app Mintlify para GitHub nas [configurações](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    O app implanta automaticamente as alterações no seu site de documentação.
-</Accordion>
-<Accordion icon="palette" title="Atualize nome e cores">
-    Como primeira alteração, atualize o nome e as cores do site.
+- **Trigger:** escolha `order.completed`
+- **Escopo:** account, vendor e opcionalmente lojas específicas
+- **Nó HTTP:** adicione um e configure
+  - Método: `POST`
+  - URL: seu endpoint HTTPS
+  - Headers: `Content-Type: application/json` (mais qualquer header de auth — Bearer token / API key)
+  - Body: cole o template canônico de exemplo que o dashboard inclui (produz `{ event, data, _meta }`)
+- **Ative** o flow
 
-    1. Abra `docs.json` no editor.
-    2. Altere o campo `"name"` para o nome do seu projeto.
-    3. Atualize `"colors"` para combinar com sua marca.
-    4. Salve e confira em `http://localhost:3000`.
+Para um walkthrough de 10 minutos com detalhe passo a passo, veja [Tratar eventos de pedido](/pt/guides/handle-order-events).
 
-    <Tip>Experimente mudar a cor primária para ver a diferença na hora!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Tip>
+  Durante o desenvolvimento você pode usar uma ferramenta como [ngrok](https://ngrok.com) para expor um servidor local à internet. Cole a URL HTTPS do ngrok como URL do nó HTTP do flow.
+</Tip>
 
-### Etapa 3: Publicar
+## Passo 2: Buscar seus canais de venda
 
-<Accordion icon="rocket" title="Publique sua documentação">
-  1. Faça commit e push das alterações.
-  2. A documentação será atualizada e ficará no ar em instantes.
-</Accordion>
+Se sua integração injeta pedidos, você precisa mapear os IDs de canal do Fire para os identificadores do seu agregador.
+
+```http
+GET /v1/sales-channels
+Authorization: Bearer <sua_api_key>
+```
+
+Coloque a lista de canais em cache e use-a para resolver o canal correto ao injetar pedidos.
+
+Veja [Canais de venda](/pt/configuration/sales-channels) para o guia completo de mapeamento.
+
+## Passo 3: Tratar o evento
+
+Seu endpoint vai receber requisições `POST` do seu flow toda vez que um pedido for completado. O formato do body é o que o template do body do seu flow renderiza. Com o template canônico, isso é:
+
+```json
+{
+  "event": {
+    "id": "0d6e8a1c-1e7a-4b4f-8a3a-74ab0e9a9b21",
+    "type": "order.completed",
+    "createdAt": "2026-05-06T01:22:59.902Z"
+  },
+  "data": {
+    "orderId": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
+    "orderCode": "OC-br-001",
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "store": { /* ... */ },
+    "client": { /* ... */ },
+    "payments": { /* ... */ },
+    "orderLines": [ /* ... */ ],
+    "fulfillment": { /* ... */ }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "attempt": "1" }
+}
+```
+
+Um handler mínimo:
+
+```js
+import express from "express";
+
+const app = express();
+const seen = new Map(); // troque por Redis/DB em produção
+
+app.post("/fire/events", express.json(), async (req, res) => {
+  const { event, data } = req.body ?? {};
+  if (!event?.id) return res.status(400).end();
+
+  // 1. Confirme rápido (o Fire dá timeout em 30s)
+  res.status(200).end();
+
+  // 2. Deduplique por event.id
+  if (seen.has(event.id)) return;
+  seen.set(event.id, Date.now());
+
+  // 3. Despache por type
+  switch (event.type) {
+    case "order.completed":      return onOrderCompleted(data);
+    case "order.cancelled":      return onOrderCancelled(data);
+    case "fiscal.authorized.br": return onFiscalAuthorized(data);
+    case "fiscal.cancelled.br":  return onFiscalCancelled(data);
+  }
+});
+
+app.listen(8080);
+```
+
+Veja [`order.completed`](/pt/events/order-completed) para a referência campo a campo do payload.
+
+## Passo 4: Injetar pedidos
+
+Quando seu sistema receber um pedido (de um agregador ou qualquer outra fonte), injete-o no Fire.
+
+```http
+POST /v1/orders
+Authorization: Bearer <sua_api_key>
+Content-Type: application/json
+
+{
+  "channelId": "channel_uber",
+  "externalOrderId": "uber_order_xyz",
+  "...": "veja a referência completa"
+}
+```
+
+Quando o pedido alcançar `status=COMPLETED` e `paymentStatus=SUCCEEDED`, seu flow dispara e seu handler roda. Se o pedido for cancelado depois, você receberá `order.cancelled`.
+
+Veja [Injetar pedido](/pt/api-reference/orders) para a referência completa do payload.
+
+## Passo 5: Adicionar eventos fiscais (apenas Brasil)
+
+Se você opera no Brasil e tem emissão fiscal habilitada para uma loja, adicione um segundo flow com trigger `fiscal.authorized.br` (e outro com `fiscal.cancelled.br`) — mesmo endpoint HTTPS, mesmo template — para receber o contexto do documento fiscal.
 
 ## Próximos passos
 
-Com a documentação rodando, explore estes recursos:
-
 <CardGroup cols={2}>
-
-<Card title="Escrever conteúdo" icon="pen-to-square" href="/pt/essentials/markdown">
-  Aprenda a sintaxe MDX e comece a escrever.
-</Card>
-
-<Card title="Personalizar estilo" icon="palette" href="/pt/essentials/settings">
-  Deixe a documentação alinhada à sua marca.
-</Card>
-
-<Card title="Adicionar exemplos de código" icon="square-code" href="/pt/essentials/code">
-  Inclua blocos de código com destaque de sintaxe.
-</Card>
-
-<Card title="Documentação de API" icon="code" href="/pt/api-reference/introduction">
-  Gere documentação de API a partir de especificações OpenAPI.
-</Card>
-
+  <Card title="Tratar eventos de pedido" icon="bolt" href="/pt/guides/handle-order-events">
+    Walkthrough detalhado com auth e idempotência.
+  </Card>
+  <Card title="Visão geral de eventos" icon="bell" href="/pt/events/overview">
+    Envelope, headers, retentativas, dedup.
+  </Card>
+  <Card title="Referência order.completed" icon="receipt" href="/pt/events/order-completed">
+    Esquema de payload completo com os blocos fiscais BR.
+  </Card>
+  <Card title="Referência da API" icon="code" href="/pt/api-reference/introduction">
+    Injetar pedidos e consultar canais de venda.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Precisa de ajuda?** Veja a [documentação completa](https://mintlify.com/docs) ou entre na [comunidade](https://mintlify.com/community).
-</Note>

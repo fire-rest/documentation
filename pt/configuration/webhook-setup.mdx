@@ -1,0 +1,68 @@
+---
+title: "Configuração de webhooks"
+description: "Registre seu endpoint para receber eventos webhook do Fire."
+---
+
+O Fire entrega os eventos ao seu sistema via webhooks. Você precisa registrar seu endpoint no dashboard do Fire antes de poder receber qualquer evento.
+
+## Registrar um endpoint
+
+<Steps>
+  <Step title="Abra o dashboard do Fire">
+    Vá até **Settings → Endpoints**.
+  </Step>
+  <Step title="Adicione um novo endpoint">
+    Clique em **Add endpoint** e preencha os seguintes campos:
+
+    | Campo | Descrição |
+    |---|---|
+    | URL | A URL HTTPS onde você quer receber os eventos |
+    | Secret | Uma string aleatória usada para assinar os payloads — armazene-a com segurança |
+    | Events | Selecione os eventos que você quer receber (ou deixe "All events") |
+  </Step>
+  <Step title="Salve e teste">
+    Salve o endpoint. Use o botão **Send test event** para verificar que seu endpoint está acessível e responde com `2xx`.
+  </Step>
+</Steps>
+
+<Warning>
+  Seu endpoint precisa responder com um status `2xx` em menos de 10 segundos, ou o Fire marcará a entrega como falha.
+</Warning>
+
+## Comportamento de retentativas
+
+Se seu endpoint retornar uma resposta não-`2xx` ou exceder o tempo limite, o Fire faz nova tentativa com backoff exponencial:
+
+| Tentativa | Atraso |
+|---|---|
+| 1ª retentativa | 5 minutos |
+| 2ª retentativa | 30 minutos |
+| 3ª retentativa | 2 horas |
+| 4ª retentativa | 8 horas |
+
+{/* TODO: Confirm retry count and delay values with the Fire team */}
+
+Após esgotar todas as retentativas, o evento é marcado como falho. Você pode reenviar manualmente os eventos com falha pelo dashboard.
+
+## Receber eventos
+
+Cada evento que o Fire envia é uma requisição HTTP `POST` com:
+
+- `Content-Type: application/json`
+- `X-Fire-Signature`: assinatura HMAC-SHA256 do body (consulte [Autenticação](/pt/authentication))
+- `X-Fire-Event`: identificador do tipo de evento (ex.: `menu.updated`)
+
+Sempre verifique a assinatura antes de processar o evento.
+
+## Responder aos eventos
+
+Retorne um `200 OK` (ou qualquer `2xx`) assim que receber a requisição — antes de processar o payload. Isso evita timeouts caso seu processamento demore.
+
+```js
+app.post("/fire-webhook", (req, res) => {
+  res.sendStatus(200); // Confirma primeiro
+
+  // Processa de forma assíncrona
+  processFireEvent(req.body).catch(console.error);
+});
+```

@@ -1,0 +1,254 @@
+---
+title: "Conciliaciones de efectivo"
+api: "POST https://api.fire.rest/v1/cash-management/reconciliations"
+description: "Registra el conteo de efectivo desde tu operador/cajero y deja que Fire calcule la diferencia contra el efectivo que el sistema dice que debería estar. También devuelve conciliaciones pasadas vía GET."
+authMethod: "bearer"
+---
+
+Registra un conteo de efectivo de fin de turno o fin de día para una tienda y haz que Fire lo compare contra lo que el sistema dice que debería estar en caja. Fire calcula la diferencia (`SHORTAGE`, `OVERAGE` o `MATCH`), categoriza la causa y guarda el resultado en `cash_reconciliations` para auditoría y reportes downstream.
+
+Esta página cubre dos operaciones en el mismo path: **POST** para registrar una nueva conciliación, **GET** para listar conciliaciones por tienda/día/operador.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire.
+  - **POST** — requiere scope `cash-management:write`.
+  - **GET** — requiere scope `cash-management:read`.
+
+  La key **debe ser vendor-scoped** (binding de account requerido). Las keys system-only se rechazan con `403`.
+</ParamField>
+
+## POST — Registrar una conciliación
+
+### Body de la petición
+
+<ParamField body="storeId" type="string" required>
+  UUID de la tienda a la que pertenece la conciliación. Debe pertenecer al account/vendor de la API key — Fire devuelve `400` (con comportamiento hide-existence — equivalente a `404`) en caso contrario.
+</ParamField>
+
+<ParamField body="businessDayDate" type="string">
+  Día de negocio en `YYYY-MM-DD`. Default es el día operacional actual de la tienda. Úsalo para registrar una conciliación de un día pasado (p. ej. correcciones retroactivas) — Fire marca el resultado con `details.post_close: true` si el día ya está cerrado.
+</ParamField>
+
+<ParamField body="operatorUid" type="string">
+  ID del operador/cajero. Opcional. Úsalo cuando la conciliación es para un turno de cajero específico; omítelo cuando concilias toda la tienda-día.
+</ParamField>
+
+<ParamField body="currency" type="string" required>
+  Código ISO 4217 (p. ej. `BRL`, `USD`, `ARS`, `CLP`, `COP`, `VES`). Longitud 3.
+</ParamField>
+
+<ParamField body="declaredCash" type="number" required>
+  Monto declarado de efectivo en caja por el operador. Decimal no negativo. Fire lo compara contra `systemCash` (lo que el sistema piensa que debería estar en caja según las ventas y pagos) para calcular la diferencia.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  Causa categórica de cualquier diferencia. Una de:
+  - `WRONG_CHANGE_GIVEN`
+  - `COUNTING_ERROR`
+  - `INCOMPLETE_CUSTOMER_PAYMENT`
+  - `MINOR_UNIDENTIFIED_DIFFERENCE`
+  - `THEFT_SUSPECTED`
+  - `UNRECORDED_PAYMENT`
+  - `OTHER`
+
+  Requerido incluso cuando no hay diferencia — para conteos que matchean, usa `MINOR_UNIDENTIFIED_DIFFERENCE` u `OTHER` según tu política operacional.
+</ParamField>
+
+<ParamField body="notes" type="string">
+  Free-text. Hasta 2000 caracteres. Úsalo para capturar contexto extra (nombre del operador, notas de turno, etc.).
+</ParamField>
+
+<ParamField body="authorizationTokenId" type="string">
+  UUID de un token de autorización. Cuando está presente, marca la conciliación como "que requiere/tiene aprobación" — típicamente usado para casos de `THEFT_SUSPECTED` o `SHORTAGE` grandes que necesitan firma del supervisor.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/v1/cash-management/reconciliations
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "storeId": "550e8400-e29b-41d4-a716-446655440000",
+  "businessDayDate": "2026-05-06",
+  "operatorUid": "op-cashier-123",
+  "currency": "BRL",
+  "declaredCash": 1250.50,
+  "reason": "COUNTING_ERROR",
+  "notes": "Conteo corto en cierre de la tarde — sobrepago de cliente no contado"
+}
+```
+</RequestExample>
+
+### Respuesta POST
+
+<ResponseField name="id" type="string">UUID de la fila de conciliación.</ResponseField>
+<ResponseField name="accountId" type="string">Account dueño de la tienda.</ResponseField>
+<ResponseField name="vendorId" type="string | null">Scope de vendor cuando aplica.</ResponseField>
+<ResponseField name="storeId" type="string">Eco del request.</ResponseField>
+<ResponseField name="businessDayDate" type="string">`YYYY-MM-DD`.</ResponseField>
+<ResponseField name="operatorUid" type="string | null">Eco del request.</ResponseField>
+<ResponseField name="currency" type="string">ISO 4217.</ResponseField>
+<ResponseField name="systemCash" type="number">
+  Monto calculado de efectivo que el sistema dice que debería estar en caja para este scope (tienda + día + operador opcional). Derivado de pagos cash aprobados menos cambio entregado, más fondo de apertura.
+</ResponseField>
+<ResponseField name="declaredCash" type="number">Eco del request.</ResponseField>
+<ResponseField name="discrepancy" type="number">
+  `declaredCash - systemCash`. Negativo para shortage, positivo para overage, cero para match.
+</ResponseField>
+<ResponseField name="discrepancyType" type="string">
+  `MATCH` (cero), `SHORTAGE` (declarado menor que sistema), o `OVERAGE` (declarado mayor que sistema).
+</ResponseField>
+<ResponseField name="authorizationTokenId" type="string | null">Eco o `null`.</ResponseField>
+<ResponseField name="reportedBy" type="string">
+  Identidad del principal que registró esta conciliación. Para callers vía API key: `"apikey:<keyId>"`.
+</ResponseField>
+<ResponseField name="reportedAt" type="string">ISO 8601 UTC.</ResponseField>
+<ResponseField name="details" type="object">
+  <Expandable title="details">
+    <ResponseField name="reason" type="string">Eco del request.</ResponseField>
+    <ResponseField name="notes" type="string | null">Eco del request.</ResponseField>
+    <ResponseField name="post_close" type="boolean">`true` cuando la conciliación se registró después del cierre del día de negocio.</ResponseField>
+    <ResponseField name="authorization" type="object | null">Cuando se proveyó `authorizationTokenId` y se validó, tiene `{ approved_by, approved_at }`.</ResponseField>
+  </Expandable>
+</ResponseField>
+<ResponseField name="createdAt" type="string">ISO 8601 UTC.</ResponseField>
+<ResponseField name="updatedAt" type="string">ISO 8601 UTC.</ResponseField>
+
+<ResponseExample>
+```json 201 — registrada con shortage
+{
+  "id": "660e8400-e29b-41d4-a716-446655440001",
+  "accountId": "100",
+  "vendorId": "v_blueco_br",
+  "storeId": "550e8400-e29b-41d4-a716-446655440000",
+  "businessDayDate": "2026-05-06",
+  "operatorUid": "op-cashier-123",
+  "currency": "BRL",
+  "systemCash": 1300.75,
+  "declaredCash": 1250.50,
+  "discrepancy": -50.25,
+  "discrepancyType": "SHORTAGE",
+  "authorizationTokenId": null,
+  "reportedBy": "apikey:k_ab12cd34",
+  "reportedAt": "2026-05-06T16:45:30.000Z",
+  "details": {
+    "reason": "COUNTING_ERROR",
+    "notes": "Conteo corto en cierre de la tarde — sobrepago de cliente no contado",
+    "post_close": false,
+    "authorization": null
+  },
+  "createdAt": "2026-05-06T16:45:30.000Z",
+  "updatedAt": "2026-05-06T16:45:30.000Z"
+}
+```
+
+```json 400 — storeId inválido / no en tu vendor
+{
+  "error": {
+    "code": "validation_error",
+    "message": "storeId not found in your scope"
+  }
+}
+```
+
+```json 403 — key system-only
+{
+  "error": {
+    "code": "forbidden",
+    "message": "cash-management endpoints require a vendor-scoped API key"
+  }
+}
+```
+</ResponseExample>
+
+## GET — Listar conciliaciones
+
+Devuelve las conciliaciones que matchean los filtros.
+
+### Query parameters
+
+<ParamField query="storeId" type="string" required>
+  UUID de la tienda. Debe pertenecer al account/vendor de tu API key.
+</ParamField>
+
+<ParamField query="businessDayDate" type="string">
+  `YYYY-MM-DD`. Devuelve conciliaciones registradas para este día de negocio específico. Mutuamente excluyente con `from`/`to`.
+</ParamField>
+
+<ParamField query="operatorUid" type="string">
+  Filtra a un solo operador/cajero.
+</ParamField>
+
+<ParamField query="from" type="string">
+  `YYYY-MM-DD`. Cota inferior inclusiva para filtro de rango. Usar con `to`.
+</ParamField>
+
+<ParamField query="to" type="string">
+  `YYYY-MM-DD`. Cota superior inclusiva. Usar con `from`.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://api.fire.rest/v1/cash-management/reconciliations?storeId=550e8400-e29b-41d4-a716-446655440000&businessDayDate=2026-05-06
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+### Respuesta GET
+
+<ResponseField name="reconciliations" type="object[]">
+  Array de registros de conciliación — misma forma que la data del response POST.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "reconciliations": [
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440001",
+      "accountId": "100",
+      "vendorId": "v_blueco_br",
+      "storeId": "550e8400-e29b-41d4-a716-446655440000",
+      "businessDayDate": "2026-05-06",
+      "operatorUid": "op-cashier-123",
+      "currency": "BRL",
+      "systemCash": 1300.75,
+      "declaredCash": 1250.50,
+      "discrepancy": -50.25,
+      "discrepancyType": "SHORTAGE",
+      "authorizationTokenId": null,
+      "reportedBy": "apikey:k_ab12cd34",
+      "reportedAt": "2026-05-06T16:45:30.000Z",
+      "details": {
+        "reason": "COUNTING_ERROR",
+        "notes": "Conteo corto en cierre de la tarde",
+        "post_close": false,
+        "authorization": null
+      },
+      "createdAt": "2026-05-06T16:45:30.000Z",
+      "updatedAt": "2026-05-06T16:45:30.000Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+## Patrones comunes
+
+- **Flow de fin de turno.** Llama POST con el conteo declarado del operador cuando cierra su turno. Muestra `discrepancy` y `discrepancyType` al supervisor para firmar.
+- **Conciliación de fin de día.** Llama POST sin `operatorUid` para un conteo de toda la tienda después de que todos los turnos hayan cerrado.
+- **Trail de auditoría.** Usa GET con un rango de fechas para sacar todas las conciliaciones de una tienda en un período — útil para auditorías mensuales o trimestrales de efectivo.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Efectivo esperado" icon="cash-register" href="/es/api-reference/cash-expected">
+    Calcula el efectivo esperado por el sistema para una tienda/día antes de registrar el conteo.
+  </Card>
+  <Card title="Autenticación" icon="lock" href="/es/authentication">
+    Cómo funcionan las API keys vendor-scoped y los scopes `cash-management:*`.
+  </Card>
+</CardGroup>

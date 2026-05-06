@@ -1,0 +1,83 @@
+---
+title: "Publicación de menús"
+description: "Maneja los eventos de menú de Fire: actualizaciones y syncs masivos."
+---
+
+Un menú en Fire es la definición completa del catálogo para una combinación específica de tienda y canal — categorías, productos, grupos de modificadores y horarios. Fire emite dos tipos de eventos de menú:
+
+| Evento | Cuándo |
+|---|---|
+| [`menu.updated`](/es/webhook-reference/menu-updated) | Un solo menú cambió — también señala su eliminación con un payload vacío |
+| [`menus.sync`](/es/webhook-reference/menus-sync) | Sync masivo — onboarding o cambios que afectan a muchas tiendas |
+
+## menu.updated
+
+Se emite cada vez que un menú cambia. El payload es una definición completa del menú — categorías, productos, grupos de modificadores y horarios programados — listo para reenviarse downstream.
+
+```
+Fire emite menu.updated → Tu sistema recibe el evento → Tu sistema actualiza downstream
+```
+
+```json
+{
+  "event": "menu.updated",
+  "id": "evt_def456",
+  "created_at": "2025-01-15T14:31:00Z",
+  "data": {
+    "list": { ... },
+    "categories": [ ... ],
+    "products": [ ... ],
+    "modifierGroups": [ ... ],
+    "scheduledActivities": [ ... ]
+  }
+}
+```
+
+El objeto `data` es autocontenido y está listo para reenviarse downstream. Consulta [`menu.updated`](/es/webhook-reference/menu-updated) para el esquema completo.
+
+<Steps>
+  <Step title="Verifica la firma">
+    Valida `X-Fire-Signature`. Consulta [Autenticación](/es/authentication).
+  </Step>
+  <Step title="Confirma de inmediato">
+    Devuelve `200 OK` antes de hacer cualquier trabajo.
+  </Step>
+  <Step title="Actualiza downstream">
+    Pasa `data` a tu sistema downstream, identificado por `list.storeId` y `list.channelId`.
+  </Step>
+</Steps>
+
+<Warning>
+  El payload es un **menú completo** — no un diff. Reemplaza el menú entero en el sistema downstream.
+</Warning>
+
+### Eliminar un menú externamente
+
+Fire no tiene un evento explícito de eliminación de menú. Cuando un menú necesita ser removido de un sistema downstream, Fire envía un evento `menu.updated` con `categories`, `products`, `modifierGroups` y `scheduledActivities` como arrays vacíos. Trata un menú vacío como una señal para desactivarlo o removerlo externamente.
+
+## menus.sync
+
+Se emite cuando Fire necesita propagar menús para varias tiendas a la vez. Fire divide automáticamente los lotes grandes (hasta 50 menús por evento) y los emite secuencialmente. Cada evento del lote contiene un array `menus` con la misma estructura que `menu.updated`.
+
+```
+Fire emite menus.sync (lote 1 de N) → Tu sistema procesa el lote → repite hasta batchIndex = batchTotal
+```
+
+```json
+{
+  "event": "menus.sync",
+  "id": "evt_def458",
+  "created_at": "2025-01-15T15:15:00Z",
+  "data": {
+    "batchIndex": 1,
+    "batchTotal": 4,
+    "menus": [ ... ]
+  }
+}
+```
+
+Procesa cada lote de forma independiente. Itera `menus` y aplica cada uno al sistema downstream identificado por `list.storeId` y `list.channelId`. Cada lote se reintenta de forma independiente en caso de fallo. Consulta [`menus.sync`](/es/webhook-reference/menus-sync) para el esquema completo.
+
+## Idempotencia
+
+Puedes recibir el mismo evento más de una vez por reintentos. Como cada payload es un reemplazo completo, aplicarlo dos veces produce el mismo resultado.

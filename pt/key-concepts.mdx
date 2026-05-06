@@ -1,0 +1,48 @@
+---
+title: "Conceitos-chave"
+description: "Blocos de construção que você precisa entender antes de integrar com o Fire."
+---
+
+## Fire
+
+O Fire é o OS de gestão de restaurantes e a fonte de verdade para pedidos, lojas, menus, produtos e canais de venda. Qualquer alteração feita no Fire é a versão autoritativa que pode produzir eventos aos quais seu sistema reage.
+
+## Seu sistema
+
+Seu sistema é a integração que você constrói. Ele se conecta ao Fire por meio de:
+
+- **Receber eventos** do Fire através de um ou mais Integration Flows, e agir sobre eles (publicar para agregadores, sincronizar um sistema de faturamento ou ERP, disparar workflows internos, etc.).
+- **Injetar pedidos** no Fire quando necessário.
+
+A interface de integração é a mesma independentemente do que seu sistema faz com os dados.
+
+## Canais de venda
+
+Canais de venda são os agregadores (iFood, Keeta, 99, Rappi, etc.) e canais diretos (POS, quiosque, app, web) configurados dentro do Fire para uma loja. Cada canal tem um ID único no Fire. Se seu sistema precisa injetar pedidos ou mapeá-los para sistemas upstream, ele deve buscar a lista de canais uma vez e mantê-la em cache.
+
+## Eventos
+
+Hoje o Fire emite **quatro** tipos de evento em produção:
+
+| Evento | Quando dispara |
+|---|---|
+| [`order.completed`](/pt/events/order-completed) | Um pedido injetado é recebido por completo e está pago (`status=COMPLETED`, `paymentStatus=SUCCEEDED`). |
+| [`order.cancelled`](/pt/events/order-cancelled) | Um pedido injetado é cancelado pelo backoffice ou via um adaptador externo. |
+| [`fiscal.authorized.br`](/pt/events/fiscal-authorized-br) | Apenas Brasil — a SEFAZ autoriza o documento fiscal do pedido via seu provedor fiscal. |
+| [`fiscal.cancelled.br`](/pt/events/fiscal-cancelled-br) | Apenas Brasil — a SEFAZ confirma o cancelamento de um documento fiscal previamente autorizado. |
+
+Cada payload de evento é autocontido — inclui o snapshot V4 completo do pedido (e, para eventos fiscais, o bloco fiscal) para que seu sistema possa agir sem chamadas adicionais à API. Veja [Visão geral de eventos](/pt/events/overview) para o envelope e o modelo de entrega.
+
+## Integration Flows
+
+Um **Integration Flow** é como seu sistema assina eventos. Você configura os flows no dashboard do Fire em **Settings → Integration Flows**, atribuindo a cada flow um escopo de account, vendor e (opcionalmente) lojas específicas. Um flow é um grafo de nós — tipicamente um trigger seguido de um nó HTTP que faz POST do corpo do evento para sua URL — mas também pode transformar, ramificar, logar ou chamar serviços internos do Fire antes de sair.
+
+O nó HTTP do flow é dono da requisição: método, URL, headers, autenticação e **o template do body** que define o que seu endpoint recebe. O Fire não impõe um envelope fixo — a maioria das equipes parte do template canônico de exemplo que o dashboard inclui.
+
+## Pedidos
+
+Os pedidos são injetados no Fire via API REST. Cada payload de pedido deve incluir o ID de canal de venda do Fire para que o Fire possa associá-lo ao canal e à configuração de loja corretos. Uma vez injetado e pago, o pedido produz um evento `order.completed`; cancelamentos produzem `order.cancelled`.
+
+## Endpoint de webhook
+
+A URL HTTPS do seu lado que recebe requisições do nó HTTP de um flow. Diferentemente de um endpoint de webhook global, **você pode ter uma URL distinta por flow** se quiser distribuir eventos para serviços diferentes (ex.: uma URL para eventos fiscais, outra para eventos de pedido). Você configura cada URL no dashboard quando monta o flow.

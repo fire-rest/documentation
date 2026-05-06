@@ -1,0 +1,184 @@
+---
+title: "fiscal.cancelled.br"
+description: "Apenas Brasil — a SEFAZ confirmou o cancelamento de um documento fiscal previamente autorizado via seu provedor fiscal."
+---
+
+`fiscal.cancelled.br` dispara quando a SEFAZ confirma o cancelamento de um documento fiscal (NFC-e ou NF-e) que tinha sido previamente autorizado. É a contraparte SEFAZ-confirmada de [`order.cancelled`](/pt/events/order-cancelled): o pedido é cancelado primeiro dentro do Fire (disparando `order.cancelled`), o Fire então pede o cancelamento na SEFAZ via seu provedor fiscal, e `fiscal.cancelled.br` dispara apenas quando a SEFAZ carimba o protocolo de cancelamento.
+
+## Condição de disparo
+
+O Fire emite `fiscal.cancelled.br` uma vez por cancelamento fiscal, na primeira vez em que **tudo** o seguinte é verdade:
+
+- O pedido está em uma loja brasileira com `storeFiscalConfig.enabled === true`
+- Um documento fiscal tinha sido previamente autorizado (ou seja, `fiscal.authorized.br` foi emitido antes)
+- Uma solicitação de cancelamento foi enviada ao seu provedor fiscal
+- O seu provedor fiscal reporta confirmação SEFAZ do cancelamento
+
+| | |
+|---|---|
+| Cobertura | **Apenas Brasil** |
+| Chave de idempotência | `event.id` |
+| Dispara mais de uma vez | Não, salvo em retentativas |
+| Latência relativa a `order.cancelled` | Geralmente segundos; pode ser minutos se a SEFAZ estiver degradada |
+| Pré-condição | Um `fiscal.authorized.br` anterior para o mesmo `orderId` |
+
+## O que tem em `trigger.data`
+
+Mesmo snapshot V4 que [`order.cancelled`](/pt/events/order-cancelled) — incluindo o mesmo bloco `cancellation` de auditoria — com um sub-objeto extra **`sefazCancellation`** dentro de `cancellation.metadata.fiscal`. Essa é a única diferença estrutural.
+
+`status` é `"CANCELLED"`. O pedido é o mesmo referenciado pelo evento `order.cancelled` anterior do mesmo `orderId`.
+
+## Exemplo — payload real de produção (BR, sanitizado)
+
+```json
+{
+  "event": {
+    "id": "...",
+    "type": "fiscal.cancelled.br",
+    "createdAt": "2026-05-05T23:08:42.123Z"
+  },
+  "data": {
+    "orderId": "e98f5725-0d1e-4f93-ac18-40f1068cae89",
+    "orderCode": "OC-br-001",
+    "status": "CANCELLED",
+    "paymentStatus": "SUCCEEDED",
+    "store": { /* igual a order.completed */ },
+    "client": { /* ... */ },
+    "payments": { /* ... */ },
+    "orderLines": [ /* ... */ ],
+    "fulfillment": { /* ... */ },
+    "device": { /* ... */ },
+    "channel": { /* ... */ },
+    "operator": { /* ... */ },
+    "kds": { /* ... */ },
+    "marketing": null,
+    "metadata": {},
+
+    "cancellation": {
+      "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
+      "cancelledAt": "2026-05-05T23:06:08.883Z",
+      "cancelledBy": "00000000-0000-0000-0000-000000000000",
+      "cancellationReason": "Cliente solicitou cancelamento",
+      "cancellationSource": "backoffice",
+      "metadata": {
+        "fiscal": {
+          "serie": null,
+          "numero": "1000013",
+          "pdfUrl":   "https://api.fiscal-provider.example/nfce/<docId>/pdf",
+          "xmlUrl":   "https://api.fiscal-provider.example/nfce/<docId>/xml",
+          "protocolo": "141200000956123",
+          "docSubtype": "nfce",
+          "chaveAcesso": "41201008187168000160558050010000131609769080",
+          "providerDocId": "69fa77aa2a48c20329be4604",
+          "dataAutorizacao": "2026-05-05T23:05:15.590Z",
+
+          "sefazCancellation": {
+            "date": "2026-05-05T23:08:30.000Z",
+            "cStat": "135",
+            "protocolo": "141201234567890",
+            "xmlUrl": "https://api.fiscal-provider.example/nfce/<docId>/cancelamento/xml",
+            "justificativa": "Cancelamento por solicitação do cliente — pedido não retirado"
+          }
+        }
+      }
+    }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "attempt": "1" }
+}
+```
+
+## Referência de `data.cancellation.metadata.fiscal.sefazCancellation`
+
+Este é o único bloco que é único de `fiscal.cancelled.br`. Cada outro campo é compartilhado com [`order.cancelled`](/pt/events/order-cancelled) — veja essa página para os campos de auditoria de cancelamento.
+
+<ResponseField name="sefazCancellation" type="object">
+  Confirmação SEFAZ do cancelamento. Presente apenas após a SEFAZ ter carimbado o protocolo de cancelamento.
+
+  <Expandable title="sefazCancellation">
+    <ResponseField name="date" type="string | null">
+      Timestamp ISO 8601 UTC de quando a SEFAZ carimbou o cancelamento. Pode ser `null` para flows sandbox que não propagam o timestamp.
+    </ResponseField>
+    <ResponseField name="cStat" type="string | null">
+      Código de status raw SEFAZ para o evento de cancelamento. `135` é o código canônico "cancelamento aceito" para NFC-e/NF-e. Pode ser `null` quando o provedor não o expõe.
+    </ResponseField>
+    <ResponseField name="protocolo" type="string | null">
+      Número de protocolo de cancelamento SEFAZ — distinto do protocolo de autorização original. Necessário para qualquer referência de auditoria ao cancelamento.
+    </ResponseField>
+    <ResponseField name="xmlUrl" type="string">
+      URL para baixar o XML canônico SEFAZ do evento de cancelamento (o XML "cancelamento", separado do XML de autorização).
+    </ResponseField>
+    <ResponseField name="justificativa" type="string | null">
+      Texto de razão enviado à SEFAZ. Deve ter pelo menos 15 caracteres por regras SEFAZ. Pode ser `null` apenas para flows sandbox.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Lifecycle
+
+```mermaid
+flowchart LR
+    A([pedido pago]) --> B([order.completed])
+    B --> C([fiscal.authorized.br])
+    C --> D([usuário cancela])
+    D --> E([order.cancelled])
+    E --> F([Fire pede cancelamento SEFAZ<br/>via seu provedor fiscal])
+    F --> G([fiscal.cancelled.br])
+```
+
+Para um pedido brasileiro fiscal-enabled, espere os quatro eventos acima. Para pedidos brasileiros **sem** autorização fiscal (porque o pedido foi cancelado antes da emissão fiscal, ou o fiscal estava desabilitado), apenas `order.cancelled` dispara — não `fiscal.cancelled.br`.
+
+## Handler de exemplo
+
+```js
+async function onFiscalCancelled(data) {
+  const { orderId, cancellation } = data;
+  const fiscal = cancellation.metadata?.fiscal;
+  const sefaz = fiscal?.sefazCancellation;
+
+  if (!sefaz) {
+    // Defensivo: o evento implica que sefazCancellation está presente,
+    // mas seu handler não deveria crashear se o seu provedor fiscal algum dia
+    // enviar um formato null.
+    return;
+  }
+
+  // 1. Atualize o registro do doc fiscal com a confirmação SEFAZ
+  await db.fiscalDocs.update({
+    where: { providerDocId: fiscal.providerDocId },
+    data: {
+      status: "cancelled",
+      cancellationProtocolo: sefaz.protocolo,
+      cancelledAtSefaz: sefaz.date ? new Date(sefaz.date) : null,
+      cancellationXmlUrl: sefaz.xmlUrl,
+    },
+  });
+
+  // 2. Arquive o XML de cancelamento (legalmente exigido em BR)
+  if (sefaz.xmlUrl) {
+    const xml = await fetch(sefaz.xmlUrl).then(r => r.text());
+    await archive.put(`xml-cancel/${fiscal.providerDocId}.xml`, xml);
+  }
+
+  // 3. Feche o ticket de reconciliação aberto pelo order.cancelled
+  await reconciliation.close(orderId);
+}
+```
+
+## Erros comuns
+
+- **Não processe `fiscal.cancelled.br` sem `order.cancelled` primeiro.** Eles disparam em ordem em fluxo normal, mas entrega fora de ordem é possível. Se você receber `fiscal.cancelled.br` para um `orderId` que não tem como cancelado registrado, logue e crie o registro a partir do bloco `cancellation` deste evento — não jogue o evento fora.
+- **`sefazCancellation.date` e `cStat` podem ser `null` em sandbox.** Não faça com que a production-readiness dependa de eles estarem presentes em ambientes dev.
+- **A URL do XML de cancelamento é distinta do XML do documento original.** Garanta que sua lógica de arquivamento salve ambos — você precisará deles para auditoria.
+- **Mesmo `cancellation.cancellationId` que `order.cancelled`.** Ambos os eventos para o mesmo cancelamento compartilham o cancellation ID — útil como chave de join ao correlacionar os dois eventos no seu sistema.
+- **Não há evento para cancelamento SEFAZ falho.** Se a SEFAZ rejeita a solicitação de cancelamento, nenhum evento dispara. Monitore o log de execuções do dashboard para esses casos.
+
+## Eventos relacionados
+
+<CardGroup cols={2}>
+  <Card title="order.cancelled" icon="ban" href="/pt/events/order-cancelled">
+    Dispara antes deste evento — o cancelamento em si.
+  </Card>
+  <Card title="fiscal.authorized.br" icon="file-invoice" href="/pt/events/fiscal-authorized-br">
+    O evento anterior que estabeleceu o documento fiscal sendo cancelado aqui.
+  </Card>
+</CardGroup>

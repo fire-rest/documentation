@@ -1,60 +1,110 @@
 ---
 title: "Quickstart"
-description: "Get your Fire integration running end to end."
+description: "Get your Fire integration running end to end — receive events and inject orders."
 ---
 
-This guide walks you through the minimum steps to have a working integration with Fire: receiving publication events and injecting orders.
+This guide walks you through the minimum steps to have a working integration with Fire: receiving order events through an Integration Flow and injecting orders via the REST API.
 
 ## Prerequisites
 
-- API credentials from the Fire dashboard
+- API credentials from the Fire dashboard (see [Authentication](/en/authentication))
 - A publicly accessible HTTPS endpoint on your side
+- Dashboard access to **Settings → Integration Flows**
 
-## Step 1: Register your webhook endpoint
+## Step 1: Configure an Integration Flow
 
-In the Fire dashboard, go to **Settings → Endpoints** and add your URL.
+In the Fire dashboard, go to **Settings → Integration Flows → New flow**, then:
 
-Fire will send all events (store, menu, product updates and order status changes) to this URL via HTTP POST.
+- **Trigger:** pick `order.completed`
+- **Scope:** account, vendor, and optionally specific stores
+- **HTTP node:** add one and set
+  - Method: `POST`
+  - URL: your HTTPS endpoint
+  - Headers: `Content-Type: application/json` (plus any auth header — Bearer token / API key)
+  - Body: paste the canonical example template the dashboard ships with (it produces `{ event, data, _meta }`)
+- **Activate** the flow
+
+For a 10-minute walkthrough with screenshots-style detail, see [Handle order events](/en/guides/handle-order-events).
 
 <Tip>
-  During development you can use a tool like [ngrok](https://ngrok.com) to expose a local server to the internet.
+  During development you can use a tool like [ngrok](https://ngrok.com) to expose a local server to the internet. Paste the ngrok HTTPS URL into the flow's HTTP node URL.
 </Tip>
 
 ## Step 2: Fetch your sales channels
 
-If your integration publishes menus to aggregators or injects orders, you need to map Fire channel IDs to your aggregator identifiers.
+If your integration injects orders, you need to map Fire channel IDs to your aggregator identifiers.
 
 ```http
 GET /v1/sales-channels
 Authorization: Bearer <your_api_key>
 ```
 
-Store the channel list and use it to resolve the correct channel when handling events and orders.
+Cache the channel list and use it to resolve the correct channel when injecting orders.
 
 See [Sales channels](/en/configuration/sales-channels) for the full mapping guide.
 
-## Step 3: Handle publication events
+## Step 3: Handle the event
 
-Your endpoint will receive `POST` requests from Fire when a store, menu, or product needs to be published.
+Your endpoint will receive `POST` requests from your flow whenever an order is completed. The body shape is the one your flow's body template renders. With the canonical template, that's:
 
 ```json
 {
-  "event": "menu.updated",
+  "event": {
+    "id": "0d6e8a1c-1e7a-4b4f-8a3a-74ab0e9a9b21",
+    "type": "order.completed",
+    "createdAt": "2026-05-06T01:22:59.902Z"
+  },
   "data": {
-    "store_id": "store_abc123",
-    "channels": ["channel_uber", "channel_rappi"],
-    "menu": { }
-  }
+    "orderId": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
+    "orderCode": "OC-br-001",
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "store": { /* ... */ },
+    "client": { /* ... */ },
+    "payments": { /* ... */ },
+    "orderLines": [ /* ... */ ],
+    "fulfillment": { /* ... */ }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "attempt": "1" }
 }
 ```
 
-Act on each event however your system needs to — publish to aggregators, sync a billing system or ERP, trigger a workflow, etc. The payload contains everything you need.
+A minimal handler:
 
-See the [Webhook reference](/en/webhook-reference/overview) for the full list of events and payload schemas.
+```js
+import express from "express";
+
+const app = express();
+const seen = new Map(); // swap for Redis/DB in production
+
+app.post("/fire/events", express.json(), async (req, res) => {
+  const { event, data } = req.body ?? {};
+  if (!event?.id) return res.status(400).end();
+
+  // 1. Acknowledge fast (Fire times out at 30s)
+  res.status(200).end();
+
+  // 2. Deduplicate by event.id
+  if (seen.has(event.id)) return;
+  seen.set(event.id, Date.now());
+
+  // 3. Dispatch by type
+  switch (event.type) {
+    case "order.completed":      return onOrderCompleted(data);
+    case "order.cancelled":      return onOrderCancelled(data);
+    case "fiscal.authorized.br": return onFiscalAuthorized(data);
+    case "fiscal.cancelled.br":  return onFiscalCancelled(data);
+  }
+});
+
+app.listen(8080);
+```
+
+See [`order.completed`](/en/events/order-completed) for the field-by-field payload reference.
 
 ## Step 4: Inject orders
 
-When your system receives an order (from an aggregator or any other source), inject it into Fire using the Orders API.
+When your system receives an order (from an aggregator or any other source), inject it into Fire.
 
 ```http
 POST /v1/orders
@@ -62,33 +112,33 @@ Authorization: Bearer <your_api_key>
 Content-Type: application/json
 
 {
-  "channel_id": "channel_uber",
-  "external_order_id": "uber_order_xyz",
-  ...
+  "channelId": "channel_uber",
+  "externalOrderId": "uber_order_xyz",
+  "...": "see the full reference"
 }
 ```
 
-See [Order injection](/en/guides/order-injection) for the complete payload reference.
+Once the order reaches `status=COMPLETED` and `paymentStatus=SUCCEEDED`, your flow fires and your handler runs. If the order is later cancelled, you'll receive `order.cancelled`.
 
-## Step 5: Handle order status updates
+See [Inject order](/en/api-reference/orders) for the complete payload reference.
 
-Fire will send `order.status_changed` events to your endpoint as the order progresses. Use them to keep your downstream systems in sync.
+## Step 5: Add fiscal events (Brazil only)
 
-See [Order status notifications](/en/guides/order-status) for details.
+If you operate in Brazil and have fiscal emission enabled for a store, add a second flow with trigger `fiscal.authorized.br` (and another with `fiscal.cancelled.br`) — same HTTPS endpoint, same template — to receive the fiscal document context.
 
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Webhook setup" icon="webhook" href="/en/configuration/webhook-setup">
-    Configure your endpoint and credentials in detail.
+  <Card title="Handle order events" icon="bolt" href="/en/guides/handle-order-events">
+    Detailed walkthrough with auth and idempotency.
   </Card>
-  <Card title="Sales channels" icon="map" href="/en/configuration/sales-channels">
-    Map Fire channel IDs to your aggregator IDs.
+  <Card title="Events overview" icon="bell" href="/en/events/overview">
+    Envelope, headers, retries, dedup.
   </Card>
-  <Card title="Webhook reference" icon="book" href="/en/webhook-reference/overview">
-    Full payload schemas for every event.
+  <Card title="order.completed reference" icon="receipt" href="/en/events/order-completed">
+    Full payload schema with the BR fiscal blocks.
   </Card>
   <Card title="API reference" icon="code" href="/en/api-reference/introduction">
-    Complete API documentation.
+    Inject orders and query sales channels.
   </Card>
 </CardGroup>

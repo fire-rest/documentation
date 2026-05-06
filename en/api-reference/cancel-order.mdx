@@ -1,0 +1,166 @@
+---
+title: "Cancel order"
+api: "POST https://api.fire.rest/v1/orders/{orderId}/cancel"
+description: "Cancel a previously injected order. Idempotent on subsequent calls; triggers the `order.cancelled` event to your Integration Flows once the order transitions to CANCELLED."
+authMethod: "bearer"
+---
+
+Cancels an order that was previously injected via [`POST /v1/orders`](/en/api-reference/orders). Fire transitions the order's status to `CANCELLED`, records audit metadata (who, when, why), and triggers the [`order.cancelled`](/en/events/order-cancelled) event to your Integration Flows.
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `orders:write` scope.
+</ParamField>
+
+## Path parameters
+
+<ParamField path="orderId" type="string" required>
+  Fire's internal order UUID — same value as `data.orderId` in the [`order.completed`](/en/events/order-completed) event for this order. **Not** the `externalOrderId` you used at injection.
+</ParamField>
+
+## Request body
+
+<ParamField body="reason" type="string" required>
+  Free-text reason for the cancellation. Minimum 5 characters, maximum 500. Recorded in `cancellation.cancellationReason` of the resulting `order.cancelled` event payload.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/v1/orders/21ec1f6c-c301-4528-b999-7836c1d21c6c/cancel
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "reason": "Customer requested cancellation — duplicate order"
+}
+```
+</RequestExample>
+
+## Response
+
+<ResponseField name="id" type="string">
+  Fire's internal order UUID — matches the `orderId` you cancelled.
+</ResponseField>
+
+<ResponseField name="cancellationId" type="string">
+  UUID of the cancellation audit record. Stable across retries; matches `cancellation.cancellationId` in the resulting `order.cancelled` event.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Always `"CANCELLED"` on a successful response.
+</ResponseField>
+
+<ResponseField name="cancelledAt" type="string">
+  ISO 8601 UTC timestamp of when the cancellation was recorded.
+</ResponseField>
+
+<ResponseField name="cancelledBy" type="string">
+  Identifier of the principal that performed the cancellation. For API-key callers, this is `"api-key:<keyId>"`.
+</ResponseField>
+
+<ResponseField name="cancellationReason" type="string">
+  Echo of the `reason` you sent in the request body.
+</ResponseField>
+
+<ResponseField name="cancellationSource" type="string">
+  Always `"adapter"` for cancellations made through this endpoint. (Other sources are `"backoffice"` for dashboard cancellations and `"api"` for direct internal calls.)
+</ResponseField>
+
+<ResponseField name="cancelledFlowsCount" type="number">
+  Number of in-flight Integration Flow executions that were cancelled as part of this operation. Pending flows for the order are aborted before the new `order.cancelled` event fires, so you don't get conflicting deliveries.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "id": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
+  "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
+  "status": "CANCELLED",
+  "cancelledAt": "2026-05-06T16:32:00.000Z",
+  "cancelledBy": "api-key:k_ab12cd34",
+  "cancellationReason": "Customer requested cancellation — duplicate order",
+  "cancellationSource": "adapter",
+  "cancelledFlowsCount": 2
+}
+```
+
+```json 400 — validation error
+{
+  "error": {
+    "code": "validation_error",
+    "message": "reason must be between 5 and 500 characters"
+  }
+}
+```
+
+```json 401 — missing or invalid API key
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key"
+  }
+}
+```
+
+```json 403 — wrong scope
+{
+  "error": {
+    "code": "forbidden",
+    "message": "API key is missing the orders:write scope"
+  }
+}
+```
+
+```json 404 — order not found
+{
+  "error": {
+    "code": "not_found",
+    "message": "Order 21ec1f6c-c301-4528-b999-7836c1d21c6c was not found"
+  }
+}
+```
+
+```json 409 — invalid state
+{
+  "error": {
+    "code": "conflict",
+    "message": "Order cannot be cancelled — current status is CANCELLED"
+  }
+}
+```
+</ResponseExample>
+
+## Cancellation rules
+
+The order must be in a state that allows cancellation. Fire returns `409 Conflict` when:
+
+- The order's status is not `OPEN` or `COMPLETED` (e.g. it was already cancelled).
+- The fiscal status is `processing`, `error`, `cancelling`, or `cancelled` — there is an in-flight or terminal fiscal transition that prevents safe cancellation.
+- The order's business day is closed and the order belongs to a previous business day.
+
+For Brazilian fiscal-enabled orders that had been authorized at SEFAZ, this endpoint **starts** the cancellation: `order.cancelled` fires immediately, and a separate [`fiscal.cancelled.br`](/en/events/fiscal-cancelled-br) event fires later when SEFAZ confirms the cancellation. See the [order cancellation lifecycle](/en/events/order-cancelled#lifecycle-relative-to-other-events).
+
+## What happens after a successful call
+
+1. **Order status** transitions to `CANCELLED` and the cancellation audit row is written.
+2. **Pending flows for this order are aborted** — `cancelledFlowsCount` reflects how many.
+3. **`order.cancelled` event is dispatched** — your Integration Flows receive the event with the V4 order snapshot plus the `cancellation` block.
+4. **For BR fiscal-enabled orders**: a downstream cancellation request is queued at the fiscal authority. When SEFAZ confirms, `fiscal.cancelled.br` fires.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Inject order" icon="paper-plane" href="/en/api-reference/orders">
+    The endpoint that created the order this one cancels.
+  </Card>
+  <Card title="order.cancelled event" icon="ban" href="/en/events/order-cancelled">
+    The outbound event your Integration Flows receive after a successful cancel.
+  </Card>
+  <Card title="fiscal.cancelled.br event" icon="file-circle-xmark" href="/en/events/fiscal-cancelled-br">
+    Brazil only — fires later when SEFAZ confirms.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/en/authentication">
+    How API keys, scopes, and vendor binding work.
+  </Card>
+</CardGroup>

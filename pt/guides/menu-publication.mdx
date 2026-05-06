@@ -1,0 +1,83 @@
+---
+title: "Publicação de cardápios"
+description: "Trate os eventos de cardápio do Fire: atualizações e sincronizações em massa."
+---
+
+Um cardápio no Fire é a definição completa do catálogo para uma combinação específica de loja e canal — categorias, produtos, grupos de modificadores e horários. O Fire emite dois tipos de eventos de cardápio:
+
+| Evento | Quando |
+|---|---|
+| [`menu.updated`](/pt/webhook-reference/menu-updated) | Um único cardápio mudou — também sinaliza remoção via payload vazio |
+| [`menus.sync`](/pt/webhook-reference/menus-sync) | Sincronização em massa — onboarding ou mudanças que afetam várias lojas |
+
+## menu.updated
+
+Emitido sempre que um cardápio muda. O payload é uma definição completa do cardápio — categorias, produtos, grupos de modificadores e horários programados — pronta para encaminhar downstream.
+
+```
+Fire emite menu.updated → Seu sistema recebe o evento → Seu sistema atualiza downstream
+```
+
+```json
+{
+  "event": "menu.updated",
+  "id": "evt_def456",
+  "created_at": "2025-01-15T14:31:00Z",
+  "data": {
+    "list": { ... },
+    "categories": [ ... ],
+    "products": [ ... ],
+    "modifierGroups": [ ... ],
+    "scheduledActivities": [ ... ]
+  }
+}
+```
+
+O objeto `data` é autocontido e está pronto para ser encaminhado downstream. Veja [`menu.updated`](/pt/webhook-reference/menu-updated) para o esquema completo.
+
+<Steps>
+  <Step title="Verifique a assinatura">
+    Valide `X-Fire-Signature`. Veja [Autenticação](/pt/authentication).
+  </Step>
+  <Step title="Confirme imediatamente">
+    Retorne `200 OK` antes de qualquer trabalho.
+  </Step>
+  <Step title="Atualize downstream">
+    Passe `data` para seu sistema downstream, identificado por `list.storeId` e `list.channelId`.
+  </Step>
+</Steps>
+
+<Warning>
+  O payload é um **cardápio completo** — não um diff. Substitua o cardápio inteiro no sistema downstream.
+</Warning>
+
+### Remover um cardápio externamente
+
+O Fire não tem um evento explícito de exclusão de cardápio. Quando um cardápio precisa ser removido de um sistema downstream, o Fire envia um evento `menu.updated` com `categories`, `products`, `modifierGroups` e `scheduledActivities` como arrays vazios. Trate um cardápio vazio como um sinal para desativá-lo ou removê-lo externamente.
+
+## menus.sync
+
+Emitido quando o Fire precisa propagar cardápios para várias lojas de uma vez. O Fire divide lotes grandes automaticamente (até 50 cardápios por evento) e os emite sequencialmente. Cada evento do lote contém um array `menus` com a mesma estrutura de `menu.updated`.
+
+```
+Fire emite menus.sync (lote 1 de N) → Seu sistema processa o lote → repita até batchIndex = batchTotal
+```
+
+```json
+{
+  "event": "menus.sync",
+  "id": "evt_def458",
+  "created_at": "2025-01-15T15:15:00Z",
+  "data": {
+    "batchIndex": 1,
+    "batchTotal": 4,
+    "menus": [ ... ]
+  }
+}
+```
+
+Processe cada lote de forma independente. Itere `menus` e aplique cada um ao sistema downstream identificado por `list.storeId` e `list.channelId`. Cada lote é reenviado de forma independente em caso de falha. Veja [`menus.sync`](/pt/webhook-reference/menus-sync) para o esquema completo.
+
+## Idempotência
+
+Você pode receber o mesmo evento mais de uma vez devido a retentativas. Como cada payload é uma substituição completa, aplicá-lo duas vezes produz o mesmo resultado.

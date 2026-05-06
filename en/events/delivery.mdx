@@ -1,0 +1,184 @@
+---
+title: "Delivery & retries"
+description: "How Fire delivers events to your endpoint — timeouts, retries, dead-letter, idempotency, and authentication."
+---
+
+Fire's event delivery is **at-least-once** with bounded retries. This page covers the operational guarantees you can rely on and the configuration knobs you have on each flow's HTTP node.
+
+## Default behavior
+
+Out of the box, with no retry configuration, an HTTP node makes **a single attempt** with these defaults:
+
+| Setting | Default |
+|---|---|
+| Method | `POST` |
+| Timeout per attempt | **30 seconds** |
+| Retries on failure | **disabled** (`retryOnFailure: false`) |
+| `Content-Type` | `application/json` (auto-injected when body is present) |
+| `Accept` | `application/json` (auto-injected) |
+
+If your endpoint times out, returns a non-`2xx`, or the network drops, the execution fails immediately and lands in the dead letter unless you've enabled retries.
+
+<Note>
+  Retries are **opt-in** at the flow level. Most production flows enable them. Set `retryOnFailure: true` and tune `retryCount` per flow.
+</Note>
+
+## Retry policy
+
+When retries are enabled, the HTTP node attempts the request up to `retryCount + 1` times in total, waiting between attempts with exponential backoff capped at 8 seconds.
+
+| Setting | Range | Default | Maximum |
+|---|---|---|---|
+| `retryCount` | 0–5 | 2 | 5 (so up to **6 attempts** total) |
+| Backoff | `min(1000 × 2^(attempt - 2), 8000)` ms | — | — |
+
+Concretely, with `retryCount: 5`:
+
+```
+attempt 1 → fails
+wait 1s
+attempt 2 → fails
+wait 2s
+attempt 3 → fails
+wait 4s
+attempt 4 → fails
+wait 8s
+attempt 5 → fails
+wait 8s
+attempt 6 → fails → dead letter
+```
+
+Total wall time ≤ 23 seconds plus the time spent on each attempt (each up to `timeout`).
+
+### What counts as a failure
+
+| Outcome | Retried? |
+|---|---|
+| Non-`2xx` response | Yes |
+| Timeout | Yes |
+| Network error / DNS failure | Yes |
+| Auth resolution error (e.g. OAuth2 token fetch failed) | No — fails immediately |
+| Blocked URL (request to internal-only host) | No — fails with `BLOCKED_URL` |
+
+### Idempotency on your side
+
+Because retries replay the same body, **your endpoint must be idempotent**. Use `event.id` (the flow execution UUID, generated once per execution and stable across retries) as your dedup key.
+
+```js
+const seen = new Map(); // Redis or DB in production
+
+if (seen.has(event.id)) return; // duplicate retry — already handled
+seen.set(event.id, Date.now());
+```
+
+A 24-hour TTL is enough — Fire never replays an event after the dead-letter threshold.
+
+## Dead letter
+
+When all retries are exhausted, the execution is moved to the `flow_dead_letter` table. Failed flows can be inspected and manually replayed from **Settings → Integration Flows → Executions → Dead letter**. Replays produce a new `event.id` (because they are a new flow execution); your idempotency dedup will not block them, which is what you want.
+
+## Ordering guarantees
+
+- **No ordering guarantee across orders.** Two `order.completed` events can arrive out of business order. Sort by `data.createdAt` if you need order.
+- **No ordering guarantee across event types for the same order.** `fiscal.authorized.br` may arrive before or after `order.completed` for the same `data.orderId`. Don't assume one precedes the other.
+- **Within a single flow execution, retries preserve identity.** The same `event.id` will arrive multiple times during retries; later retries do not change the body.
+
+## Authentication
+
+Configure the auth on the flow's HTTP node. Fire injects the credential into the request before sending.
+
+### Bearer token
+
+```json
+"auth": {
+  "type": "bearer",
+  "token": "{{secret.fire_webhook_token}}"
+}
+```
+
+The token is sent as `Authorization: Bearer <token>`. Use it for static secrets or short-lived JWTs you rotate periodically.
+
+### API key
+
+```json
+"auth": {
+  "type": "api_key",
+  "header": "x-api-key",
+  "value": "{{secret.fire_webhook_key}}"
+}
+```
+
+Sent as the configured header. Good for endpoints that already have an API key story.
+
+### OAuth2 client credentials
+
+```json
+"auth": {
+  "type": "oauth2_client_credentials",
+  "tokenUrl": "https://auth.your-service.example.com/oauth/token",
+  "clientId": "{{secret.client_id}}",
+  "clientSecret": "{{secret.client_secret}}",
+  "scope": "events:write"
+}
+```
+
+Fire fetches an access token, caches it in memory, and refreshes it on expiry. The fetched token is sent as `Authorization: Bearer <access_token>`.
+
+### None
+
+```json
+"auth": { "type": "none" }
+```
+
+No header is added. Only acceptable if your endpoint is otherwise protected (mTLS, VPC peering, IP allowlist).
+
+<Warning>
+  Fire does **not** currently sign outbound requests with HMAC. Anyone who knows your URL could spoof requests if you have no auth at all. Always configure at least a Bearer token or API key.
+</Warning>
+
+## URL safety
+
+Outside development environments, Fire blocks requests to internal/private IP ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, IPv6 link-local). Attempts to reach those hosts fail with `BLOCKED_URL` and are not retried.
+
+In dev environments (`NEXT_PUBLIC_ENVIRONMENT=dev` or `NODE_ENV=development`), this check is skipped so localhost/ngrok and similar can be used.
+
+## Observability
+
+Every execution writes a row visible in the dashboard at **Settings → Integration Flows → Executions**. Each row includes:
+
+- Trigger type, store, account, vendor
+- Execution start/end timestamps
+- Attempt count
+- Final status (success / failed / dead-letter)
+- Per-node summaries (HTTP request URL, response status, body excerpt, error message)
+
+For deeper investigation, every flow execution emits structured log entries to the platform's centralized log store; ask your Fire account team for access.
+
+## HMAC signing (roadmap)
+
+HMAC-SHA256 signing of outbound bodies is on the roadmap. When it ships:
+
+- A per-flow secret will be generated in the dashboard
+- Outbound requests will carry an `X-Fire-Signature` header with the body's HMAC
+- This page will document the algorithm and verification steps
+
+Until then, treat your auth credential as the origin proof.
+
+## Common patterns
+
+- **Always enable retries on production flows.** A single timeout shouldn't drop an event.
+- **Cap retries at 3 unless you have a long-tail flaky downstream.** More retries means longer dead-letter latency.
+- **Use `event.id` for idempotency, not `data.orderId`.** A retried delivery has the same `event.id` but `data.orderId` is the same across the entire order lifecycle (completed, cancelled, fiscal authorized, fiscal cancelled all share it).
+- **Store `_meta.executionId` and `_meta.attempt` on persisted events** — they're invaluable for debugging "why did the same order get processed twice".
+- **Keep `timeout` short (5–10s) and acknowledge fast in your handler.** Use a queue to do real work in the background.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Events overview" icon="bell" href="/en/events/overview">
+    The event model in one page.
+  </Card>
+  <Card title="Integration Flows" icon="diagram-project" href="/en/events/integration-flows">
+    Flow definition, body templates, and matching rules.
+  </Card>
+</CardGroup>

@@ -1,0 +1,246 @@
+---
+title: "Fiscal print data"
+api: "GET https://api.fire.rest/v1/orders/{orderId}/fiscal-print"
+description: "Retrieve the printable fiscal data for an order — emitter, store, buyer, document references, and country-specific fields. Use it to render a receipt or invoice from the integration side."
+authMethod: "bearer"
+---
+
+Returns the consolidated fiscal context for a specific order — the data your point-of-sale or backoffice would render on a printed/digital receipt. It exposes:
+
+- **Emitter context** — legal entity, gov ID, store info, state registration
+- **Country-specific fiscal references** — chave de acesso, CUFE, clave de acceso, CAE, folio, etc., per country
+- **Buyer context** — recipient, with anonymous/final-consumer flagging
+- **Order summary** — code, status, business day
+
+This endpoint is read-only. Side effect-free.
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `orders:read` scope. Vendor-scoped: the API key must belong to the same vendor that owns the store/order.
+</ParamField>
+
+## Path parameters
+
+<ParamField path="orderId" type="string" required>
+  Fire's internal order UUID. Matches `data.orderId` in the [`order.completed`](/en/events/order-completed) event for this order.
+</ParamField>
+
+## Query parameters
+
+<ParamField query="vendorId" type="string" required>
+  Vendor identifier. Used as an ownership guard — Fire returns `404` if the order does not belong to this vendor under your API key's account.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://api.fire.rest/v1/orders/21ec1f6c-c301-4528-b999-7836c1d21c6c/fiscal-print?vendorId=v_blueco_br
+x-api-key: <your_api_key>
+Accept: application/json
+```
+</RequestExample>
+
+## Response
+
+<ResponseField name="fiscal" type="object">
+  Common fiscal references for the document, regardless of country.
+
+  <Expandable title="fiscal">
+    <ResponseField name="countryCode" type="string">
+      ISO 3166-1 alpha-2 country code: `BR`, `CO`, `EC`, `CL`, `AR`, `VE`.
+    </ResponseField>
+    <ResponseField name="documentType" type="string">
+      Country-specific document type — e.g. `nfce`, `nfe`, `factura_electronica`, `dte`, `factura_a`.
+    </ResponseField>
+    <ResponseField name="documentNumber" type="string | null">
+      Sequential document number assigned by the fiscal authority/provider.
+    </ResponseField>
+    <ResponseField name="authorizationProtocol" type="string | null">
+      Authorization protocol from the tax authority (SEFAZ for BR, DIAN for CO, SRI for EC, SII for CL, AFIP for AR, SENIAT for VE). `null` until the document is authorized.
+    </ResponseField>
+    <ResponseField name="authorizedAt" type="string | null">
+      ISO 8601 UTC timestamp of when the authority stamped the authorization.
+    </ResponseField>
+    <ResponseField name="pdfUrl" type="string | null">
+      URL to fetch the rendered PDF (DANFE for BR NF-e, DANFCE for BR NFC-e, equivalent country-specific renderings elsewhere). May be ephemeral in production — download and persist on receipt.
+    </ResponseField>
+    <ResponseField name="xmlUrl" type="string | null">
+      URL to fetch the canonical authority XML.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="countryData" type="object">
+  Country-specific document references. Shape varies by `fiscal.countryCode`. Examples:
+  - **BR**: `chaveAcesso` (44 digits), `serie`, `serialNumber`
+  - **CO**: `cufe`, `prefijo`, `numeroDian`
+  - **EC**: `claveAcceso` (49 digits), `numeroAutorizacion`, `ambiente`
+  - **CL**: `folio`, `ted`, `tipoDte`, `trackId`
+  - **AR**: `cae`, `fechaVtoCae`, `puntoVenta`, `numeroComprobante`, `tipoComprobante`
+  - **VE**: `numeroControl`, `numeroFactura`, `rifEmisor`
+</ResponseField>
+
+<ResponseField name="company" type="object | null">
+  Legal entity emitting the document.
+
+  <Expandable title="company">
+    <ResponseField name="legalName" type="string | null">Razón social / legal name.</ResponseField>
+    <ResponseField name="tradeName" type="string | null">Nombre fantasía / trade name.</ResponseField>
+    <ResponseField name="govIdType" type="string | null">`CNPJ` / `NIT` / `RUC` / `RUT` / `CUIT` / `RIF`.</ResponseField>
+    <ResponseField name="govIdNumber" type="string | null">Country-specific format.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="store" type="object | null">
+  Store-level info for the printed header.
+
+  <Expandable title="store">
+    <ResponseField name="name" type="string | null">Display name.</ResponseField>
+    <ResponseField name="code" type="string | null">Store code (e.g. `BR-SP-001`).</ResponseField>
+    <ResponseField name="govIdType" type="string | null">Same as company's, repeated for convenience.</ResponseField>
+    <ResponseField name="govIdNumber" type="string | null">Same as company's.</ResponseField>
+    <ResponseField name="stateRegistration" type="string | null">Inscrição Estadual (IE) for BR, equivalent in other countries.</ResponseField>
+    <ResponseField name="city" type="string | null">City.</ResponseField>
+    <ResponseField name="address" type="string | null">Street address.</ResponseField>
+    <ResponseField name="phone" type="string | null">Store phone.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="buyer" type="object">
+  Recipient of the document.
+
+  <Expandable title="buyer">
+    <ResponseField name="isFinalConsumer" type="boolean">
+      `true` for anonymous consumer (e.g. BR `CONSUMIDOR FINAL` placeholder). When `true`, `name`, `email`, `phone`, `address` are typically `null` and `govIdType` is `"FINAL_CONSUMER"` with `govIdNumber: null` (or a placeholder per country).
+    </ResponseField>
+    <ResponseField name="govIdType" type="string | null">Buyer's tax/government ID type (`CPF`, `CNPJ`, `RUT`, `DNI`, etc.).</ResponseField>
+    <ResponseField name="govIdNumber" type="string | null">Buyer's gov ID number.</ResponseField>
+    <ResponseField name="name" type="string | null">Buyer name. `null` for `isFinalConsumer: true`.</ResponseField>
+    <ResponseField name="email" type="string | null">Buyer email.</ResponseField>
+    <ResponseField name="phone" type="string | null">Buyer phone.</ResponseField>
+    <ResponseField name="address" type="string | null">Buyer address.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="order" type="object">
+  Minimal order context for cross-reference.
+
+  <Expandable title="order">
+    <ResponseField name="id" type="string">Same as `path.orderId`.</ResponseField>
+    <ResponseField name="orderCode" type="string | null">Short code (e.g. `OC-br-001`).</ResponseField>
+    <ResponseField name="status" type="string">`OPEN`, `COMPLETED`, or `CANCELLED`.</ResponseField>
+    <ResponseField name="isCancelled" type="boolean">Convenience flag for `status === "CANCELLED"`.</ResponseField>
+    <ResponseField name="businessDayDate" type="string | null">`YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="createdAt" type="string">ISO 8601 UTC.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200 — BR fiscal-enabled order
+{
+  "fiscal": {
+    "countryCode": "BR",
+    "documentType": "nfce",
+    "documentNumber": "1000013",
+    "authorizationProtocol": "141200000956123",
+    "authorizedAt": "2026-05-06T01:23:10.991Z",
+    "pdfUrl": "https://api.fiscal-provider.example/nfce/<docId>/pdf",
+    "xmlUrl": "https://api.fiscal-provider.example/nfce/<docId>/xml"
+  },
+  "countryData": {
+    "chaveAcesso": "41201008187168000160558050010000131609769080",
+    "serie": "1",
+    "serialNumber": 1
+  },
+  "company": {
+    "legalName": "Sandbox LTDA",
+    "tradeName": "Sandbox",
+    "govIdType": "CNPJ",
+    "govIdNumber": "00000000000000"
+  },
+  "store": {
+    "name": "Loja Centro - SP",
+    "code": "BR-SP-001",
+    "govIdType": "CNPJ",
+    "govIdNumber": "00000000000000",
+    "stateRegistration": "000000000000",
+    "city": "São Paulo",
+    "address": "Av. Paulista 1578, Bela Vista",
+    "phone": "1132094347"
+  },
+  "buyer": {
+    "isFinalConsumer": true,
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000",
+    "name": "CONSUMIDOR FINAL",
+    "email": null,
+    "phone": null,
+    "address": null
+  },
+  "order": {
+    "id": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
+    "orderCode": "OC-br-001",
+    "status": "COMPLETED",
+    "isCancelled": false,
+    "businessDayDate": "2026-05-06",
+    "createdAt": "2026-05-06T01:22:59.028Z"
+  }
+}
+```
+
+```json 400 — missing vendorId
+{
+  "error": {
+    "code": "validation_error",
+    "message": "vendorId query parameter is required"
+  }
+}
+```
+
+```json 401 — invalid API key
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key"
+  }
+}
+```
+
+```json 403 — wrong scope
+{
+  "error": {
+    "code": "forbidden",
+    "message": "API key is missing the orders:read scope"
+  }
+}
+```
+
+```json 404 — not found / does not belong to vendor
+{
+  "error": {
+    "code": "not_found",
+    "message": "Order not found"
+  }
+}
+```
+</ResponseExample>
+
+## Common patterns
+
+- **Render-time fetch.** Call this endpoint at print/render time and persist the response if you need durable artifacts — `pdfUrl` and `xmlUrl` may be signed URLs that expire.
+- **Final-consumer flag.** Always check `buyer.isFinalConsumer` before rendering buyer details. For anonymous consumers in BR, `govIdNumber` is `"00000000000"` and other buyer fields are `null`.
+- **Country-specific UI.** Use `fiscal.countryCode` to dispatch to the right rendering template — DANFCE for BR NFC-e, DIAN-style for CO, SRI for EC, etc.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="order.completed event" icon="receipt" href="/en/events/order-completed">
+    The full order snapshot — much richer than fiscal-print, used for non-print integrations.
+  </Card>
+  <Card title="fiscal.authorized.br event" icon="file-invoice" href="/en/events/fiscal-authorized-br">
+    Brazil only — fires when SEFAZ authorizes; carries the same fiscal references.
+  </Card>
+  <Card title="Fiscal callback" icon="webhook" href="/en/api-reference/fiscal-callback">
+    The inbound endpoint your fiscal provider uses to update fiscal state.
+  </Card>
+</CardGroup>

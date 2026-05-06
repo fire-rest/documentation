@@ -1,0 +1,184 @@
+---
+title: "Entrega e retentativas"
+description: "Como o Fire entrega eventos ao seu endpoint — timeouts, retentativas, dead-letter, idempotência e autenticação."
+---
+
+A entrega de eventos do Fire é **at-least-once** com retentativas limitadas. Esta página cobre as garantias operacionais nas quais você pode confiar e os botões de configuração que você tem no nó HTTP de cada flow.
+
+## Comportamento padrão
+
+Out of the box, sem configuração de retry, um nó HTTP faz **uma única tentativa** com estes padrões:
+
+| Setting | Default |
+|---|---|
+| Método | `POST` |
+| Timeout por tentativa | **30 segundos** |
+| Retentativas em falha | **desabilitadas** (`retryOnFailure: false`) |
+| `Content-Type` | `application/json` (auto-injetado quando há body) |
+| `Accept` | `application/json` (auto-injetado) |
+
+Se seu endpoint dá timeout, retorna um non-`2xx` ou a rede falha, a execução falha imediatamente e cai para o dead letter, a menos que você tenha habilitado retentativas.
+
+<Note>
+  Retentativas são **opt-in** a nível de flow. A maioria dos flows em produção habilita. Defina `retryOnFailure: true` e ajuste `retryCount` por flow.
+</Note>
+
+## Política de retentativas
+
+Quando retentativas estão habilitadas, o nó HTTP tenta a requisição até `retryCount + 1` vezes no total, esperando entre tentativas com backoff exponencial limitado a 8 segundos.
+
+| Setting | Range | Default | Máximo |
+|---|---|---|---|
+| `retryCount` | 0–5 | 2 | 5 (até **6 tentativas** total) |
+| Backoff | `min(1000 × 2^(attempt - 2), 8000)` ms | — | — |
+
+Concretamente, com `retryCount: 5`:
+
+```
+tentativa 1 → falha
+espera 1s
+tentativa 2 → falha
+espera 2s
+tentativa 3 → falha
+espera 4s
+tentativa 4 → falha
+espera 8s
+tentativa 5 → falha
+espera 8s
+tentativa 6 → falha → dead letter
+```
+
+Tempo total de parede ≤ 23 segundos mais o tempo gasto em cada tentativa (cada uma até `timeout`).
+
+### O que conta como falha
+
+| Resultado | Retried? |
+|---|---|
+| Resposta non-`2xx` | Sim |
+| Timeout | Sim |
+| Erro de rede / falha de DNS | Sim |
+| Erro de resolução de auth (ex.: fetch de token OAuth2 falhou) | Não — falha imediatamente |
+| URL bloqueada (requisição a host interno) | Não — falha com `BLOCKED_URL` |
+
+### Idempotência do seu lado
+
+Como retentativas repetem o mesmo body, **seu endpoint precisa ser idempotente**. Use `event.id` (o UUID de execução do flow, gerado uma vez por execução e estável através de retentativas) como chave de dedup.
+
+```js
+const seen = new Map(); // Redis ou DB em produção
+
+if (seen.has(event.id)) return; // duplicata de retry — já tratada
+seen.set(event.id, Date.now());
+```
+
+Um TTL de 24 horas é suficiente — o Fire nunca repete um evento depois do threshold de dead-letter.
+
+## Dead letter
+
+Quando todas as retentativas se esgotam, a execução é movida para a tabela `flow_dead_letter`. Flows falhos podem ser inspecionados e reprocessados manualmente em **Settings → Integration Flows → Executions → Dead letter**. Reprocessamentos produzem um novo `event.id` (porque são uma nova execução de flow); seu dedup de idempotência não os bloqueará, o que é o que você quer.
+
+## Garantias de ordem
+
+- **Sem garantia de ordem entre pedidos.** Dois eventos `order.completed` podem chegar fora da ordem de negócio. Ordene por `data.createdAt` se precisar de ordem.
+- **Sem garantia de ordem entre tipos de evento para o mesmo pedido.** `fiscal.authorized.br` pode chegar antes ou depois de `order.completed` para o mesmo `data.orderId`. Não assuma que um precede o outro.
+- **Dentro de uma única execução de flow, retentativas preservam identidade.** O mesmo `event.id` chega múltiplas vezes durante retentativas; retentativas posteriores não alteram o body.
+
+## Autenticação
+
+Configure a auth no nó HTTP do flow. O Fire injeta a credencial na requisição antes de enviar.
+
+### Bearer token
+
+```json
+"auth": {
+  "type": "bearer",
+  "token": "{{secret.fire_webhook_token}}"
+}
+```
+
+O token é enviado como `Authorization: Bearer <token>`. Use para secrets estáticos ou JWTs de vida curta que você rotaciona periodicamente.
+
+### API key
+
+```json
+"auth": {
+  "type": "api_key",
+  "header": "x-api-key",
+  "value": "{{secret.fire_webhook_key}}"
+}
+```
+
+Enviado como o header configurado. Bom para endpoints que já têm uma história de API key.
+
+### OAuth2 client credentials
+
+```json
+"auth": {
+  "type": "oauth2_client_credentials",
+  "tokenUrl": "https://auth.your-service.example.com/oauth/token",
+  "clientId": "{{secret.client_id}}",
+  "clientSecret": "{{secret.client_secret}}",
+  "scope": "events:write"
+}
+```
+
+O Fire busca um access token, cacheia em memória e refresca ao expirar. O token buscado é enviado como `Authorization: Bearer <access_token>`.
+
+### None
+
+```json
+"auth": { "type": "none" }
+```
+
+Nenhum header é adicionado. Só aceitável se seu endpoint estiver protegido de outra forma (mTLS, VPC peering, IP allowlist).
+
+<Warning>
+  O Fire **não** assina requisições de saída com HMAC hoje. Qualquer um que saiba sua URL poderia falsificar requisições se você não tiver auth nenhuma. Configure sempre ao menos um Bearer token ou API key.
+</Warning>
+
+## Segurança de URL
+
+Fora de ambientes de desenvolvimento, o Fire bloqueia requisições para faixas de IP internas/privadas (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, IPv6 link-local). Tentativas de chegar a esses hosts falham com `BLOCKED_URL` e não são retriadas.
+
+Em ambientes dev (`NEXT_PUBLIC_ENVIRONMENT=dev` ou `NODE_ENV=development`), essa checagem é pulada para que localhost/ngrok e similares possam ser usados.
+
+## Observabilidade
+
+Cada execução escreve uma linha visível no dashboard em **Settings → Integration Flows → Executions**. Cada linha inclui:
+
+- Trigger type, store, account, vendor
+- Timestamps de início/fim de execução
+- Quantidade de tentativas
+- Status final (success / failed / dead-letter)
+- Resumos por nó (URL da requisição HTTP, status de resposta, excerpt de body, mensagem de erro)
+
+Para investigação mais profunda, cada execução de flow emite entradas estruturadas de log para o store centralizado da plataforma; peça acesso ao seu time de conta Fire.
+
+## Assinatura HMAC (roadmap)
+
+A assinatura HMAC-SHA256 de bodies de saída está no roadmap. Quando sair:
+
+- Um secret por flow será gerado no dashboard
+- As requisições de saída carregarão um header `X-Fire-Signature` com o HMAC do body
+- Esta página documentará o algoritmo e os passos de verificação
+
+Até lá, trate sua credencial de auth como prova de origem.
+
+## Padrões comuns
+
+- **Sempre habilite retentativas em flows de produção.** Um único timeout não deveria derrubar um evento.
+- **Limite retentativas a 3 a menos que tenha um downstream flaky de cauda longa.** Mais retentativas significa mais latência até dead-letter.
+- **Use `event.id` para idempotência, não `data.orderId`.** Uma entrega retriada tem o mesmo `event.id`, mas `data.orderId` é o mesmo durante todo o lifecycle do pedido (completed, cancelled, fiscal authorized, fiscal cancelled todos compartilham).
+- **Salve `_meta.executionId` e `_meta.attempt` em eventos persistidos** — são inestimáveis para debugar "por que o mesmo pedido foi processado duas vezes".
+- **Mantenha `timeout` curto (5–10s) e confirme rápido no seu handler.** Use uma fila para fazer trabalho real em background.
+
+## Próximo
+
+<CardGroup cols={2}>
+  <Card title="Visão geral de eventos" icon="bell" href="/pt/events/overview">
+    O modelo de eventos em uma página.
+  </Card>
+  <Card title="Integration Flows" icon="diagram-project" href="/pt/events/integration-flows">
+    Definição do flow, body templates e regras de matching.
+  </Card>
+</CardGroup>

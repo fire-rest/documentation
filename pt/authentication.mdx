@@ -1,0 +1,120 @@
+---
+title: "Autenticação"
+description: "Como autenticar requisições à API do Fire e verificar os eventos webhook recebidos."
+---
+
+O Fire usa dois mecanismos de autenticação: um fluxo de login para obter um token Bearer para chamadas à API, e um mecanismo baseado em assinaturas para verificar os eventos webhook recebidos.
+
+## Autenticação da API
+
+Chamar a API do Fire exige duas credenciais em cada requisição:
+
+| Header | Valor |
+|---|---|
+| `x-api-key` | Sua API key do Fire |
+| `Authorization` | `Bearer <access_token>` |
+
+O `x-api-key` identifica sua integração. O token Bearer prova que sua sessão está autenticada. Você obtém o token chamando o endpoint de login.
+
+### Passo 1 — Obtenha um access token
+
+Chame [`POST /auth/login`](/pt/api-reference/login) com sua API key no header e suas credenciais no body:
+
+```http
+POST https://api.fire.rest/v1/auth/login
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "username": "<your_username>",
+  "password": "<your_password>"
+}
+```
+
+A resposta retorna um access token e seu tempo de vida:
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expiresIn": 3600
+}
+```
+
+### Passo 2 — Use o token em cada requisição
+
+Inclua ambos os headers em todas as chamadas subsequentes à API:
+
+```http
+POST https://api.fire.rest/v1/orders
+x-api-key: <your_api_key>
+Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json
+```
+
+<Note>
+  Os tokens expiram após `expiresIn` segundos. Re-autentique antes da expiração para evitar erros `401` em requisições em andamento.
+</Note>
+
+### Onde obter suas credenciais
+
+As API keys e credenciais de conta são gerenciadas pelo dashboard do Fire em **Settings → API Keys**. Entre em contato com a equipe da sua conta no Fire se não tiver acesso.
+
+## Verificação de assinatura de webhook
+
+Cada evento que o Fire envia é assinado para que seu sistema possa confirmar que realmente veio do Fire e não foi adulterado em trânsito.
+
+### Como funciona
+
+Quando você registra seu endpoint no dashboard do Fire, o Fire gera um **secret de webhook** — uma string aleatória que apenas você e o Fire conhecem. Ele nunca trafega em nenhuma requisição.
+
+Cada vez que o Fire envia um evento, usa esse secret para calcular uma assinatura do corpo da requisição e a anexa como header `X-Fire-Signature`. Seu sistema faz o mesmo cálculo sobre o body recebido e compara o resultado:
+
+```
+Fire:         secret + body  →  assinatura  →  envia no header X-Fire-Signature
+Seu sistema:  secret + body recebido  →  recalcula  →  compara
+```
+
+Se as assinaturas coincidirem, a requisição é autêntica. Se não, descarte-a.
+
+<Warning>
+  Sempre verifique a assinatura antes de processar um evento. Pular essa etapa expõe seu endpoint a requisições falsificadas por qualquer um que conheça sua URL.
+</Warning>
+
+### Configuração
+
+Quando você registrar seu endpoint de webhook no dashboard do Fire em **Settings → Endpoints**, o Fire exibirá o secret do webhook para esse endpoint. Copie-o e armazene-o de forma segura no seu sistema — você precisará dele para verificar cada requisição recebida.
+
+### Passos de verificação
+
+<Steps>
+  <Step title="Leia o header de assinatura">
+    Extraia o valor do header `X-Fire-Signature` da requisição recebida.
+  </Step>
+  <Step title="Recalcule a assinatura">
+    Usando seu secret de webhook, calcule HMAC-SHA256 do **body bruto** da requisição (antes de qualquer parse de JSON).
+  </Step>
+  <Step title="Compare">
+    Compare o valor calculado com o valor do header usando uma comparação de tempo constante. Se coincidirem, processe o evento. Se não, retorne `400` e descarte.
+  </Step>
+</Steps>
+
+```js
+const crypto = require("crypto");
+
+function verifySignature(rawBody, signature, secret) {
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(rawBody)
+    .digest("hex");
+  return crypto.timingSafeEqual(
+    Buffer.from(expected),
+    Buffer.from(signature)
+  );
+}
+```
+
+<Note>
+  Use os **bytes brutos do body** para o cálculo HMAC — não uma versão parseada ou re-serializada do JSON. Parsear e re-serializar pode alterar espaços ou a ordem das chaves e fazer com que assinaturas válidas falhem na verificação.
+</Note>
+
+{/* TODO: Confirm X-Fire-Signature format and algorithm with the Fire team */}
