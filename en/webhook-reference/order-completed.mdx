@@ -1,0 +1,796 @@
+---
+title: "order.completed"
+description: "Sent when an order is injected into Fire and its payment succeeds. The most common event — most integrations build their main flow around it."
+---
+
+Fire fires `order.completed` exactly once per order, the moment Fire records `status="COMPLETED"` and `paymentStatus="SUCCEEDED"`. The payload carries the full V4 Order Snapshot — store, customer, payments, line items, fulfillment — so your handler does not need to call back to Fire to enrich it.
+
+<Note>
+  Pending or failed payments **do not** fire this event. If you need to react to those states, subscribe to `order.status_changed` instead.
+</Note>
+
+## When it fires
+
+| Trigger | Fires `order.completed`? |
+|---|---|
+| `POST /v1/orders` succeeds with `status="COMPLETED"` and `paymentStatus="SUCCEEDED"` | ✅ Yes |
+| Order is injected with `paymentStatus="PENDING"` | ❌ No |
+| Order is later updated to `COMPLETED` after starting as `PENDING` | ✅ Yes (fires on the transition) |
+| Order is cancelled before completion | ❌ No (fires `order.cancelled` instead) |
+
+## Envelope
+
+```json
+{
+  "event": {
+    "id":        "evt_2167a211e7574185abb459474e275019",
+    "type":      "order.completed",
+    "createdAt": "2025-01-15T14:30:00.000Z"
+  },
+  "data": {
+    /* V4 Order Snapshot — see "Data fields" below */
+  }
+}
+```
+
+See [Events](/en/concepts/events) for the envelope contract that wraps every event.
+
+## Data fields
+
+The `data` block is the **V4 Order Snapshot** — a frozen view of the order at the moment of completion.
+
+### Top-level
+
+| Field | Type | Description |
+|---|---|---|
+| `orderId` | string | Fire's internal UUID for the order. Stable across retries and across all events for this order. |
+| `orderCode` | string | Human-readable POS code, e.g. `OC-br-k082-1777566201724`. Empty string when the source did not provide one. |
+| `businessDayDate` | string | Business day in `YYYY-MM-DD`. May differ from the calendar date when the store closes after midnight. |
+| `externalOrderId` | string | The order ID assigned by your system when you injected the order. |
+| `redeemPoints` | boolean | `true` if the order included a loyalty point redemption. |
+| `accumulatePoints` | boolean | `true` if the order accumulates loyalty points. |
+| `discount` | boolean | `true` if a discount was applied to the order. |
+| `createdAt` | string \| null | ISO 8601 UTC — when the order was created at the source POS. |
+| `orderComment` | string | Free-form comment from the customer. Empty string when none. |
+| `paymentStatus` | string | Always `SUCCEEDED` for this event. |
+| `status` | string | Always `COMPLETED` for this event. |
+| `metadata` | object | Reserved for future extensions. Always `{}` today. |
+
+### `marketing`
+
+Loyalty and coupon block. `null` when XMART captured no marketing activity.
+
+<Expandable title="marketing properties">
+
+| Field | Type | Description |
+|---|---|---|
+| `loyalty` | object \| null | Sub-block for points. |
+| `loyalty.accumulation` | object | Points the order accumulates: `{ storeCost, marketingCost, totalPoints }` (decimals × 10000). |
+| `loyalty.redemption` | object | Points redeemed by the customer. Same shape as `accumulation`. |
+| `loyalty.accountBalancePoints` | string | Customer's remaining balance after the order. |
+| `coupons` | array | Coupons applied. `[]` when none. Each item: `{ rewardId, name, metadata }`. |
+
+</Expandable>
+
+### `store`
+
+Snapshot of the store at the moment of the order.
+
+<Expandable title="store properties">
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string | Fire's internal `stores.id`. |
+| `externalId` | string | External (legacy) ID. |
+| `code` | string | Store code, e.g. `BR-SP-001`. |
+| `name` | string | Commercial name. |
+| `phone` | string | Phone number. |
+| `address` | string | Physical address. |
+| `locationInfo` | object | Geographic data. See below. |
+| `vendor` | object | Brand / operating company. See below. |
+| `account` | object | Commercial account. See below. |
+| `storeFiscalConfig` | object \| null | Fiscal configuration. See below. |
+
+**`store.locationInfo`**
+
+| Field | Type | Description |
+|---|---|---|
+| `city` | object | `{ uid, code, name }` |
+| `country` | object | `{ uid, code, name }` — `code` is ISO 3166-1 alpha-2. |
+| `location` | object | `{ lat, lon }` — both decimal strings. |
+| `timezone` | string | IANA timezone, e.g. `America/Sao_Paulo`. |
+| `currencyCode` | string | ISO 4217, e.g. `BRL`, `USD`, `COP`. |
+
+**`store.vendor`**
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string | Vendor ID (dotted text format, e.g. `100.2.1`). |
+| `name` | string | Vendor name. |
+| `description` | string | Description. |
+| `loyaltyPlan` | boolean | `true` if the vendor has an active loyalty program. |
+
+**`store.account`**
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string | `accounts.account_id` (TEXT slug, not UUID). |
+| `name` | string | Account name. |
+| `description` | string | Account description. |
+
+**`store.storeFiscalConfig`** (Brazil-specific shown; null in other countries unless fiscal is enabled)
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | `true` if fiscal emission is enabled. |
+| `company` | object \| null | Emitter snapshot: `{ govIdType, govIdNumber, legalName, tradeName }`. |
+| `govIdType` | string | Tax ID type. For BR: `CNPJ`. |
+| `govIdNumber` | string | Store's tax ID number. |
+| `secondaryGovIdType` | string \| null | Secondary doc. For BR: `INSCRICAO_ESTADUAL`. |
+| `secondaryGovIdNumber` | string \| null | Secondary doc number. |
+| `metadata` | object | `{ storeCode3S, serialNumber, neverstop }` (BR-only). |
+
+</Expandable>
+
+### `device`, `channel`, `operator`
+
+<Expandable title="device, channel, operator properties">
+
+**`device`** — Hardware where the order was processed.
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string \| null | UUID of the registered device. Falls back to `stationId` if the source didn't send `device.uid`. |
+| `name` | string | `KIOSK`, `POS`, `TABLET`, etc. |
+| `platform` | string | `android`, `ios`, `windows`, `linux`. |
+| `metadata` | object | `{ ip: "10.32.43.194" }` |
+
+**`channel`** — Sales channel through which the order entered.
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string \| null | Fire's internal channel UUID. |
+| `code` | string | `KIOSK`, `COUNTER`, `MOBILE_APP`, `WEB`, `IFOOD`, `RAPPI`, etc. |
+| `metadata` | object | Empty `{}` by default. |
+
+**`operator`** — Cashier / employee who processed the order.
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string \| null | Operator ID. |
+| `name` | string \| null | Full name. |
+| `session` | object | `{ uid }` — POS session ID. |
+
+</Expandable>
+
+### `client`
+
+The customer.
+
+<Expandable title="client properties">
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string | Internal customer ID. For anonymous KIOSK/COUNTER/POS orders this uid is "burnt-in". |
+| `name` | string | First name. |
+| `email` | string | Email. |
+| `phone` | string | Phone. |
+| `lastName` | string | Last name. |
+| `govIdType` | string | `FINAL_CONSUMER`, `CPF`, `CNPJ`, `CC`, `NIT`, `RUC`. |
+| `externalId` | string \| null | Customer ID in your external system. |
+| `govIdNumber` | string | Empty for `FINAL_CONSUMER`. CPF (11 digits) or CNPJ (14 digits) when applicable. |
+| `metadata` | object | See below. |
+| `billingInformation` | object | See below. |
+
+**`client.metadata`**
+
+| Field | Type | Description |
+|---|---|---|
+| `gender` | string | Empty when not captured. |
+| `birthdate` | string | Empty when not captured. |
+| `fiscal` | object \| null | **BR-only** — only when `govIdType === "CNPJ"`. Contains `cep`, `tipoLogradouro`, `logradouro`, `numero`, `bairro`, `codigoCidade`, `descricaoCidade`, `estado`. |
+
+**`client.billingInformation`** — Whom to bill. May differ from `client` for B2B invoices.
+
+| Field | Type | Description |
+|---|---|---|
+| `email` | string | Where the electronic invoice is sent. |
+| `phone` | string | Billing phone. |
+| `address` | string | Billing address. |
+| `govIdType` | string | Tax ID type of the receiver. |
+| `externalId` | string | External ID of the billed entity. |
+| `govIdNumber` | string | Tax ID number. |
+| `businessName` | string | Legal name. **Only when `govIdType === "CNPJ"`**, empty otherwise. |
+
+</Expandable>
+
+### `payments`
+
+Order totals, taxes, and payment methods.
+
+<Expandable title="payments properties">
+
+**`payments.totals[]`** — Monetary fields use **spec-scale × 10000** (string): `"458000"` = `R$ 45.80`.
+
+| Field | Type | Description |
+|---|---|---|
+| `taxes` | array | Per-tax breakdown — see below. |
+| `rewardId` | string | Reward ID applied to the total. Omitted when not applicable. |
+| `total` | string | Total with taxes (× 10000). |
+| `subtotal` | string | Subtotal without taxes (× 10000). |
+| `taxes_value` | string | Total monetary taxes (× 10000). Snake-case is intentional. |
+| `discount_value` | string | Total discount (× 10000). |
+| `currency_code` | string | ISO 4217. |
+| `subtotal_before_taxes` | string | Subtotal before taxes (× 10000). |
+| `discounts` | array | Discount breakdown. |
+
+**`payments.totals[].taxes[]`**
+
+| Field | Type | Description |
+|---|---|---|
+| `base` | string | Tax base (× 10000). |
+| `name` | string | For BR: `ICMS`, `PIS`, `COFINS`, `IBS_UF`, `IBS_MUN`, `CBS`. |
+| `rate` | string | Applied rate (decimal string, no scale). |
+| `amount` | string | Tax amount (× 10000). |
+| `metadata` | object | Always present. Holds `cst`, `cBenef`, `cClassTrib`, `reducao`, `rateNominal`, `rateEffective`. |
+
+**`payments.shippingCost[]`**, **`extraCharges[]`**, **`discounts[]`** — Decimal strings (no spec-scale).
+
+**`payments.paymentMethods[]`**
+
+| Field | Type | Description |
+|---|---|---|
+| `mid` / `tid` | string | Merchant ID / Terminal ID. Empty when N/A. |
+| `card` | object | Card details. Three keys are intentionally snake_case: `card_country`, `last_four_digits`, `external_card_brand_id`. |
+| `voucher` | string | Receipt printout (multi-line). |
+| `acquirer` | object | `{ code, name }` |
+| `processor` | string | `CREDIT_CARD`, `CASH`, `DEBIT_CARD`, `PIX`, etc. |
+| `totalBill` | number | Amount charged. |
+| `currencyCode` | string | ISO 4217. |
+| `exactPayment` | boolean | |
+| `transactionId` | string | |
+| `metadata` | object | `{}` by default. |
+| `referenceNumber` | string \| null | |
+| `transactionDate` | object | `{ date: ISO_UTC, timeZoneName: IANA }` |
+| `transactionType` | string | |
+| `authorizationCode` | string | |
+| `paymentMethodCode` | string | |
+| `transactionStatus` | string | `APPROVED`, `DECLINED`, `PENDING`. |
+| `customerCashAmount` | string | Change received. |
+
+**`payments.metadata.fiscal`** — **BR-only** aggregated fiscal totals. `null` when source did not send fiscal data.
+
+| Field | Type | Description |
+|---|---|---|
+| `vBC` | string | Tax base (× 10000). |
+| `vNF` | string | Total invoice amount. |
+| `vCBS`, `vIBS`, `vPIS`, `vICMS`, `vCOFINS`, `vIBSUF`, `vIBSMun` | string | Per-tax totals (× 10000). |
+| `vDesc` | string | Total discount. |
+| `vProd` | string | Product subtotal. |
+| `vTotTrib` | string | Total tributes. |
+| `vBCIBSCBS` | string | IBS/CBS calculation base. |
+
+</Expandable>
+
+### `kds`
+
+Kitchen Display System block.
+
+| Field | Type | Description |
+|---|---|---|
+| `buzzerName` | string | Buzzer name (e.g. "Carlos"). Empty when not assigned. |
+| `invoiceEmail` | string | Invoice delivery email. Empty when none. |
+| `invoicePrint` | boolean \| null | `true` if the invoice should be printed. |
+| `orderCode` | string | Short KDS code, e.g. `95K`. Empty by default. |
+| `metadata` | object | Reserved, `{}` by default. |
+
+### `orderLines`
+
+Each item in the order. FIRE-aligned shape with prices in spec-scale × 10000.
+
+<Expandable title="orderLines[] properties">
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string | UUID per line. |
+| `hash` | string | Deterministic hash for idempotency. |
+| `price` | object | `{ unitPrice: [], totalPrice: [] }` — per-currency price detail × 10000. |
+| `itemId` | string | Catalog product ID. |
+| `quantity` | string | Quantity as string (FIRE convention). |
+| `itemType` | string | `PRODUCT` or `MODIFIER`. |
+| `updatedAt` | string | ISO 8601 UTC. |
+| `lineTotals` | array | Line contribution to fiscal total. |
+| `metadata` | object | See below. |
+| `modifierGroups` | array | Nested modifier groups. |
+| `itemDescription` | string | Human-readable product name. |
+| `selectedCurrency` | string | ISO 4217 of this line. |
+
+**`orderLines[].metadata`**
+
+| Field | Type | Description |
+|---|---|---|
+| `fiscal` | object | `{ ncm, cfop, csosn, cst, vTotTrib, fiscalCategoryCode }` — BR fiscal classification. |
+| `redeemed` | boolean | `true` if the item was redeemed with loyalty points. |
+| `externalCode` | string | External code (PLU) — e.g. `30130`. |
+| `referenceUnitPrice` | object \| null | Reference unit price for repricing. |
+| `referenceTotalPrice` | object \| null | Reference total price. |
+
+**`orderLines[].modifierGroups[]`** — Each `selectedModifier` carries only 8 fields (no `uid`/`hash`/`updatedAt`/`lineTotals`).
+
+</Expandable>
+
+### `fulfillment`
+
+How the order is fulfilled.
+
+<Expandable title="fulfillment properties">
+
+**`fulfillment.service`**
+
+| Field | Type | Description |
+|---|---|---|
+| `uid` | string | Fulfillment service ID. |
+| `code` | string | One of `DINE_IN`, `TAKEAWAY`, `DELIVERY`, `PICKUP`. |
+| `metadata` | object | Empty `{}` by default. |
+
+**`fulfillment.pickup`** — `null` when source did not send the block.
+
+| Field | Type | Description |
+|---|---|---|
+| `prepDate` | string | ISO 8601 UTC — when to start preparation. |
+| `prepTime` | string | Estimated prep time. |
+| `pickupDate` | string | ISO 8601 UTC — when to pick up. |
+| `propertyId` | string | Pickup location/property ID. |
+| `prepTimeUnit` | string | `minute` or `hour`. |
+
+**`fulfillment.delivery`** — `null` when source did not send the block.
+
+| Field | Type | Description |
+|---|---|---|
+| `city` | string | Real city of the store. |
+| `country` | string | Real country of the store. |
+| `zipCode` | string | ZIP / postal code. |
+| `latitude` | string | Decimal string. |
+| `nickName` | string | `HOME`, `WORK`, etc. |
+| `longitude` | string | Decimal string. |
+| `reference` | string | Extra address reference. |
+| `mainStreet` | string | Main street. |
+| `propertyId` | number \| string \| null | Property/unit identifier. |
+| `deliveryDate` | string \| null | ISO 8601 UTC. `null` if not scheduled. |
+| `secondaryStreet` | string | Cross street. |
+
+</Expandable>
+
+## Examples by scenario
+
+The envelope is identical across countries. What changes is the contents of `store.locationInfo`, `payments`, and (for Brazil) the fiscal blocks.
+
+<Tabs>
+  <Tab title="🇪🇨 Ecuador — kiosk dine-in">
+
+A walk-in customer at a kiosk pays with credit card. No loyalty, no delivery.
+
+```json
+{
+  "event": {
+    "id": "evt_2167a211e7574185abb459474e275019",
+    "type": "order.completed",
+    "createdAt": "2025-01-15T14:30:00.000Z"
+  },
+  "data": {
+    "orderId": "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+    "orderCode": "OC-ec-q012-1736950200",
+    "businessDayDate": "2025-01-15",
+    "externalOrderId": "ext-ec-1001",
+    "redeemPoints": false,
+    "accumulatePoints": false,
+    "discount": false,
+    "createdAt": "2025-01-15T14:29:47.000Z",
+    "orderComment": "",
+    "paymentStatus": "SUCCEEDED",
+    "status": "COMPLETED",
+    "marketing": null,
+    "store": {
+      "uid": "store-ec-q012",
+      "externalId": "Q012",
+      "code": "EC-QUITO-012",
+      "name": "Quito Centro",
+      "phone": "+593 2 222 3344",
+      "address": "Av. Amazonas N20-32",
+      "locationInfo": {
+        "city": { "uid": "city-quito", "code": "QUITO", "name": "Quito" },
+        "country": { "uid": "country-ec", "code": "EC", "name": "Ecuador" },
+        "location": { "lat": "-0.2105", "lon": "-78.4877" },
+        "timezone": "America/Guayaquil",
+        "currencyCode": "USD"
+      },
+      "vendor": { "uid": "100.2.1", "name": "Acme EC", "description": "Acme EC", "loyaltyPlan": false },
+      "account": { "uid": "100", "name": "Acme Holding", "description": "Acme Holding" },
+      "storeFiscalConfig": null
+    },
+    "device": { "uid": "kiosk-q012-3", "name": "KIOSK", "platform": "android", "metadata": { "ip": "10.32.43.194" } },
+    "channel": { "uid": "ch-kiosk", "code": "KIOSK", "metadata": {} },
+    "operator": { "uid": null, "name": null, "session": { "uid": null } },
+    "client": {
+      "uid": "anon-final-consumer",
+      "name": "Consumidor Final",
+      "email": "consumidor.final@acme.ec",
+      "phone": "",
+      "lastName": "",
+      "govIdType": "FINAL_CONSUMER",
+      "externalId": null,
+      "govIdNumber": "",
+      "metadata": { "gender": "", "birthdate": "", "fiscal": null },
+      "billingInformation": {
+        "email": "", "phone": "", "address": "",
+        "govIdType": "FINAL_CONSUMER", "externalId": "", "govIdNumber": "", "businessName": ""
+      }
+    },
+    "payments": {
+      "totals": [{
+        "taxes": [{ "base": "78260", "name": "IVA", "rate": "0.15", "amount": "11740", "metadata": {} }],
+        "total": "90000",
+        "subtotal": "78260",
+        "taxes_value": "11740",
+        "discount_value": "0",
+        "currency_code": "USD",
+        "subtotal_before_taxes": "78260",
+        "discounts": []
+      }],
+      "shippingCost": [],
+      "extraCharges": [],
+      "discounts": [],
+      "paymentMethods": [{
+        "mid": "", "tid": "",
+        "card": { "bin": "MASTERCARD", "mask": "**** **** **** 4242", "brand": "MASTERCARD", "holder": "JANE DOE",
+                  "card_country": "EC", "last_four_digits": "4242", "external_card_brand_id": "" },
+        "voucher": "",
+        "acquirer": { "code": "01", "name": "Banco del Pacífico" },
+        "processor": "CREDIT_CARD",
+        "totalBill": 9.00,
+        "currencyCode": "USD",
+        "exactPayment": true,
+        "transactionId": "EC-Q012-94-1736950200",
+        "metadata": {},
+        "referenceNumber": null,
+        "transactionDate": { "date": "2025-01-15T14:29:53.000Z", "timeZoneName": "America/Guayaquil" },
+        "transactionType": "credit",
+        "authorizationCode": "AUTH-1001",
+        "paymentMethodCode": "2",
+        "transactionStatus": "APPROVED",
+        "customerCashAmount": "0"
+      }],
+      "metadata": { "fiscal": null }
+    },
+    "kds": { "buzzerName": "Carlos", "invoiceEmail": "", "invoicePrint": true, "orderCode": "12K", "metadata": {} },
+    "metadata": {},
+    "orderLines": [
+      {
+        "uid": "ol-1",
+        "hash": "a91f31f5e59344da",
+        "itemId": "991117",
+        "quantity": "1",
+        "itemType": "PRODUCT",
+        "updatedAt": "2025-01-15T14:29:47.000Z",
+        "itemDescription": "Classic Burger Combo",
+        "selectedCurrency": "USD",
+        "price": {
+          "unitPrice": [{ "netPrice": "78260", "grossPrice": "90000", "taxesValue": "11740", "currencyCode": "USD", "discountValue": "0", "subtotalBeforeTaxes": "78260", "taxes": [], "discounts": [] }],
+          "totalPrice": [{ "netPrice": "78260", "grossPrice": "90000", "taxesValue": "11740", "currencyCode": "USD", "discountValue": "0", "subtotalBeforeTaxes": "78260", "taxes": [], "discounts": [] }]
+        },
+        "lineTotals": [{ "total": "90000", "subtotal": "78260", "taxesValue": "11740", "currencyCode": "USD", "discountValue": "0", "subtotalBeforeTaxes": "78260", "taxes": [], "discounts": [] }],
+        "metadata": { "redeemed": false, "externalCode": "30130", "referenceUnitPrice": null, "referenceTotalPrice": null },
+        "modifierGroups": []
+      }
+    ],
+    "fulfillment": {
+      "service": { "uid": "svc-dine-in", "code": "DINE_IN", "metadata": {} },
+      "pickup": null,
+      "delivery": null
+    }
+  }
+}
+```
+
+  </Tab>
+
+  <Tab title="🇧🇷 Brazil — kiosk with fiscal totals">
+
+Same scenario but for a Brazilian store. Notice the extra `payments.metadata.fiscal` block and per-line tax metadata.
+
+```json
+{
+  "event": {
+    "id": "evt_b8e2f3a3914d3b8eef0e8761",
+    "type": "order.completed",
+    "createdAt": "2025-01-15T14:30:00.000Z"
+  },
+  "data": {
+    "orderId": "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+    "orderCode": "OC-br-k082-1777566201724",
+    "businessDayDate": "2025-01-15",
+    "externalOrderId": "ext-br-1001",
+    "redeemPoints": false,
+    "accumulatePoints": false,
+    "discount": false,
+    "createdAt": "2025-01-15T14:29:47.000Z",
+    "orderComment": "",
+    "paymentStatus": "SUCCEEDED",
+    "status": "COMPLETED",
+    "marketing": null,
+    "store": {
+      "uid": "store-br-k082",
+      "externalId": "K082",
+      "code": "BR-SP-082",
+      "name": "São Paulo Pinheiros",
+      "phone": "+55 11 3030 4040",
+      "address": "Rua dos Pinheiros 1234",
+      "locationInfo": {
+        "city": { "uid": "city-sp", "code": "SP-SP", "name": "São Paulo" },
+        "country": { "uid": "country-br", "code": "BR", "name": "Brasil" },
+        "location": { "lat": "-23.5589", "lon": "-46.6925" },
+        "timezone": "America/Sao_Paulo",
+        "currencyCode": "BRL"
+      },
+      "vendor": { "uid": "100.5.1", "name": "Acme BR", "description": "Acme BR", "loyaltyPlan": true },
+      "account": { "uid": "100", "name": "Acme Holding", "description": "Acme Holding" },
+      "storeFiscalConfig": {
+        "enabled": true,
+        "company": { "govIdType": "CNPJ", "govIdNumber": "12345678000190", "legalName": "Acme BR LTDA", "tradeName": "Acme" },
+        "govIdType": "CNPJ",
+        "govIdNumber": "12345678000190",
+        "secondaryGovIdType": "INSCRICAO_ESTADUAL",
+        "secondaryGovIdNumber": "111222333444",
+        "metadata": { "storeCode3S": "50012529", "serialNumber": 1, "neverstop": { "enabled": false, "url": "" } }
+      }
+    },
+    "device": { "uid": "kiosk-k082-3", "name": "KIOSK", "platform": "android", "metadata": { "ip": "10.32.43.194" } },
+    "channel": { "uid": "ch-kiosk", "code": "KIOSK", "metadata": {} },
+    "operator": { "uid": "op-maria", "name": "Maria Silva", "session": { "uid": "sess-001" } },
+    "client": {
+      "uid": "anon-final-consumer",
+      "name": "Consumidor Final",
+      "email": "consumidor.final@acme.br",
+      "phone": "", "lastName": "",
+      "govIdType": "FINAL_CONSUMER",
+      "externalId": null,
+      "govIdNumber": "",
+      "metadata": { "gender": "", "birthdate": "", "fiscal": null },
+      "billingInformation": {
+        "email": "", "phone": "", "address": "",
+        "govIdType": "FINAL_CONSUMER", "externalId": "", "govIdNumber": "", "businessName": ""
+      }
+    },
+    "payments": {
+      "totals": [{
+        "taxes": [
+          { "base": "439000", "name": "ICMS",   "rate": "0.04",   "amount": "17600", "metadata": { "cst": "90", "cBenef": "SP040100" } },
+          { "base": "439000", "name": "PIS",    "rate": "0.0165", "amount": "7244",  "metadata": { "cst": "01" } },
+          { "base": "439000", "name": "COFINS", "rate": "0.076",  "amount": "33364", "metadata": { "cst": "01" } }
+        ],
+        "total": "458000",
+        "subtotal": "394900",
+        "taxes_value": "63100",
+        "discount_value": "0",
+        "currency_code": "BRL",
+        "subtotal_before_taxes": "394900",
+        "discounts": []
+      }],
+      "shippingCost": [], "extraCharges": [], "discounts": [],
+      "paymentMethods": [{
+        "mid": "", "tid": "",
+        "card": { "bin": "MASTERCARD", "mask": "", "brand": "MASTERCARD", "holder": "",
+                  "card_country": "VENDA A CREDITO VALOR", "last_four_digits": "", "external_card_brand_id": "" },
+        "voucher": "*** CIELO *** AUT 1777476331823 ***",
+        "acquirer": { "code": "01027058000191", "name": "CIELO S.A. - INSTITUICAO DE PAGAMENTO" },
+        "processor": "CREDIT_CARD",
+        "totalBill": 45.80,
+        "currencyCode": "BRL",
+        "exactPayment": false,
+        "transactionId": "BR-K082-94-1777476311",
+        "metadata": {},
+        "referenceNumber": null,
+        "transactionDate": { "date": "2025-01-15T14:29:53.000Z", "timeZoneName": "America/Sao_Paulo" },
+        "transactionType": "",
+        "authorizationCode": "1777476331823",
+        "paymentMethodCode": "",
+        "transactionStatus": "APPROVED",
+        "customerCashAmount": "0"
+      }],
+      "metadata": {
+        "fiscal": {
+          "vBC": "458000", "vNF": "458000", "vCBS": "2200", "vIBS": "200",
+          "vPIS": "7500", "vDesc": "0", "vICMS": "18400", "vProd": "458000",
+          "vIBSUF": "200", "vCOFINS": "34800", "vIBSMun": "0",
+          "vTotTrib": "63100", "vBCIBSCBS": "397300"
+        }
+      }
+    },
+    "kds": { "buzzerName": "Carlos", "invoiceEmail": "", "invoicePrint": true, "orderCode": "50K", "metadata": {} },
+    "metadata": {},
+    "orderLines": [
+      {
+        "uid": "ol-1",
+        "hash": "e91f31f5e59344da",
+        "itemId": "addf0001",
+        "quantity": "1",
+        "itemType": "PRODUCT",
+        "updatedAt": "2025-01-15T14:29:47.000Z",
+        "itemDescription": "Combo - Kentucky Onion",
+        "selectedCurrency": "BRL",
+        "price": {
+          "unitPrice": [{ "netPrice": "419000", "grossPrice": "419000", "taxesValue": "57700", "currencyCode": "BRL", "discountValue": "0", "subtotalBeforeTaxes": "361300", "taxes": [], "discounts": [] }],
+          "totalPrice": [{ "netPrice": "419000", "grossPrice": "419000", "taxesValue": "57700", "currencyCode": "BRL", "discountValue": "0", "subtotalBeforeTaxes": "361300", "taxes": [], "discounts": [] }]
+        },
+        "lineTotals": [{ "total": "419000", "subtotal": "361300", "taxesValue": "57700", "currencyCode": "BRL", "discountValue": "0", "subtotalBeforeTaxes": "361300", "taxes": [], "discounts": [] }],
+        "metadata": {
+          "fiscal": { "ncm": "21069090", "cfop": "5102", "csosn": "900", "vTotTrib": "5.77", "fiscalCategoryCode": "FOOD_PREPARED" },
+          "redeemed": false,
+          "externalCode": "30263",
+          "referenceUnitPrice": null,
+          "referenceTotalPrice": null
+        },
+        "modifierGroups": [
+          {
+            "uid": "mg-1",
+            "description": "Selecione: O sanduíche do seu combo!",
+            "selectedModifiers": [
+              {
+                "itemId": "1417dec0",
+                "quantity": "1",
+                "itemType": "PRODUCT",
+                "itemDescription": "Kentucky Onion",
+                "selectedCurrency": "BRL",
+                "metadata": { "redeemed": false, "externalCode": "30263#900002854#26210" },
+                "modifierGroups": [],
+                "price": { "unitPrice": [], "totalPrice": [] }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "fulfillment": {
+      "service": { "uid": "svc-dine-in", "code": "DINE_IN", "metadata": {} },
+      "pickup": null,
+      "delivery": null
+    }
+  }
+}
+```
+
+  </Tab>
+
+  <Tab title="🇨🇴 Colombia — delivery with loyalty">
+
+Mobile app order with delivery and loyalty point accumulation.
+
+```json
+{
+  "event": {
+    "id": "evt_co_app_2025_01_15",
+    "type": "order.completed",
+    "createdAt": "2025-01-15T14:30:00.000Z"
+  },
+  "data": {
+    "orderId": "ord-co-9999",
+    "orderCode": "OC-co-bog001-1736950200",
+    "businessDayDate": "2025-01-15",
+    "externalOrderId": "ext-co-1001",
+    "redeemPoints": false,
+    "accumulatePoints": true,
+    "discount": false,
+    "createdAt": "2025-01-15T14:29:47.000Z",
+    "orderComment": "Sin cebolla por favor",
+    "paymentStatus": "SUCCEEDED",
+    "status": "COMPLETED",
+    "marketing": {
+      "loyalty": {
+        "accumulation": { "storeCost": "100.0000", "marketingCost": "112.0000", "totalPoints": "212.0000" },
+        "redemption": null,
+        "accountBalancePoints": "1450.0000"
+      },
+      "coupons": []
+    },
+    "store": {
+      "uid": "store-co-bog001",
+      "externalId": "BOG001",
+      "code": "CO-BOG-001",
+      "name": "Bogotá Chicó",
+      "phone": "+57 1 555 6677",
+      "address": "Calle 90 # 11-30",
+      "locationInfo": {
+        "city": { "uid": "city-bog", "code": "BOG", "name": "Bogotá" },
+        "country": { "uid": "country-co", "code": "CO", "name": "Colombia" },
+        "location": { "lat": "4.6700", "lon": "-74.0500" },
+        "timezone": "America/Bogota",
+        "currencyCode": "COP"
+      },
+      "vendor": { "uid": "100.3.1", "name": "Acme CO", "description": "Acme CO", "loyaltyPlan": true },
+      "account": { "uid": "100", "name": "Acme Holding", "description": "Acme Holding" },
+      "storeFiscalConfig": null
+    },
+    "device": null,
+    "channel": { "uid": "ch-mobile-app", "code": "MOBILE_APP", "metadata": {} },
+    "operator": { "uid": null, "name": null, "session": { "uid": null } },
+    "client": {
+      "uid": "user-co-12345",
+      "name": "Carlos",
+      "email": "carlos@example.co",
+      "phone": "+573001234567",
+      "lastName": "Ramírez",
+      "govIdType": "CC",
+      "externalId": "ext-customer-001",
+      "govIdNumber": "1023456789",
+      "metadata": { "gender": "M", "birthdate": "1990-05-12", "fiscal": null },
+      "billingInformation": {
+        "email": "carlos@example.co", "phone": "+573001234567", "address": "Calle 100 # 15-20",
+        "govIdType": "CC", "externalId": "", "govIdNumber": "1023456789", "businessName": ""
+      }
+    },
+    "payments": {
+      "totals": [{
+        "taxes": [{ "base": "8403361", "name": "IVA", "rate": "0.19", "amount": "1596639", "metadata": {} }],
+        "total": "10000000",
+        "subtotal": "8403361",
+        "taxes_value": "1596639",
+        "discount_value": "0",
+        "currency_code": "COP",
+        "subtotal_before_taxes": "8403361",
+        "discounts": []
+      }],
+      "shippingCost": [{ "quantity": 1, "currencyCode": "COP", "subtotalWithoutTaxes": "5000.0000", "discountPercentage": "0.0000", "discountsValue": "0.0000", "subtotalIncludeDiscounts": "5000.0000", "taxesPercentage": "0.0000", "taxValue": "0.0000", "total": "5000.0000" }],
+      "extraCharges": [],
+      "discounts": [],
+      "paymentMethods": [{ "processor": "CREDIT_CARD", "currencyCode": "COP", "totalBill": 1000.00, "transactionStatus": "APPROVED", "transactionId": "CO-BOG-94-1736950200", "exactPayment": true, "metadata": {}, "card": {}, "acquirer": {}, "transactionDate": { "date": "2025-01-15T14:29:53.000Z", "timeZoneName": "America/Bogota" }, "mid": "", "tid": "", "voucher": "", "referenceNumber": null, "transactionType": "credit", "authorizationCode": "AUTH-CO-1001", "paymentMethodCode": "2", "customerCashAmount": "0" }],
+      "metadata": { "fiscal": null }
+    },
+    "kds": { "buzzerName": "", "invoiceEmail": "carlos@example.co", "invoicePrint": false, "orderCode": "999K", "metadata": {} },
+    "metadata": {},
+    "orderLines": [ /* … */ ],
+    "fulfillment": {
+      "service": { "uid": "svc-delivery", "code": "DELIVERY", "metadata": {} },
+      "pickup": null,
+      "delivery": {
+        "city": "Bogotá",
+        "country": "Colombia",
+        "zipCode": "110221",
+        "latitude": "4.6850",
+        "nickName": "HOME",
+        "longitude": "-74.0490",
+        "reference": "Apto 502, edificio gris",
+        "mainStreet": "Calle 100 # 15-20",
+        "propertyId": 1,
+        "deliveryDate": "2025-01-15T15:00:00.000Z",
+        "secondaryStreet": ""
+      }
+    }
+  }
+}
+```
+
+  </Tab>
+</Tabs>
+
+## Idempotency
+
+Use `event.id` as your idempotency key. The same `event.id` may arrive more than once (network retries, your endpoint timing out and Fire retrying):
+
+```js
+async function handle(payload) {
+  const eventId = payload.event.id;
+
+  if (await db.events.has(eventId)) {
+    return { ok: true, deduplicated: true };
+  }
+
+  await db.events.insert({ id: eventId, type: payload.event.type, raw: payload });
+  await processOrder(payload.data);
+}
+```
+
+## Related events
+
+- [`order.cancelled`](/en/webhook-reference/order-cancelled) — order is later cancelled.
+- [`fiscal.authorized.br`](/en/webhook-reference/fiscal-authorized-br) — Brazil-only follow-up when SEFAZ authorizes the NFC-e.
+- [`order.status_changed`](/en/webhook-reference/order-status-changed) — granular order state updates.

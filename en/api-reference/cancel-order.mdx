@@ -1,0 +1,150 @@
+---
+title: "Cancel an order"
+api: "POST https://api.fire.rest/v1/orders/{orderId}/cancel"
+description: "Cancels an injected order. Fires order.cancelled (and, for Brazil, fiscal.cancelled.br once SEFAZ confirms)."
+authMethod: "bearer"
+---
+
+Cancels an order previously injected through `POST /v1/orders`. The cancellation is recorded immediately and Fire fires [`order.cancelled`](/en/webhook-reference/order-cancelled) to all subscribed endpoints. For Brazilian orders that already had a SEFAZ-authorized fiscal document, Fire also forwards the cancellation to PlugNotas and emits [`fiscal.cancelled.br`](/en/webhook-reference/fiscal-cancelled-br) once SEFAZ confirms.
+
+<Note>
+  This endpoint is idempotent on the order's terminal state — calling it twice on the same order returns `409 Conflict` with the existing cancellation context. To detect duplicates pre-emptively, check `order.status` first via [Retrieve an order](/en/api-reference/retrieve-order).
+</Note>
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `orders:write` scope.
+</ParamField>
+
+<ParamField path="orderId" type="string" required>
+  The order's Fire UUID.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  Free-form reason for the cancellation. For Brazilian orders with an authorized fiscal document, this must be **≥ 15 characters** to satisfy SEFAZ rules.
+</ParamField>
+
+<ParamField body="source" type="string" required>
+  Origin of the cancellation request. One of: `BACKOFFICE`, `POS`, `API`, `KDS`, `CUSTOMER_APP`.
+</ParamField>
+
+<ParamField body="cancelledBy" type="string">
+  Optional identifier of who triggered the cancellation. Examples: a user UUID, an operator email, or a literal like `system`.
+</ParamField>
+
+### Response
+
+<ResponseField name="orderId" type="string">
+  Fire UUID of the order.
+</ResponseField>
+
+<ResponseField name="cancellationId" type="string">
+  Fire's internal ID for this specific cancellation record.
+</ResponseField>
+
+<ResponseField name="cancelledAt" type="string">
+  ISO 8601 UTC — when Fire recorded the cancellation.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Always `CANCELLED` on success.
+</ResponseField>
+
+<ResponseField name="willEmitFiscalEvent" type="boolean">
+  `true` when a `fiscal.cancelled.br` event will follow once SEFAZ confirms (BR orders with an authorized fiscal document). `false` otherwise.
+</ResponseField>
+
+<RequestExample>
+
+```bash curl
+curl -X POST https://api.fire.rest/v1/orders/df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3/cancel \
+  -H "x-api-key: pk_live_a1b2c3..." \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIs..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "reason":      "Pedido cancelado a pedido do cliente apos preparo errado",
+    "source":      "BACKOFFICE",
+    "cancelledBy": "manager@k082"
+  }'
+```
+
+```js Node.js
+const orderId = "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3";
+const res = await fetch(`https://api.fire.rest/v1/orders/${orderId}/cancel`, {
+  method:  "POST",
+  headers: {
+    "x-api-key":     process.env.FIRE_API_KEY,
+    "Authorization": `Bearer ${accessToken}`,
+    "Content-Type":  "application/json",
+  },
+  body: JSON.stringify({
+    reason:      "Pedido cancelado a pedido do cliente apos preparo errado",
+    source:      "BACKOFFICE",
+    cancelledBy: "manager@k082",
+  }),
+});
+const cancellation = await res.json();
+```
+
+```python Python
+import os, requests
+
+order_id = "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3"
+res = requests.post(
+    f"https://api.fire.rest/v1/orders/{order_id}/cancel",
+    json={
+        "reason":      "Pedido cancelado a pedido do cliente apos preparo errado",
+        "source":      "BACKOFFICE",
+        "cancelledBy": "manager@k082",
+    },
+    headers={
+        "x-api-key":     os.environ["FIRE_API_KEY"],
+        "Authorization": f"Bearer {access_token}",
+    },
+)
+res.raise_for_status()
+cancellation = res.json()
+```
+
+</RequestExample>
+
+<ResponseExample>
+
+```json 200
+{
+  "orderId":             "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+  "cancellationId":      "canc-br-9002",
+  "cancelledAt":         "2025-01-15T14:45:00.000Z",
+  "status":              "CANCELLED",
+  "willEmitFiscalEvent": true
+}
+```
+
+```json 404
+{
+  "error": {
+    "code":    "order_not_found",
+    "message": "No order with id 'df8cdf6a-...' is visible to this API key"
+  }
+}
+```
+
+```json 409
+{
+  "error": {
+    "code":    "regression",
+    "message": "Order is already in CANCELLED state. Existing cancellationId: canc-br-9002"
+  }
+}
+```
+
+```json 422
+{
+  "error": {
+    "code":    "business_rule_violation",
+    "message": "reason must be at least 15 characters for orders with an authorized fiscal document",
+    "param":   "reason"
+  }
+}
+```
+
+</ResponseExample>

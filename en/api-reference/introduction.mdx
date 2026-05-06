@@ -1,16 +1,30 @@
 ---
-title: "API reference"
-description: "Fire REST API reference — inject orders and query your integration configuration."
+title: "Introduction"
+description: "The Fire REST API. Inject orders, query catalog data, and report fiscal events from a single base URL."
 ---
 
-The Fire API allows your system to inject orders into Fire and retrieve the configuration needed to do so (sales channels, stores). All endpoints are REST, accept and return JSON, and require authentication via Bearer token.
+The Fire API is organized around REST. It uses predictable resource-oriented URLs, accepts JSON-encoded bodies, returns JSON-encoded responses, and uses standard HTTP response codes, authentication, and verbs.
 
 <CardGroup cols={2}>
-  <Card title="Inject order" icon="paper-plane" href="/en/api-reference/orders">
-    Send an order from any aggregator or source into Fire for processing.
+  <Card title="Authentication" icon="key" href="/en/api-reference/login">
+    Exchange credentials for an access token. Use it as Bearer on every request.
   </Card>
-  <Card title="List sales channels" icon="list" href="/en/api-reference/sales-channels">
-    Retrieve the channel IDs required when injecting orders.
+  <Card title="Errors" icon="circle-exclamation" href="/en/api-reference/errors">
+    HTTP codes, error envelope, and the catalog of `error.code` values.
+  </Card>
+</CardGroup>
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="Orders" icon="receipt" href="/en/api-reference/orders">
+    Inject, list, retrieve, and cancel orders.
+  </Card>
+  <Card title="Sales channels" icon="plug" href="/en/api-reference/sales-channels">
+    Read the channel catalog you need to map Fire IDs to aggregator IDs.
+  </Card>
+  <Card title="Fiscal callback" icon="receipt" href="/en/api-reference/fiscal-callback">
+    Report your local fiscal authority result back to Fire (CO, EC, CL, AR, VE).
   </Card>
 </CardGroup>
 
@@ -20,47 +34,102 @@ The Fire API allows your system to inject orders into Fire and retrieve the conf
 https://api.fire.rest/v1
 ```
 
-All paths below are relative to this base URL.
+All paths in this reference are relative to that base. There is one base URL for production. A separate sandbox URL is provisioned per integration on request.
 
 ## Authentication
 
-Every request must include your API key as a Bearer token:
+Every request must carry two credentials:
 
 ```http
-Authorization: Bearer <your_api_key>
+x-api-key:     <your_api_key>
+Authorization: Bearer <access_token>
 ```
 
-See [Authentication](/en/authentication) for how to obtain and manage API keys.
+The `x-api-key` identifies your integration. The Bearer token proves your session is authenticated and is obtained from [`POST /auth/login`](/en/api-reference/login). API keys are issued from the Fire dashboard — see [API keys and scopes](/en/configuration/api-keys).
+
+For machine-to-machine endpoints (order injection, fiscal callback) the API key alone is enough — no Bearer token is required.
 
 ## Request and response format
 
-- All request bodies must be JSON with `Content-Type: application/json`
-- All responses are JSON
-- Dates and timestamps use ISO 8601 format (`2024-11-15T14:30:00Z`)
+| Aspect | Convention |
+|---|---|
+| Content type | `application/json` for request bodies and responses |
+| Character encoding | UTF-8 |
+| Dates | ISO 8601 with explicit timezone, e.g. `2025-01-15T14:30:00.000Z` |
+| Decimals | Strings with a dot separator, e.g. `"45.80"`. Some Brazilian fiscal totals travel as `string × 10000` — see [the events page](/en/concepts/events#per-country-behavior). |
+| Empty fields | Empty strings (`""`) when the field exists but is empty. `null` when the field is conceptually absent. |
 
-## Errors
+## Idempotency
 
-Fire uses standard HTTP status codes. All error responses include a JSON body with a machine-readable `code` and a human-readable `message`.
+Endpoints that create resources accept an `Idempotency-Key` header (UUID). Sending the same key with the same body returns the original response without creating a duplicate.
+
+```http
+Idempotency-Key: 7e2c8f12-9a44-4e67-bdf1-a3a5e2caa441
+```
+
+Idempotency keys are stored for 24 hours. After that, the same key may be reused.
+
+For order injection, the `external_order_id` field is also enforced as a uniqueness constraint per (account, vendor): a duplicate returns `409 Conflict` with the existing order ID.
+
+## Pagination
+
+List endpoints support cursor-based pagination via two query parameters:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `limit` | integer | Page size, default 50, max 200. |
+| `starting_after` | string | Cursor returned in the previous response's `next_cursor`. |
+
+Responses include:
 
 ```json
 {
-  "error": {
-    "code": "validation_error",
-    "message": "channel_id is required"
-  }
+  "data":         [ /* items */ ],
+  "has_more":     true,
+  "next_cursor":  "ord_abcdef0123456789"
 }
 ```
 
-| Status | Meaning |
-|---|---|
-| `200` | Success |
-| `400` | Bad request — invalid or missing fields in the payload |
-| `401` | Unauthorized — missing or invalid API key |
-| `404` | Resource not found |
-| `409` | Conflict — duplicate `external_order_id` |
-| `429` | Rate limit exceeded — back off and retry |
-| `5xx` | Fire-side error — retry with exponential backoff |
+When `has_more` is `false`, you reached the end.
 
 ## Rate limits
 
-Requests are rate-limited per API key. If you exceed the limit, Fire returns `429 Too Many Requests`. Implement exponential backoff starting at 1 second.
+Requests are throttled per API key.
+
+| Plan | Sustained | Burst |
+|---|---|---|
+| Default | 50 req/s | 100 req/s |
+| Enterprise | Negotiated | Negotiated |
+
+When you exceed the limit Fire returns `429 Too Many Requests` with a `Retry-After` header (seconds). Implement exponential backoff with jitter starting at 1 second.
+
+## Versioning
+
+The API is versioned in the URL path (`/v1`). Backwards-incompatible changes ship under a new major version.
+
+Within a major version Fire only adds:
+
+- new optional request fields
+- new response fields
+- new endpoints
+- new event types
+
+These changes do not break clients that ignore unknown fields.
+
+Deprecations are announced at least **6 months** before removal via the Fire dashboard and a `Deprecation` HTTP header on responses.
+
+## Webhooks vs API
+
+The Fire API is two-way:
+
+- You **call** Fire (`POST /orders`, `GET /sales-channels`, `POST /webhooks/fiscal/callback`).
+- Fire **calls you** at the URL you registered (delivers events like `order.completed`).
+
+The webhook side is documented in [Webhook reference](/en/webhook-reference/overview), not here.
+
+## Conventions
+
+- All resource IDs are opaque strings. Do not parse them.
+- Boolean fields are `true`/`false` literals, never strings.
+- Enum-like string values are uppercase snake-case (`COMPLETED`, `IN_PROGRESS`).
+- Currency codes are ISO 4217 uppercase (`BRL`, `USD`, `COP`).

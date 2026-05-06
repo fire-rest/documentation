@@ -1,0 +1,219 @@
+---
+title: "order.cancelled"
+description: "Sent when an order is cancelled. Carries the V4 Order Snapshot plus a top-level cancellation block with reason, source, and (for Brazil) fiscal context."
+---
+
+Fire fires `order.cancelled` when an order transitions to `status="CANCELLED"`. The cancellation can come from the Fire backoffice, the POS, or your API. The payload mirrors the [`order.completed`](/en/webhook-reference/order-completed) snapshot **plus** a top-level `cancellation` block describing who/when/why. For Brazil, when the original fiscal document was already authorized, the block also carries that document's context under `cancellation.metadata.fiscal`.
+
+<Note>
+  When fiscal cancellation is requested on a Brazilian order with an already-authorized NFC-e, Fire fires **two** events: this one (`order.cancelled`) immediately, then [`fiscal.cancelled.br`](/en/webhook-reference/fiscal-cancelled-br) once SEFAZ confirms the cancellation.
+</Note>
+
+## When it fires
+
+| Trigger | Fires `order.cancelled`? |
+|---|---|
+| User cancels the order from the Fire backoffice | ✅ Yes |
+| Cashier voids the order on the POS | ✅ Yes |
+| Your system calls the cancel endpoint | ✅ Yes |
+| Order is rejected at injection (validation error) | ❌ No (the `POST` returns `4xx`, no event fires) |
+
+## Envelope
+
+```json
+{
+  "event": {
+    "id":        "evt_9b4f1234567890abcdef1234567890ab",
+    "type":      "order.cancelled",
+    "createdAt": "2025-01-15T14:45:00.000Z"
+  },
+  "data": {
+    /* V4 Order Snapshot + cancellation block */
+  }
+}
+```
+
+The top-level `fiscal` block (used by `fiscal.authorized.br`) is **dropped** for cancellation events. All fiscal context lives inside `cancellation.metadata.fiscal` instead.
+
+## Data fields
+
+The `data` block is the **V4 Order Snapshot** (same shape documented in [`order.completed`](/en/webhook-reference/order-completed#data-fields)) plus the cancellation block below.
+
+### `cancellation`
+
+<Expandable title="cancellation properties">
+
+| Field | Type | Description |
+|---|---|---|
+| `cancellationId` | string | Fire's internal ID for this cancellation. |
+| `cancelledAt` | string | ISO 8601 UTC — when the cancellation was recorded in Fire. |
+| `cancelledBy` | string | Who triggered the cancellation. Examples: `system`, `operator@store`, a user UUID. |
+| `cancellationReason` | string | Free-form reason captured at cancellation time. |
+| `cancellationSource` | string | Origin: `BACKOFFICE`, `POS`, `API`, `KDS`, `CUSTOMER_APP`. |
+| `metadata` | object | Optional. Present only for **Brazilian** orders that had an authorized fiscal document at cancellation time. Absent for CO/EC/CL/AR/VE. |
+
+**`cancellation.metadata.fiscal`** (BR-only) — Snapshot of the original authorized document.
+
+| Field | Type | Description |
+|---|---|---|
+| `docSubtype` | string | `nfce` or `nfe`. |
+| `chaveAcesso` | string | 44-digit SEFAZ access key. |
+| `numero` | string | Document number, e.g. `1000013`. |
+| `serie` | string \| null | Document series. |
+| `protocolo` | string \| null | Authorization protocol from SEFAZ. |
+| `dataAutorizacao` | string \| null | When the document was authorized (ISO 8601 UTC). |
+| `xmlUrl` | string \| null | URL to download the authorization XML. |
+| `pdfUrl` | string \| null | URL to download the DANFE PDF. |
+| `providerDocId` | string | PlugNotas integration ID. |
+
+</Expandable>
+
+## Examples by scenario
+
+<Tabs>
+  <Tab title="🇨🇴 Colombia — customer-requested cancellation">
+
+The order had no Brazilian fiscal document, so `cancellation.metadata` is absent.
+
+```json
+{
+  "event": {
+    "id": "evt_co_cancel_2025_01_15",
+    "type": "order.cancelled",
+    "createdAt": "2025-01-15T14:45:00.000Z"
+  },
+  "data": {
+    "orderId": "ord-co-9999",
+    "orderCode": "OC-co-bog001-1736950200",
+    "businessDayDate": "2025-01-15",
+    "externalOrderId": "ext-co-1001",
+    "status": "CANCELLED",
+    "paymentStatus": "SUCCEEDED",
+    "redeemPoints": false,
+    "accumulatePoints": true,
+    "discount": false,
+    "createdAt": "2025-01-15T14:29:47.000Z",
+    "orderComment": "Sin cebolla por favor",
+    "marketing": null,
+    "store": {
+      "uid": "store-co-bog001",
+      "code": "CO-BOG-001",
+      "name": "Bogotá Chicó",
+      "locationInfo": {
+        "currencyCode": "COP",
+        "country": { "code": "CO", "name": "Colombia" },
+        "timezone": "America/Bogota"
+      }
+    },
+    "channel": { "uid": "ch-mobile-app", "code": "MOBILE_APP", "metadata": {} },
+    "fulfillment": { "service": { "uid": "svc-delivery", "code": "DELIVERY", "metadata": {} }, "pickup": null, "delivery": {} },
+    "cancellation": {
+      "cancellationId": "canc-co-1001",
+      "cancelledAt": "2025-01-15T14:45:00.000Z",
+      "cancelledBy": "user-co-12345",
+      "cancellationReason": "Customer changed their mind before delivery",
+      "cancellationSource": "CUSTOMER_APP"
+    }
+  }
+}
+```
+
+After receiving this event, your system **also** calls `POST /v1/webhooks/fiscal/callback` with `eventType="cancelled"` once your DIAN integration confirms the local cancellation.
+
+  </Tab>
+
+  <Tab title="🇧🇷 Brazil — cancelled before SEFAZ authorized">
+
+Fiscal block is **absent** because the document was never authorized.
+
+```json
+{
+  "event": {
+    "id": "evt_br_cancel_pre_authz",
+    "type": "order.cancelled",
+    "createdAt": "2025-01-15T14:31:00.000Z"
+  },
+  "data": {
+    "orderId": "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+    "orderCode": "OC-br-k082-1777566201724",
+    "status": "CANCELLED",
+    "paymentStatus": "SUCCEEDED",
+    "store": {
+      "code": "BR-SP-082",
+      "locationInfo": { "currencyCode": "BRL", "country": { "code": "BR" }, "timezone": "America/Sao_Paulo" }
+    },
+    "cancellation": {
+      "cancellationId": "canc-br-9001",
+      "cancelledAt": "2025-01-15T14:31:00.000Z",
+      "cancelledBy": "operator@k082",
+      "cancellationReason": "Customer left the kiosk before checkout completed",
+      "cancellationSource": "POS"
+    }
+  }
+}
+```
+
+Note that `cancellation.metadata` is omitted because no fiscal document existed yet.
+
+  </Tab>
+
+  <Tab title="🇧🇷 Brazil — cancelled after SEFAZ authorized">
+
+The document was already authorized. The fiscal block carries the original document context. Fire then continues to cancel the document with PlugNotas; once SEFAZ confirms, you'll receive `fiscal.cancelled.br`.
+
+```json
+{
+  "event": {
+    "id": "evt_br_cancel_post_authz",
+    "type": "order.cancelled",
+    "createdAt": "2025-01-15T14:45:00.000Z"
+  },
+  "data": {
+    "orderId": "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+    "orderCode": "OC-br-k082-1777566201724",
+    "status": "CANCELLED",
+    "paymentStatus": "SUCCEEDED",
+    "store": {
+      "code": "BR-SP-082",
+      "locationInfo": { "currencyCode": "BRL", "country": { "code": "BR" }, "timezone": "America/Sao_Paulo" }
+    },
+    "cancellation": {
+      "cancellationId": "canc-br-9002",
+      "cancelledAt": "2025-01-15T14:45:00.000Z",
+      "cancelledBy": "manager@k082",
+      "cancellationReason": "Wrong items prepared, customer refused order",
+      "cancellationSource": "BACKOFFICE",
+      "metadata": {
+        "fiscal": {
+          "docSubtype": "nfce",
+          "chaveAcesso": "35250112345678000190650010000010001000010001",
+          "numero": "1000013",
+          "serie": "1",
+          "protocolo": "135250000123456",
+          "dataAutorizacao": "2025-01-15T14:30:05.000Z",
+          "xmlUrl": "https://api.plugnotas.com.br/files/nfce/35250112345678000190650010000010001000010001/xml",
+          "pdfUrl": "https://api.plugnotas.com.br/files/nfce/35250112345678000190650010000010001000010001/danfe",
+          "providerDocId": "65f1a3e2c1a2"
+        }
+      }
+    }
+  }
+}
+```
+
+The presence of `metadata.fiscal` is your signal that a `fiscal.cancelled.br` event will follow once SEFAZ confirms.
+
+  </Tab>
+</Tabs>
+
+## Idempotency and ordering
+
+- Use `event.id` for idempotency, same as `order.completed`.
+- For BR orders, expect events in this order: `order.completed` → (later) `order.cancelled` → (later still, after SEFAZ confirms) `fiscal.cancelled.br`. They are independent deliveries — your handler should not assume they arrive on the same TCP connection or in the same minute.
+- For non-BR countries, the sequence is: `order.completed` → `order.cancelled`. The fiscal cancellation in your local authority is reported back via [`POST /v1/webhooks/fiscal/callback`](/en/configuration/fiscal-callback) — Fire does not emit a fiscal event.
+
+## Related events
+
+- [`order.completed`](/en/webhook-reference/order-completed) — original order event.
+- [`fiscal.cancelled.br`](/en/webhook-reference/fiscal-cancelled-br) — Brazil-only follow-up after SEFAZ confirms the document cancellation.
+- [Fiscal callback](/en/configuration/fiscal-callback) — for CO/EC/CL/AR/VE fiscal cancellations.

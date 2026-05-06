@@ -1,0 +1,342 @@
+---
+title: "Events"
+description: "Fire emits events when something meaningful happens to a store, menu, product, or order. Subscribe once, react to everything."
+---
+
+Fire notifies your system in real time through **events**. When an order is completed, when a fiscal document is authorized, when a menu is updated — Fire fires off an event. You receive it as an HTTP `POST` to the endpoint you registered, act on it, and respond `2xx`.
+
+Every event Fire delivers shares the same envelope. The shape inside `data` changes by event type, but the outer wrapper never does.
+
+<CardGroup cols={2}>
+  <Card title="The envelope" icon="envelope" href="#the-envelope">
+    Three fields wrap every event: `event.id`, `event.type`, and `event.createdAt`.
+  </Card>
+  <Card title="Event types" icon="list" href="#event-types">
+    Order, fiscal, store, menu, product, channel — what each one carries.
+  </Card>
+  <Card title="Delivery" icon="truck-fast" href="#delivery">
+    How Fire signs, retries, and dedupes deliveries to your endpoint.
+  </Card>
+  <Card title="Per-country behavior" icon="globe" href="#per-country-behavior">
+    What changes for BR vs CO, EC, CL, AR, VE.
+  </Card>
+</CardGroup>
+
+## How Fire integrates with your system
+
+<CardGroup cols={3}>
+  <Card title="Order origin" icon="cash-register">
+    POS, kiosk, mobile app, aggregator, or any client. Sends orders into Fire.
+  </Card>
+  <Card title="Fire" icon="fire">
+    Receives orders, owns the lifecycle, and emits events when state changes.
+  </Card>
+  <Card title="Your system" icon="server">
+    Receives Fire events on the webhook URL you registered. Acts on them.
+  </Card>
+</CardGroup>
+
+{/* TODO: replace with branded SVG illustration of the Fire integration loop. */}
+
+Two takeaways:
+
+1. **Fire is the source of truth.** Orders enter through one API, the lifecycle is managed inside Fire.
+2. **The fiscal loop closes back to Fire.** For non-Brazil countries, your system reports the local fiscal result through a single callback. For Brazil, Fire owns the SEFAZ integration end-to-end.
+
+---
+
+## The envelope
+
+Every event Fire delivers — regardless of type or country — uses the same outer shape:
+
+```json
+{
+  "event": {
+    "id":        "evt_2167a211e7574185abb459474e275019",
+    "type":      "order.completed",
+    "createdAt": "2025-01-15T14:30:00.000Z"
+  },
+  "data": {
+    /* event-specific payload — see the reference page for each type */
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `event.id` | string | Unique identifier for **this delivery attempt**. Stable across retries. Use it as your idempotency key. |
+| `event.type` | string | The event type discriminator. One endpoint can handle many types by switching on this field. |
+| `event.createdAt` | string | When the event was materialized in Fire (UTC, ISO 8601). |
+| `data` | object | Event-specific payload. Fields depend on `event.type`. See the reference page for each event type below. |
+
+<Tip>
+  For "process this order exactly once" semantics, store `event.id` in your database with a unique constraint. If you receive the same `event.id` twice, return `2xx` and skip processing.
+</Tip>
+
+---
+
+## Event types
+
+Pick the event you want to subscribe to. Each page has the full payload, every field, and at least two real-world examples.
+
+### Order lifecycle
+
+<CardGroup cols={2}>
+  <Card title="order.completed" icon="circle-check" href="/en/webhook-reference/order-completed">
+    A new order was injected and its payment succeeded. The most common event — most integrations build their main flow around it.
+  </Card>
+  <Card title="order.cancelled" icon="circle-xmark" href="/en/webhook-reference/order-cancelled">
+    An order was cancelled. Includes the cancellation reason, source, and (for Brazil) the original fiscal document context.
+  </Card>
+</CardGroup>
+
+### Fiscal (Brazil only)
+
+<CardGroup cols={2}>
+  <Card title="fiscal.authorized.br" icon="file-invoice" href="/en/webhook-reference/fiscal-authorized-br">
+    SEFAZ confirmed authorization of an NFC-e or NF-e. Carries `chaveAcesso`, `protocolo`, and the URLs to download the XML and DANFE.
+  </Card>
+  <Card title="fiscal.cancelled.br" icon="file-circle-xmark" href="/en/webhook-reference/fiscal-cancelled-br">
+    SEFAZ confirmed cancellation of a fiscal document. Carries the original document context plus the cancellation protocol.
+  </Card>
+</CardGroup>
+
+### Catalog & configuration
+
+<CardGroup cols={3}>
+  <Card title="store.updated" icon="store" href="/en/webhook-reference/store-updated">
+    A store's configuration changed.
+  </Card>
+  <Card title="menu.updated" icon="book-open" href="/en/webhook-reference/menu-updated">
+    Full menu replacement.
+  </Card>
+  <Card title="product.updated" icon="tag" href="/en/webhook-reference/product-updated">
+    Incremental product changes.
+  </Card>
+</CardGroup>
+
+See [Webhook reference](/en/webhook-reference/overview) for the full catalog.
+
+---
+
+## Delivery
+
+<Steps>
+  <Step icon="signature" title="Fire signs every request">
+    Fire computes `HMAC-SHA256(body, secret)` and attaches it as `X-Fire-Signature`. Your endpoint recomputes the same signature on the raw body and compares.
+  </Step>
+  <Step icon="paper-plane" title="Fire delivers to your endpoint">
+    `POST` with `Content-Type: application/json`, `X-Fire-Event` (the event type), and `X-Fire-Delivery` (a unique delivery ID).
+  </Step>
+  <Step icon="reply" title="You acknowledge fast">
+    Return any `2xx` within 10 seconds. Process the payload asynchronously after acknowledging.
+  </Step>
+  <Step icon="rotate" title="Fire retries on failure">
+    Non-`2xx` or timeout triggers exponential retries. After all retries are exhausted, the delivery is marked failed and you can replay it from the dashboard.
+  </Step>
+</Steps>
+
+### Headers
+
+| Header | Description |
+|---|---|
+| `Content-Type` | Always `application/json` |
+| `X-Fire-Event` | Event type (e.g. `order.completed`) — same value as `event.type` in the body |
+| `X-Fire-Signature` | `HMAC-SHA256` of the raw body using your endpoint secret |
+| `X-Fire-Delivery` | Unique delivery attempt ID (changes on each retry) |
+
+See [Authentication](/en/authentication) for the full signature verification recipe.
+
+### Retry schedule
+
+| Attempt | When |
+|---|---|
+| 1st retry | 5 minutes after the failed delivery |
+| 2nd retry | 30 minutes |
+| 3rd retry | 2 hours |
+| 4th retry | 8 hours |
+
+After the 4th retry the delivery is marked as failed. You can replay failed deliveries manually from the Fire dashboard.
+
+### Acknowledging
+
+<CodeGroup>
+
+```js Node.js (Express)
+app.post("/fire-webhook", express.raw({ type: "application/json" }), (req, res) => {
+  // 1. Verify signature on the raw body — must happen before parsing
+  const signature = req.headers["x-fire-signature"];
+  if (!verifySignature(req.body, signature, process.env.FIRE_WEBHOOK_SECRET)) {
+    return res.status(400).send("invalid signature");
+  }
+
+  // 2. Acknowledge fast
+  res.sendStatus(200);
+
+  // 3. Process asynchronously
+  const event = JSON.parse(req.body.toString());
+  processEvent(event).catch(console.error);
+});
+```
+
+```python Python (FastAPI)
+@app.post("/fire-webhook")
+async def fire_webhook(request: Request):
+    raw = await request.body()
+    signature = request.headers.get("x-fire-signature")
+
+    if not verify_signature(raw, signature, settings.FIRE_WEBHOOK_SECRET):
+        raise HTTPException(400, "invalid signature")
+
+    event = json.loads(raw)
+    asyncio.create_task(process_event(event))
+    return Response(status_code=200)
+```
+
+```php PHP
+<?php
+$raw = file_get_contents('php://input');
+$signature = $_SERVER['HTTP_X_FIRE_SIGNATURE'] ?? '';
+
+if (!verifySignature($raw, $signature, getenv('FIRE_WEBHOOK_SECRET'))) {
+    http_response_code(400);
+    exit('invalid signature');
+}
+
+http_response_code(200);
+header('Content-Type: application/json');
+echo '{"received": true}';
+
+// Defer processing (e.g. enqueue a job)
+$event = json_decode($raw, true);
+enqueueProcessing($event);
+```
+
+</CodeGroup>
+
+---
+
+## Per-country behavior
+
+The envelope is identical across countries. What changes is **which events fire** and **what's inside the country-specific blocks**.
+
+<Tabs>
+  <Tab title="🇧🇷 Brazil (BR)">
+    Fire owns the SEFAZ integration through PlugNotas, so Fire emits both fiscal events natively.
+
+    | Event | Who emits it |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | `fiscal.authorized.br` | **Fire** (after SEFAZ authorizes) |
+    | `fiscal.cancelled.br` | **Fire** (after SEFAZ confirms cancellation) |
+
+    Your system **does not call** `/v1/webhooks/fiscal/callback` for Brazil. You only receive events from Fire.
+
+    Brazilian payloads carry extra fiscal blocks: `payments.metadata.fiscal` (vBC, vNF, vICMS, vTotTrib…), per-line tax metadata (CST, cBenef, cClassTrib…), and the `fiscal` top-level block on `fiscal.authorized.br`.
+  </Tab>
+
+  <Tab title="🇨🇴 Colombia (CO)">
+    Your system handles the DIAN integration and reports back via the [Fiscal callback](/en/configuration/fiscal-callback).
+
+    | Event | Who emits it |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal authorized | **You** call `POST /v1/webhooks/fiscal/callback` with `eventType="authorized"` |
+    | Fiscal cancelled | **You** call `POST /v1/webhooks/fiscal/callback` with `eventType="cancelled"` |
+
+    Document fields: `cufe`, `prefijo`, `numeroDian`, `qrCode`. Currency: `COP`.
+  </Tab>
+
+  <Tab title="🇪🇨 Ecuador (EC)">
+    Your system handles the SRI integration and reports back via the [Fiscal callback](/en/configuration/fiscal-callback).
+
+    | Event | Who emits it |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal authorized | **You** call `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelled | **You** call `POST /v1/webhooks/fiscal/callback` |
+
+    Document fields: `claveAcceso`, `numeroAutorizacion`, `ambiente`. Currency: `USD`.
+  </Tab>
+
+  <Tab title="🇨🇱 Chile (CL)">
+    Your system handles the SII integration and reports back via the [Fiscal callback](/en/configuration/fiscal-callback).
+
+    | Event | Who emits it |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal authorized | **You** call `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelled | **You** call `POST /v1/webhooks/fiscal/callback` |
+
+    Document fields: `folio`, `ted`, `tipoDte`, `trackId`. Currency: `CLP`.
+  </Tab>
+
+  <Tab title="🇦🇷 Argentina (AR)">
+    Your system handles the AFIP integration and reports back via the [Fiscal callback](/en/configuration/fiscal-callback).
+
+    | Event | Who emits it |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal authorized | **You** call `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelled | **You** call `POST /v1/webhooks/fiscal/callback` |
+
+    Document fields: `cae`, `fechaVtoCae`, `puntoVenta`, `numeroComprobante`, `tipoComprobante`. Currency: `ARS`.
+  </Tab>
+
+  <Tab title="🇻🇪 Venezuela (VE)">
+    Your system handles the SENIAT integration and reports back via the [Fiscal callback](/en/configuration/fiscal-callback).
+
+    | Event | Who emits it |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal authorized | **You** call `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelled | **You** call `POST /v1/webhooks/fiscal/callback` |
+
+    Document fields: `numeroControl`, `numeroFactura`, `rifEmisor`. Currency: `VES`.
+  </Tab>
+</Tabs>
+
+<Note>
+  The envelope shape is identical in every country. If your code switches on `event.type` and ignores fields it does not understand, the same handler can power all six countries.
+</Note>
+
+---
+
+## Reliability features
+
+<CardGroup cols={3}>
+  <Card title="Idempotent by design" icon="fingerprint">
+    `event.id` is stable across retries. Index it in your database with a unique constraint to dedupe automatically.
+  </Card>
+  <Card title="Cryptographically signed" icon="shield-halved">
+    Every request carries `X-Fire-Signature` (HMAC-SHA256). Verify it before processing — never trust a request that fails verification.
+  </Card>
+  <Card title="Replayable from dashboard" icon="rotate-right">
+    Failed deliveries (after all retries) can be replayed individually or in batch from **Settings → Endpoints → Deliveries**.
+  </Card>
+</CardGroup>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Register your endpoint" icon="webhook" href="/en/configuration/webhook-setup">
+    Add your URL and signing secret in the Fire dashboard.
+  </Card>
+  <Card title="Verify the signature" icon="key" href="/en/authentication#webhook-signature-verification">
+    Step-by-step recipe to validate `X-Fire-Signature`.
+  </Card>
+  <Card title="Inject orders" icon="paper-plane" href="/en/api-reference/orders">
+    Push orders into Fire to trigger the order events.
+  </Card>
+  <Card title="Report fiscal events" icon="receipt" href="/en/configuration/fiscal-callback">
+    Close the loop for CO, EC, CL, AR, VE.
+  </Card>
+</CardGroup>

@@ -1,0 +1,116 @@
+---
+title: "Errores"
+description: "Envelope de error, códigos HTTP y catálogo de error codes que devuelve la API de Fire."
+---
+
+Fire usa códigos HTTP estándar para indicar éxito o fallo. Los errores incluyen un body JSON con un código machine-readable estable y un mensaje legible para humanos. Usa `code` para lógica de branching; muestra `message` a los usuarios solo cuando corresponda.
+
+## Envelope de error
+
+Cada respuesta no-`2xx` lleva esta forma:
+
+```json
+{
+  "error": {
+    "code":      "validation_error",
+    "message":   "channelId is required",
+    "param":     "channelId",
+    "requestId": "req_5fa31abcdef1234567890"
+  }
+}
+```
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `error.code` | string | Código de error estable. Haz switch sobre este. |
+| `error.message` | string | Explicación legible. Puede cambiar entre releases. |
+| `error.param` | string | Opcional. Nombre del campo culpable para errores de validación. |
+| `error.requestId` | string | Identificador del request server-side. Inclúyelo cuando contactes soporte de Fire. |
+
+## Códigos HTTP
+
+| Status | Significado | ¿Reintentar? |
+|---|---|---|
+| `200 OK` | Solicitud exitosa. | — |
+| `201 Created` | Recurso creado. | — |
+| `400 Bad Request` | Validación fallida. El body está malformado o falta un campo requerido. | No — corrige la solicitud. |
+| `401 Unauthorized` | Credenciales faltantes, malformadas, revocadas o vencidas. | No — corrige autenticación. |
+| `403 Forbidden` | Autenticado pero la credencial no tiene el scope requerido, o cruza un límite de tenant. | No — corrige scopes / vendor binding. |
+| `404 Not Found` | Recurso no existe o no es visible para ti. | No. |
+| `409 Conflict` | Recurso ya existe con la misma uniqueness key (ej. `external_order_id` duplicado). | No — maneja el recurso existente. |
+| `422 Unprocessable Entity` | Body bien formado pero falla reglas de negocio (ej. `total` no coincide con line items). | No — corrige la solicitud. |
+| `429 Too Many Requests` | Rate limit excedido. La respuesta incluye un header `Retry-After`. | Sí — backoff exponencial. |
+| `500 Internal Server Error` | Error inesperado en Fire. Es seguro reintentar. | Sí. |
+| `502` / `503` / `504` | Error transitorio en Fire. | Sí — backoff exponencial. |
+
+## Catálogo de error codes
+
+### Autenticación
+
+| Code | HTTP | Descripción |
+|---|---|---|
+| `unauthorized` | `401` | API key faltante, malformada o revocada. |
+| `invalid_credentials` | `401` | Username o password incorrectos en `POST /auth/login`. |
+| `token_expired` | `401` | El Bearer token expiró. Llama `/auth/login` de nuevo. |
+| `forbidden_scope` | `403` | A la API key le falta el scope requerido. |
+| `tenant_mismatch` | `403` | El recurso referenciado (ej. `orderId`) pertenece a otro vendor que la API key. |
+
+### Validación
+
+| Code | HTTP | Descripción |
+|---|---|---|
+| `validation_error` | `400` | Uno o más campos faltan o tienen el tipo incorrecto. `error.param` indica el campo culpable. |
+| `unsupported_country_code` | `400` | El valor de `countryCode` no es un país soportado. |
+| `unsupported_event_type` | `400` | El valor de `eventType` no es un tipo soportado. |
+| `business_rule_violation` | `422` | Body bien formado pero rompe una regla de negocio. |
+
+### Conflictos
+
+| Code | HTTP | Descripción |
+|---|---|---|
+| `duplicate_order` | `409` | Una orden con el mismo `external_order_id` ya existe para esta cuenta y vendor. El `orderId` existente está en `error.message`. |
+| `duplicate_event` | `409` | Un callback fiscal con el mismo `providerEventId` ya fue recibido. |
+| `regression` | `409` | La transición de estado no se permite (ej. autorizar un documento cancelado). |
+
+### Búsqueda de recursos
+
+| Code | HTTP | Descripción |
+|---|---|---|
+| `order_not_found` | `404` | Ninguna orden coincide con el ID, o no es visible. |
+| `channel_not_found` | `404` | Ningún canal de venta coincide con el ID. |
+
+### Rate limiting
+
+| Code | HTTP | Descripción |
+|---|---|---|
+| `rate_limited` | `429` | Demasiadas solicitudes. Backoff y reintentar. |
+
+### Errores de servidor
+
+| Code | HTTP | Descripción |
+|---|---|---|
+| `internal_error` | `500` | Error inesperado en Fire. Reintenta con backoff. |
+| `service_unavailable` | `503` | Un servicio downstream del que Fire depende está en mal estado. Reintenta. |
+
+## Manejo de errores
+
+```js
+async function injectOrder(order) {
+  try {
+    return await fire.orders.inject(order);
+  } catch (err) {
+    if (err.code === "duplicate_order") {
+      // ya existe — lee la existente
+      return fire.orders.retrieve(err.existingOrderId);
+    }
+    if (err.status === 429 || err.status >= 500) {
+      // transitorio — backoff y reintentar
+      await sleep(err.retryAfter ?? 1000);
+      return injectOrder(order);
+    }
+    throw err;
+  }
+}
+```
+
+Cuando abras un ticket de soporte, incluye `error.requestId` y el timestamp — los ingenieros de Fire pueden ubicar el request inmediatamente en los logs.

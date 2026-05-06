@@ -1,0 +1,137 @@
+---
+title: "fiscal.authorized.br"
+description: "Brazil only. Sent when SEFAZ confirms authorization of an NFC-e or NF-e for a previously completed order. Carries the SEFAZ access key, protocol, and the URLs to download the XML and DANFE."
+---
+
+Fire fires `fiscal.authorized.br` only for **Brazilian** stores, after SEFAZ confirms authorization of the fiscal document Fire emitted via PlugNotas. The payload mirrors the [`order.completed`](/en/webhook-reference/order-completed) snapshot **plus** a top-level `fiscal` block with the SEFAZ data.
+
+<Note>
+  This event is **Brazil-only**. For CO, EC, CL, AR, VE the fiscal step happens in your system — see the [Fiscal callback](/en/configuration/fiscal-callback) for how to report your local fiscal authorization back to Fire.
+</Note>
+
+## When it fires
+
+The event fires once SEFAZ has authorized the document. SEFAZ authorization is **asynchronous** — there's typically a short delay between `order.completed` and `fiscal.authorized.br` (a few seconds in the happy path, longer if SEFAZ is degraded).
+
+| Trigger | Fires `fiscal.authorized.br`? |
+|---|---|
+| SEFAZ authorizes a `nfce` document | ✅ Yes |
+| SEFAZ authorizes a `nfe` document | ✅ Yes |
+| SEFAZ rejects the document | ❌ No |
+| SEFAZ is in contingency mode | ❌ No (fires once SEFAZ recovers and authorizes) |
+| Same document is re-emitted after a rejection and gets authorized | ✅ Yes |
+
+## Envelope
+
+```json
+{
+  "event": {
+    "id":        "evt_a8b9c1d2e3f4567890abcdef12345678",
+    "type":      "fiscal.authorized.br",
+    "createdAt": "2025-01-15T14:30:05.000Z"
+  },
+  "data": {
+    /* V4 Order Snapshot + fiscal block */
+  }
+}
+```
+
+## Data fields
+
+The `data` block is the **V4 Order Snapshot** (same shape documented in [`order.completed`](/en/webhook-reference/order-completed#data-fields)) plus the `fiscal` block below.
+
+### `fiscal`
+
+<Expandable title="fiscal properties">
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | Always `authorized` for this event. |
+| `docSubtype` | string | `nfce` (Nota Fiscal de Consumidor Eletrônica) or `nfe` (Nota Fiscal Eletrônica). |
+| `chaveAcesso` | string | 44-digit SEFAZ access key. Globally unique per document — use it to look up the document in SEFAZ portals. |
+| `numero` | string | Sequential document number assigned by the issuing series, e.g. `1000013`. |
+| `serie` | string \| null | Document series. May be `null` for documents authorized before the series field was persisted. |
+| `protocolo` | string | SEFAZ authorization protocol number. Stamped on the DANFE. |
+| `dataAutorizacao` | string | ISO 8601 UTC timestamp when SEFAZ authorized the document. |
+| `xmlUrl` | string | Public URL to download the authorization XML. Hosted by PlugNotas. |
+| `pdfUrl` | string | Public URL to download the DANFE PDF. Hosted by PlugNotas. |
+| `providerDocId` | string | PlugNotas integration ID. Use it when correlating with PlugNotas dashboards or APIs. |
+| `cStat` | string \| number \| null | SEFAZ status code. `100` is the standard success code. |
+
+</Expandable>
+
+## Example
+
+```json
+{
+  "event": {
+    "id": "evt_a8b9c1d2e3f4567890abcdef12345678",
+    "type": "fiscal.authorized.br",
+    "createdAt": "2025-01-15T14:30:05.000Z"
+  },
+  "data": {
+    "orderId": "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+    "orderCode": "OC-br-k082-1777566201724",
+    "businessDayDate": "2025-01-15",
+    "externalOrderId": "ext-br-1001",
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "store": {
+      "code": "BR-SP-082",
+      "name": "São Paulo Pinheiros",
+      "locationInfo": { "currencyCode": "BRL", "country": { "code": "BR" }, "timezone": "America/Sao_Paulo" },
+      "storeFiscalConfig": {
+        "enabled": true,
+        "govIdType": "CNPJ",
+        "govIdNumber": "12345678000190",
+        "secondaryGovIdType": "INSCRICAO_ESTADUAL",
+        "secondaryGovIdNumber": "111222333444",
+        "metadata": { "storeCode3S": "50012529", "serialNumber": 1 }
+      }
+    },
+    "fiscal": {
+      "status": "authorized",
+      "docSubtype": "nfce",
+      "chaveAcesso": "35250112345678000190650010000010001000010001",
+      "numero": "1000013",
+      "serie": "1",
+      "protocolo": "135250000123456",
+      "dataAutorizacao": "2025-01-15T14:30:05.000Z",
+      "xmlUrl": "https://api.plugnotas.com.br/files/nfce/35250112345678000190650010000010001000010001/xml",
+      "pdfUrl": "https://api.plugnotas.com.br/files/nfce/35250112345678000190650010000010001000010001/danfe",
+      "providerDocId": "65f1a3e2c1a2",
+      "cStat": "100"
+    }
+  }
+}
+```
+
+## Common consumer patterns
+
+```js
+async function handle(payload) {
+  if (payload.event.type !== "fiscal.authorized.br") return;
+
+  const { orderId, fiscal } = payload.data;
+
+  // Persist the document URLs against the order
+  await db.fiscalDocuments.upsert({
+    orderId,
+    docSubtype:    fiscal.docSubtype,
+    chaveAcesso:   fiscal.chaveAcesso,
+    protocolo:     fiscal.protocolo,
+    pdfUrl:        fiscal.pdfUrl,
+    xmlUrl:        fiscal.xmlUrl,
+    authorizedAt:  fiscal.dataAutorizacao,
+  });
+
+  // Optionally archive the XML for compliance retention
+  await archiveXml(fiscal.xmlUrl, { orderId, chaveAcesso: fiscal.chaveAcesso });
+}
+```
+
+## Related events
+
+- [`order.completed`](/en/webhook-reference/order-completed) — fires first, before SEFAZ authorization.
+- [`fiscal.cancelled.br`](/en/webhook-reference/fiscal-cancelled-br) — fires when SEFAZ later confirms cancellation of the authorized document.
+- [`order.cancelled`](/en/webhook-reference/order-cancelled) — when the underlying order is cancelled (may carry the original fiscal context in `cancellation.metadata.fiscal`).

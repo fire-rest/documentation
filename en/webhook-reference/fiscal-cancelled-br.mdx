@@ -1,0 +1,163 @@
+---
+title: "fiscal.cancelled.br"
+description: "Brazil only. Sent when SEFAZ confirms cancellation of a previously authorized NFC-e or NF-e. Carries both the original document context and the SEFAZ cancellation result."
+---
+
+Fire fires `fiscal.cancelled.br` only for **Brazilian** stores, after SEFAZ confirms cancellation of a fiscal document that had been authorized. The payload mirrors the [`order.completed`](/en/webhook-reference/order-completed) snapshot **plus** a `cancellation` block whose `metadata.fiscal` carries the original authorized document **and** the SEFAZ cancellation result under `sefazCancellation`.
+
+<Note>
+  This event is **Brazil-only**. The top-level `fiscal` block from `fiscal.authorized.br` is **dropped**; everything fiscal lives inside `cancellation.metadata.fiscal` for cancellation events.
+</Note>
+
+## When it fires
+
+| Trigger | Fires `fiscal.cancelled.br`? |
+|---|---|
+| SEFAZ confirms cancellation of an authorized document | ✅ Yes |
+| SEFAZ rejects the cancellation request (e.g. outside the cancellation window) | ❌ No |
+| Order is cancelled but no fiscal document was ever authorized | ❌ No (`order.cancelled` fires alone) |
+
+## Envelope
+
+```json
+{
+  "event": {
+    "id":        "evt_c4d5e6f7890abcdef1234567890abcdef",
+    "type":      "fiscal.cancelled.br",
+    "createdAt": "2025-01-15T14:50:00.000Z"
+  },
+  "data": {
+    /* V4 Order Snapshot (no top-level fiscal) + cancellation block */
+  }
+}
+```
+
+## Data fields
+
+The `data` block is the **V4 Order Snapshot** (same shape documented in [`order.completed`](/en/webhook-reference/order-completed#data-fields)) without the top-level `fiscal` block, plus the `cancellation` block below.
+
+### `cancellation`
+
+<Expandable title="cancellation properties">
+
+| Field | Type | Description |
+|---|---|---|
+| `cancellationId` | string | Fire's internal ID for this cancellation. |
+| `cancelledAt` | string | ISO 8601 UTC — when the cancellation was recorded in Fire. |
+| `cancelledBy` | string | Who triggered the cancellation. |
+| `cancellationReason` | string | Free-form reason. For BR fiscal cancellations the reason must be ≥ 15 characters per SEFAZ rules. |
+| `cancellationSource` | string | Origin: `BACKOFFICE`, `POS`, `API`. |
+| `metadata.fiscal` | object | BR-only block carrying the original authorized document context and the SEFAZ cancellation result. |
+
+**`cancellation.metadata.fiscal`** — Original authorized document context.
+
+| Field | Type | Description |
+|---|---|---|
+| `docSubtype` | string | `nfce` or `nfe`. |
+| `chaveAcesso` | string | 44-digit SEFAZ access key of the original authorized document. |
+| `numero` | string | Document number. |
+| `serie` | string \| null | Document series. |
+| `protocolo` | string \| null | **Authorization** protocol of the original document. |
+| `dataAutorizacao` | string \| null | ISO 8601 UTC — when the original document was authorized. |
+| `xmlUrl` | string \| null | URL to the original authorization XML. |
+| `pdfUrl` | string \| null | URL to the original DANFE PDF. |
+| `providerDocId` | string | PlugNotas integration ID. |
+| `sefazCancellation` | object | SEFAZ confirmation of the cancellation — see below. |
+
+**`cancellation.metadata.fiscal.sefazCancellation`**
+
+| Field | Type | Description |
+|---|---|---|
+| `protocolo` | string \| null | Cancellation protocol from SEFAZ. Different from the authorization protocol. |
+| `date` | string \| null | ISO 8601 UTC — when SEFAZ confirmed the cancellation. |
+| `xmlUrl` | string \| null | URL to download the cancellation XML. |
+| `justificativa` | string \| null | Justification text sent to SEFAZ. Must be ≥ 15 characters. |
+| `cStat` | string \| number \| null | SEFAZ status code. `135` is the standard success code for cancellation. |
+
+</Expandable>
+
+## Example
+
+```json
+{
+  "event": {
+    "id": "evt_c4d5e6f7890abcdef1234567890abcdef",
+    "type": "fiscal.cancelled.br",
+    "createdAt": "2025-01-15T14:50:00.000Z"
+  },
+  "data": {
+    "orderId": "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+    "orderCode": "OC-br-k082-1777566201724",
+    "businessDayDate": "2025-01-15",
+    "externalOrderId": "ext-br-1001",
+    "status": "CANCELLED",
+    "paymentStatus": "SUCCEEDED",
+    "store": {
+      "code": "BR-SP-082",
+      "name": "São Paulo Pinheiros",
+      "locationInfo": { "currencyCode": "BRL", "country": { "code": "BR" }, "timezone": "America/Sao_Paulo" }
+    },
+    "cancellation": {
+      "cancellationId": "canc-br-9002",
+      "cancelledAt": "2025-01-15T14:45:00.000Z",
+      "cancelledBy": "manager@k082",
+      "cancellationReason": "Wrong items prepared, customer refused order",
+      "cancellationSource": "BACKOFFICE",
+      "metadata": {
+        "fiscal": {
+          "docSubtype": "nfce",
+          "chaveAcesso": "35250112345678000190650010000010001000010001",
+          "numero": "1000013",
+          "serie": "1",
+          "protocolo": "135250000123456",
+          "dataAutorizacao": "2025-01-15T14:30:05.000Z",
+          "xmlUrl": "https://api.plugnotas.com.br/files/nfce/35250112345678000190650010000010001000010001/xml",
+          "pdfUrl": "https://api.plugnotas.com.br/files/nfce/35250112345678000190650010000010001000010001/danfe",
+          "providerDocId": "65f1a3e2c1a2",
+          "sefazCancellation": {
+            "protocolo": "135250000789012",
+            "date": "2025-01-15T14:50:00.000Z",
+            "xmlUrl": "https://api.plugnotas.com.br/files/nfce/35250112345678000190650010000010001000010001/cancelamento/xml",
+            "justificativa": "Pedido cancelado a pedido do cliente apos preparo errado dos itens",
+            "cStat": "135"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Common consumer patterns
+
+```js
+async function handle(payload) {
+  if (payload.event.type !== "fiscal.cancelled.br") return;
+
+  const { orderId, cancellation } = payload.data;
+  const fiscal = cancellation.metadata.fiscal;
+
+  await db.fiscalDocuments.update({
+    orderId,
+    chaveAcesso: fiscal.chaveAcesso,
+  }, {
+    status:               "CANCELLED",
+    cancellationProtocol: fiscal.sefazCancellation.protocolo,
+    cancellationXmlUrl:   fiscal.sefazCancellation.xmlUrl,
+    cancelledAt:          fiscal.sefazCancellation.date,
+  });
+
+  // Archive the cancellation XML for compliance retention
+  await archiveXml(fiscal.sefazCancellation.xmlUrl, {
+    orderId,
+    chaveAcesso: fiscal.chaveAcesso,
+    type:        "cancellation",
+  });
+}
+```
+
+## Related events
+
+- [`fiscal.authorized.br`](/en/webhook-reference/fiscal-authorized-br) — original authorization event for this document.
+- [`order.cancelled`](/en/webhook-reference/order-cancelled) — order-level cancellation event that always fires before this one.
+- [`order.completed`](/en/webhook-reference/order-completed) — initial order event.

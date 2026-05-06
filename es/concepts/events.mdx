@@ -1,0 +1,342 @@
+---
+title: "Eventos"
+description: "Fire emite eventos cuando algo relevante ocurre con una tienda, menú, producto o pedido. Suscríbete una vez, reacciona a todo."
+---
+
+Fire avisa a tu sistema en tiempo real con **eventos**. Cuando se completa una orden, cuando un documento fiscal queda autorizado, cuando se actualiza un menú — Fire dispara un evento. Lo recibes como un `POST` HTTP en el endpoint que registraste, actúas, y respondes `2xx`.
+
+Todo evento que Fire entrega comparte el mismo envelope. La forma dentro de `data` cambia según el tipo, pero el envoltorio nunca lo hace.
+
+<CardGroup cols={2}>
+  <Card title="El envelope" icon="envelope" href="#el-envelope">
+    Tres campos envuelven a todo evento: `event.id`, `event.type`, `event.createdAt`.
+  </Card>
+  <Card title="Tipos de evento" icon="list" href="#tipos-de-evento">
+    Order, fiscal, store, menu, product, channel — qué carga cada uno.
+  </Card>
+  <Card title="Entrega" icon="truck-fast" href="#entrega">
+    Cómo Fire firma, reintenta y deduplica las entregas a tu endpoint.
+  </Card>
+  <Card title="Comportamiento por país" icon="globe" href="#comportamiento-por-pais">
+    Qué cambia entre BR y CO, EC, CL, AR, VE.
+  </Card>
+</CardGroup>
+
+## Cómo Fire se integra con tu sistema
+
+<CardGroup cols={3}>
+  <Card title="Origen de la orden" icon="cash-register">
+    POS, kiosko, app móvil, agregador o cualquier cliente. Empuja órdenes a Fire.
+  </Card>
+  <Card title="Fire" icon="fire">
+    Recibe órdenes, gestiona el ciclo de vida y emite eventos cuando cambia el estado.
+  </Card>
+  <Card title="Tu sistema" icon="server">
+    Recibe los eventos de Fire en la URL de webhook que registraste. Actúa sobre ellos.
+  </Card>
+</CardGroup>
+
+{/* TODO: replace with branded SVG illustration of the Fire integration loop. */}
+
+Dos ideas clave:
+
+1. **Fire es la fuente de verdad.** Las órdenes entran por una sola API; el ciclo se gestiona dentro de Fire.
+2. **El bucle fiscal cierra de regreso a Fire.** Para países distintos a Brasil, tu sistema reporta el resultado fiscal local con un único callback. Para Brasil, Fire es dueño de la integración SEFAZ end-to-end.
+
+---
+
+## El envelope
+
+Todo evento que Fire entrega — sin importar tipo o país — usa la misma forma exterior:
+
+```json
+{
+  "event": {
+    "id":        "evt_2167a211e7574185abb459474e275019",
+    "type":      "order.completed",
+    "createdAt": "2025-01-15T14:30:00.000Z"
+  },
+  "data": {
+    /* payload específico del evento — ver la página reference de cada tipo */
+  }
+}
+```
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `event.id` | string | Identificador único de **este intento de entrega**. Estable entre reintentos. Úsalo como llave de idempotencia. |
+| `event.type` | string | Discriminador del tipo. Un endpoint puede manejar varios tipos haciendo switch sobre este campo. |
+| `event.createdAt` | string | Cuándo se materializó el evento en Fire (UTC, ISO 8601). |
+| `data` | object | Payload específico. Los campos dependen de `event.type`. Ver la página reference de cada tipo abajo. |
+
+<Tip>
+  Para semántica "procesa esta orden exactamente una vez", almacena `event.id` en tu base con un UNIQUE constraint. Si recibes el mismo `event.id` dos veces, devuelve `2xx` y omite el procesamiento.
+</Tip>
+
+---
+
+## Tipos de evento
+
+Elige el evento al que quieres suscribirte. Cada página tiene el payload completo, todos los campos y al menos dos ejemplos reales.
+
+### Ciclo de la orden
+
+<CardGroup cols={2}>
+  <Card title="order.completed" icon="circle-check" href="/es/webhook-reference/order-completed">
+    Una nueva orden se inyectó y su pago fue exitoso. El más común — la mayoría de integraciones se construyen alrededor de él.
+  </Card>
+  <Card title="order.cancelled" icon="circle-xmark" href="/es/webhook-reference/order-cancelled">
+    Una orden fue cancelada. Incluye motivo, fuente, y (para Brasil) el contexto del documento fiscal original.
+  </Card>
+</CardGroup>
+
+### Fiscal (solo Brasil)
+
+<CardGroup cols={2}>
+  <Card title="fiscal.authorized.br" icon="file-invoice" href="/es/webhook-reference/fiscal-authorized-br">
+    SEFAZ confirmó la autorización de una NFC-e o NF-e. Lleva `chaveAcesso`, `protocolo`, y URLs para descargar XML y DANFE.
+  </Card>
+  <Card title="fiscal.cancelled.br" icon="file-circle-xmark" href="/es/webhook-reference/fiscal-cancelled-br">
+    SEFAZ confirmó la cancelación de un documento fiscal. Lleva el contexto del documento original más el protocolo de cancelación.
+  </Card>
+</CardGroup>
+
+### Catálogo y configuración
+
+<CardGroup cols={3}>
+  <Card title="store.updated" icon="store" href="/es/webhook-reference/store-updated">
+    La configuración de una tienda cambió.
+  </Card>
+  <Card title="menu.updated" icon="book-open" href="/es/webhook-reference/menu-updated">
+    Reemplazo completo del menú.
+  </Card>
+  <Card title="product.updated" icon="tag" href="/es/webhook-reference/product-updated">
+    Cambios incrementales de productos.
+  </Card>
+</CardGroup>
+
+Ver [Referencia de webhooks](/es/webhook-reference/overview) para el catálogo completo.
+
+---
+
+## Entrega
+
+<Steps>
+  <Step icon="signature" title="Fire firma cada solicitud">
+    Fire calcula `HMAC-SHA256(body, secret)` y lo adjunta como `X-Fire-Signature`. Tu endpoint recalcula la misma firma sobre el body crudo y compara.
+  </Step>
+  <Step icon="paper-plane" title="Fire entrega a tu endpoint">
+    `POST` con `Content-Type: application/json`, `X-Fire-Event` (el tipo) y `X-Fire-Delivery` (ID único de entrega).
+  </Step>
+  <Step icon="reply" title="Tú confirmas rápido">
+    Devuelve cualquier `2xx` en menos de 10 segundos. Procesa el payload de forma asíncrona después del acknowledge.
+  </Step>
+  <Step icon="rotate" title="Fire reintenta ante fallos">
+    No-`2xx` o timeout dispara reintentos exponenciales. Tras agotarlos, la entrega se marca como fallida y la puedes reenviar desde el dashboard.
+  </Step>
+</Steps>
+
+### Headers
+
+| Header | Descripción |
+|---|---|
+| `Content-Type` | Siempre `application/json` |
+| `X-Fire-Event` | Tipo de evento (ej. `order.completed`) — mismo valor que `event.type` en el body |
+| `X-Fire-Signature` | `HMAC-SHA256` del body crudo usando el secreto del endpoint |
+| `X-Fire-Delivery` | ID único de intento de entrega (cambia en cada retry) |
+
+Ver [Autenticación](/es/authentication) para la receta completa de verificación de firma.
+
+### Calendario de reintentos
+
+| Intento | Cuándo |
+|---|---|
+| 1er retry | 5 minutos tras la entrega fallida |
+| 2do retry | 30 minutos |
+| 3er retry | 2 horas |
+| 4to retry | 8 horas |
+
+Tras el 4º retry la entrega queda marcada como fallida. Puedes reenviarla manualmente desde el dashboard de Fire.
+
+### Confirmación
+
+<CodeGroup>
+
+```js Node.js (Express)
+app.post("/fire-webhook", express.raw({ type: "application/json" }), (req, res) => {
+  // 1. Verificar firma sobre el body crudo — antes de parsear
+  const signature = req.headers["x-fire-signature"];
+  if (!verifySignature(req.body, signature, process.env.FIRE_WEBHOOK_SECRET)) {
+    return res.status(400).send("invalid signature");
+  }
+
+  // 2. Acknowledge rápido
+  res.sendStatus(200);
+
+  // 3. Procesar async
+  const event = JSON.parse(req.body.toString());
+  processEvent(event).catch(console.error);
+});
+```
+
+```python Python (FastAPI)
+@app.post("/fire-webhook")
+async def fire_webhook(request: Request):
+    raw = await request.body()
+    signature = request.headers.get("x-fire-signature")
+
+    if not verify_signature(raw, signature, settings.FIRE_WEBHOOK_SECRET):
+        raise HTTPException(400, "invalid signature")
+
+    event = json.loads(raw)
+    asyncio.create_task(process_event(event))
+    return Response(status_code=200)
+```
+
+```php PHP
+<?php
+$raw = file_get_contents('php://input');
+$signature = $_SERVER['HTTP_X_FIRE_SIGNATURE'] ?? '';
+
+if (!verifySignature($raw, $signature, getenv('FIRE_WEBHOOK_SECRET'))) {
+    http_response_code(400);
+    exit('invalid signature');
+}
+
+http_response_code(200);
+header('Content-Type: application/json');
+echo '{"received": true}';
+
+// Procesa diferido (ej. encolar)
+$event = json_decode($raw, true);
+enqueueProcessing($event);
+```
+
+</CodeGroup>
+
+---
+
+## Comportamiento por país
+
+El envelope es idéntico en todos los países. Lo que cambia es **qué eventos disparan** y **qué hay dentro de los bloques específicos del país**.
+
+<Tabs>
+  <Tab title="🇧🇷 Brasil (BR)">
+    Fire es dueño de la integración SEFAZ vía PlugNotas, así que Fire emite ambos eventos fiscales nativamente.
+
+    | Evento | Quién lo emite |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | `fiscal.authorized.br` | **Fire** (después de la autorización SEFAZ) |
+    | `fiscal.cancelled.br` | **Fire** (después de la confirmación SEFAZ de cancelación) |
+
+    Tu sistema **no llama** a `/v1/webhooks/fiscal/callback` para Brasil. Solo recibe eventos desde Fire.
+
+    Los payloads brasileños llevan bloques fiscales extra: `payments.metadata.fiscal` (vBC, vNF, vICMS, vTotTrib…), metadata fiscal por línea (CST, cBenef, cClassTrib…) y el bloque `fiscal` top-level en `fiscal.authorized.br`.
+  </Tab>
+
+  <Tab title="🇨🇴 Colombia (CO)">
+    Tu sistema gestiona la integración con DIAN y reporta de regreso vía el [callback fiscal](/es/configuration/fiscal-callback).
+
+    | Evento | Quién lo emite |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal autorizado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` con `eventType="authorized"` |
+    | Fiscal cancelado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` con `eventType="cancelled"` |
+
+    Campos del documento: `cufe`, `prefijo`, `numeroDian`, `qrCode`. Moneda: `COP`.
+  </Tab>
+
+  <Tab title="🇪🇨 Ecuador (EC)">
+    Tu sistema gestiona la integración con SRI y reporta de regreso vía el [callback fiscal](/es/configuration/fiscal-callback).
+
+    | Evento | Quién lo emite |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal autorizado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+
+    Campos del documento: `claveAcceso`, `numeroAutorizacion`, `ambiente`. Moneda: `USD`.
+  </Tab>
+
+  <Tab title="🇨🇱 Chile (CL)">
+    Tu sistema gestiona la integración con SII y reporta de regreso vía el [callback fiscal](/es/configuration/fiscal-callback).
+
+    | Evento | Quién lo emite |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal autorizado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+
+    Campos del documento: `folio`, `ted`, `tipoDte`, `trackId`. Moneda: `CLP`.
+  </Tab>
+
+  <Tab title="🇦🇷 Argentina (AR)">
+    Tu sistema gestiona la integración con AFIP y reporta de regreso vía el [callback fiscal](/es/configuration/fiscal-callback).
+
+    | Evento | Quién lo emite |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal autorizado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+
+    Campos del documento: `cae`, `fechaVtoCae`, `puntoVenta`, `numeroComprobante`, `tipoComprobante`. Moneda: `ARS`.
+  </Tab>
+
+  <Tab title="🇻🇪 Venezuela (VE)">
+    Tu sistema gestiona la integración con SENIAT y reporta de regreso vía el [callback fiscal](/es/configuration/fiscal-callback).
+
+    | Evento | Quién lo emite |
+    |---|---|
+    | `order.completed` | Fire |
+    | `order.cancelled` | Fire |
+    | Fiscal autorizado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+    | Fiscal cancelado | **Tú** llamas `POST /v1/webhooks/fiscal/callback` |
+
+    Campos del documento: `numeroControl`, `numeroFactura`, `rifEmisor`. Moneda: `VES`.
+  </Tab>
+</Tabs>
+
+<Note>
+  El envelope es idéntico en todos los países. Si tu código hace switch sobre `event.type` e ignora campos que no entiende, el mismo handler atiende los seis países.
+</Note>
+
+---
+
+## Garantías de fiabilidad
+
+<CardGroup cols={3}>
+  <Card title="Idempotente por diseño" icon="fingerprint">
+    `event.id` es estable entre reintentos. Indéxalo con UNIQUE en tu base para deduplicar automáticamente.
+  </Card>
+  <Card title="Firmado criptográficamente" icon="shield-halved">
+    Cada solicitud lleva `X-Fire-Signature` (HMAC-SHA256). Verifica antes de procesar — nunca confíes en una solicitud que falla la verificación.
+  </Card>
+  <Card title="Reenviable desde el dashboard" icon="rotate-right">
+    Las entregas fallidas (tras todos los reintentos) se pueden reenviar individual o en batch desde **Settings → Endpoints → Deliveries**.
+  </Card>
+</CardGroup>
+
+---
+
+## Próximos pasos
+
+<CardGroup cols={2}>
+  <Card title="Registra tu endpoint" icon="webhook" href="/es/configuration/webhook-setup">
+    Agrega tu URL y secreto de firma en el dashboard.
+  </Card>
+  <Card title="Verifica la firma" icon="key" href="/es/authentication#webhook-signature-verification">
+    Receta paso a paso para validar `X-Fire-Signature`.
+  </Card>
+  <Card title="Inyecta órdenes" icon="paper-plane" href="/es/api-reference/orders">
+    Empuja órdenes a Fire para disparar los eventos de orden.
+  </Card>
+  <Card title="Reporta eventos fiscales" icon="receipt" href="/es/configuration/fiscal-callback">
+    Cierra el bucle para CO, EC, CL, AR, VE.
+  </Card>
+</CardGroup>

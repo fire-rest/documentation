@@ -1,0 +1,116 @@
+---
+title: "Errors"
+description: "Error envelope, HTTP codes, and the catalog of error codes returned by the Fire API."
+---
+
+Fire uses standard HTTP status codes to indicate success or failure. Errors include a JSON body with a stable machine-readable code and a human-readable message. Use the `code` for branching logic; show the `message` to your users only when appropriate.
+
+## Error envelope
+
+Every non-`2xx` response carries this shape:
+
+```json
+{
+  "error": {
+    "code":      "validation_error",
+    "message":   "channelId is required",
+    "param":     "channelId",
+    "requestId": "req_5fa31abcdef1234567890"
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `error.code` | string | Stable machine-readable error code. Switch on this. |
+| `error.message` | string | Human-readable explanation. May change between releases. |
+| `error.param` | string | Optional. Name of the offending field for validation errors. |
+| `error.requestId` | string | Server-side request identifier. Include it when contacting Fire support. |
+
+## HTTP status codes
+
+| Status | Meaning | Retry? |
+|---|---|---|
+| `200 OK` | Request succeeded. | — |
+| `201 Created` | Resource created. | — |
+| `400 Bad Request` | Validation failed. The body is malformed or a required field is missing. | No — fix the request. |
+| `401 Unauthorized` | Missing, malformed, revoked, or expired credentials. | No — fix authentication. |
+| `403 Forbidden` | Authenticated but the credentials lack the required scope, or the request crosses a tenant boundary. | No — fix scopes / vendor binding. |
+| `404 Not Found` | Resource does not exist or is not visible to you. | No. |
+| `409 Conflict` | Resource already exists with the same uniqueness key (e.g. duplicate `external_order_id`). | No — handle the existing resource. |
+| `422 Unprocessable Entity` | Body is well-formed but fails business rules (e.g. order `total` does not match line items). | No — fix the request. |
+| `429 Too Many Requests` | Rate limit exceeded. The response includes a `Retry-After` header. | Yes — exponential backoff. |
+| `500 Internal Server Error` | Unexpected Fire-side error. Safe to retry. | Yes. |
+| `502 Bad Gateway` / `503 Service Unavailable` / `504 Gateway Timeout` | Transient Fire-side error. | Yes — exponential backoff. |
+
+## Error code catalog
+
+### Authentication
+
+| Code | HTTP | Description |
+|---|---|---|
+| `unauthorized` | `401` | Missing, malformed, or revoked API key. |
+| `invalid_credentials` | `401` | Username or password is wrong on `POST /auth/login`. |
+| `token_expired` | `401` | The Bearer token expired. Call `/auth/login` again. |
+| `forbidden_scope` | `403` | The API key does not carry the scope this endpoint requires. |
+| `tenant_mismatch` | `403` | The resource referenced (e.g. `orderId`) belongs to a different vendor than the API key. |
+
+### Validation
+
+| Code | HTTP | Description |
+|---|---|---|
+| `validation_error` | `400` | One or more fields are missing or have wrong types. `error.param` names the offending field when there is one. |
+| `unsupported_country_code` | `400` | The `countryCode` value is not one of the supported countries. |
+| `unsupported_event_type` | `400` | The `eventType` value is not one of the supported event types. |
+| `business_rule_violation` | `422` | The body is well-formed but breaks a business rule (e.g. order totals don't match the line items). |
+
+### Conflicts
+
+| Code | HTTP | Description |
+|---|---|---|
+| `duplicate_order` | `409` | An order with the same `external_order_id` already exists for this account and vendor. The existing order's `orderId` is included in `error.message`. |
+| `duplicate_event` | `409` | A fiscal callback with the same `providerEventId` was already received. |
+| `regression` | `409` | The state transition is not allowed (e.g. trying to authorize a cancelled document). |
+
+### Resource lookup
+
+| Code | HTTP | Description |
+|---|---|---|
+| `order_not_found` | `404` | No order matches the given ID, or it is not visible to you. |
+| `channel_not_found` | `404` | No sales channel matches the given ID. |
+
+### Rate limiting
+
+| Code | HTTP | Description |
+|---|---|---|
+| `rate_limited` | `429` | Too many requests. Back off and retry. |
+
+### Server errors
+
+| Code | HTTP | Description |
+|---|---|---|
+| `internal_error` | `500` | Unexpected error on Fire's side. Retry with exponential backoff. |
+| `service_unavailable` | `503` | A downstream service Fire depends on is unhealthy. Retry. |
+
+## Handling errors
+
+```js
+async function injectOrder(order) {
+  try {
+    return await fire.orders.inject(order);
+  } catch (err) {
+    if (err.code === "duplicate_order") {
+      // already exists — read the existing one instead
+      return fire.orders.retrieve(err.existingOrderId);
+    }
+    if (err.status === 429 || err.status >= 500) {
+      // transient — backoff and retry
+      await sleep(err.retryAfter ?? 1000);
+      return injectOrder(order);
+    }
+    throw err;
+  }
+}
+```
+
+When opening a support ticket, include `error.requestId` and the timestamp — Fire engineers can locate the request in the logs immediately.

@@ -1,0 +1,239 @@
+---
+title: "Callback fiscal"
+description: "Como reportar o resultado da sua integração fiscal local (DIAN, SRI, SII, AFIP, SENIAT) ao Fire."
+---
+
+Para todos os países exceto Brasil, **seu sistema é responsável pela integração fiscal local**: emitir o documento legal junto à autoridade tributária do país e obter a autorização. Quando você tem esse resultado, reporta ao Fire por um único callback multipaís para que o Fire persista o documento fiscal, registre o evento e feche o ciclo do pedido.
+
+<Note>
+  Brasil é diferente: Fire integra com a PlugNotas para emitir NFC-e / NF-e diretamente, então Fire emite `fiscal.authorized.br` / `fiscal.cancelled.br` para o seu sistema. **Não** chame este endpoint para BR. Veja [Como funcionam os eventos](/pt/concepts/events).
+</Note>
+
+## Quando chamar
+
+Você chama o callback fiscal nestes momentos:
+
+| Momento | `eventType` |
+|---|---|
+| A autoridade local autorizou o documento | `authorized` |
+| A autoridade local cancelou o documento | `cancelled` |
+| A autoridade local rejeitou ou negou o documento | `rejected` ou `denied` |
+| Sua integração fiscal falhou e você quer registrar | `error` |
+
+## Endpoint
+
+```http
+POST https://api.fire.rest/v1/webhooks/fiscal/callback
+x-api-key: <key com scope webhooks:fiscal>
+Content-Type: application/json
+```
+
+A API key precisa do scope `webhooks:fiscal` e estar vinculada a um vendor. Veja [API keys e scopes](/pt/configuration/api-keys#webhooks-fiscal) para criar.
+
+## Body — envelope comum
+
+```json
+{
+  "countryCode":     "CO" | "EC" | "CL" | "AR" | "VE",
+  "eventType":       "authorized" | "cancelled" | "rejected" | "denied" | "error",
+  "providerEventId": "evt-xyz-1001",
+  "occurredAt":      "2025-01-15T14:30:05.000Z",
+  "orderId":         "<UUID do pedido no Fire>",
+  "eventId":         "<event.id do envelope que o Fire enviou>",
+  "document":        { /* específico do país — veja abaixo */ },
+  "error":           { "code": "string", "message": "string" }
+}
+```
+
+| Campo | Obrigatório | Descrição |
+|---|---|---|
+| `countryCode` | Sempre | Código ISO do país. Define a validação de `document`. |
+| `eventType` | Sempre | O que aconteceu na autoridade local. |
+| `providerEventId` | Sempre | Chave de idempotência. Fire indexa `(provider_code, providerEventId)` UNIQUE — reenviar o mesmo id é seguro. |
+| `occurredAt` | Sempre | Quando ocorreu no **seu** sistema, ISO 8601 UTC. Não quando o Fire recebeu. |
+| `orderId` | Sempre | UUID do pedido no Fire (`data.orderId` do envelope original `order.completed`). |
+| `eventId` | Sempre | O `event.id` que o Fire enviou no envelope. Correlaciona o callback com a execução específica que disparou sua emissão local. |
+| `document` | Quando `eventType` ∈ {authorized, cancelled} | Dados fiscais do país. Muda conforme `countryCode`. |
+| `error` | Quando `eventType` ∈ {rejected, denied, error} | Motivo da falha. |
+
+## Bloco `document` por país
+
+Escolha a seção que combina com seu `countryCode`. Envie apenas os campos listados — extras são ignorados.
+
+### 🇨🇴 Colômbia (DIAN)
+
+```json
+{
+  "docType":      "invoice",
+  "docSubtype":   "factura",
+  "totalAmount":  100.00,
+  "taxAmount":    19.00,
+  "currencyCode": "COP",
+  "pdfUrl":       "https://…",
+  "xmlUrl":       "https://…",
+  "emittedAt":    "2025-01-15T14:30:05.000Z",
+  "cufe":         "5fa31…",
+  "prefijo":      "FE-CO",
+  "numeroDian":   "FE-CO-1001",
+  "qrCode":       "https://catalogo-vpfe.dian.gov.co/…"
+}
+```
+
+### 🇪🇨 Equador (SRI)
+
+```json
+{
+  "docType":             "invoice",
+  "docSubtype":          "factura",
+  "totalAmount":         100.00,
+  "taxAmount":           12.00,
+  "currencyCode":        "USD",
+  "pdfUrl":              "…",
+  "xmlUrl":              "…",
+  "emittedAt":           "…",
+  "claveAcceso":         "1501202501123456789012345001001000000001012345678",
+  "numeroAutorizacion":  "AUT-EC-1001",
+  "ambiente":            "1"
+}
+```
+
+### 🇨🇱 Chile (SII)
+
+```json
+{
+  "docType":      "invoice",
+  "docSubtype":   "boleta",
+  "totalAmount":  100.00,
+  "taxAmount":    19.00,
+  "currencyCode": "CLP",
+  "folio":        "1001",
+  "ted":          "<TED>…</TED>",
+  "tipoDte":      "39",
+  "trackId":      "CL-TRK-1001"
+}
+```
+
+### 🇦🇷 Argentina (AFIP)
+
+```json
+{
+  "docType":           "invoice",
+  "docSubtype":        "factura",
+  "totalAmount":       100.00,
+  "taxAmount":         21.00,
+  "currencyCode":      "ARS",
+  "cae":               "12345678901234",
+  "fechaVtoCae":       "2025-12-31",
+  "puntoVenta":        "1",
+  "numeroComprobante": "1001",
+  "tipoComprobante":   "6"
+}
+```
+
+### 🇻🇪 Venezuela (SENIAT)
+
+```json
+{
+  "docType":       "invoice",
+  "docSubtype":    "factura",
+  "totalAmount":   100.00,
+  "taxAmount":     16.00,
+  "currencyCode":  "VES",
+  "numeroControl": "NC-VE-1001",
+  "numeroFactura": "F-1001",
+  "rifEmisor":     "J-12345678-9"
+}
+```
+
+## Resposta
+
+```json
+{
+  "received":     true,
+  "receiptId":    "rcpt_abc123",
+  "outcome":      "updated",
+  "documentId":   "doc_xyz789",
+  "processingMs": 42
+}
+```
+
+| Campo | Significado |
+|---|---|
+| `received` | Sempre `true` em `2xx`. Confirma que o Fire aceitou o payload. |
+| `receiptId` | Identificador interno do Fire para esta entrega. Útil em auditoria. |
+| `outcome` | `created`, `updated`, `idempotent`, `regression` ou `duplicate`. Veja [Idempotência e concorrência](#idempotencia-e-concorrencia). |
+| `documentId` | ID interno do Fire da linha `fiscal_document` persistida. |
+| `processingMs` | Tempo de processamento server-side em milissegundos. |
+
+### Códigos HTTP
+
+| Status | Significado |
+|---|---|
+| `200 OK` | Callback aceito e processado (incluindo reentregas idempotentes). |
+| `400 Bad Request` | Body não passou na validação. A resposta indica os campos inválidos. |
+| `401 Unauthorized` | API key faltando ou inválida. |
+| `403 Forbidden` | À API key falta o scope `webhooks:fiscal`, ou o `orderId` não pertence ao mesmo vendor. |
+| `5xx` | Erro transitório no Fire. Tente novamente com backoff. |
+
+## Idempotência e concorrência
+
+Há duas redes de segurança embutidas:
+
+1. **Deduplicação por `providerEventId`.** Fire força um índice UNIQUE em `(provider_code, providerEventId)`. Se você reenviar o mesmo callback (blip de rede, retry da fila) Fire devolve `outcome="duplicate"` em vez de aplicar duas vezes.
+2. **Transições de estado otimistas.** Se dois callbacks do mesmo pedido competem (ex. authorized vs cancelled), Fire aplica o segundo apenas se o estado destino é alcançável a partir do atual. Caso contrário devolve `outcome="regression"` e mantém o documento.
+
+Para semânticas limpas, trate `providerEventId` como um **hash estável** do identificador do evento da autoridade local — nunca aleatorize em retries.
+
+## Autocriação do documento fiscal
+
+Seu sistema é a fonte de verdade dos dados fiscais fora do Brasil. Na primeira vez que o Fire recebe um callback para um `orderId` sem documento fiscal anterior, o Fire **autocria** a linha a partir do seu payload. Os callbacks seguintes apenas atualizam.
+
+Isto significa que você não precisa chamar nenhum endpoint de "criar documento" antes do primeiro callback de autorização — o callback é o create.
+
+## Exemplo completo — Colômbia
+
+```bash
+curl -X POST https://api.fire.rest/v1/webhooks/fiscal/callback \
+  -H "x-api-key: pk_live_a1b2c3…" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "countryCode":     "CO",
+    "eventType":       "authorized",
+    "providerEventId": "evt-co-1001",
+    "occurredAt":      "2025-01-15T14:30:05.000Z",
+    "orderId":         "df8cdf6a-62c5-4daf-b35f-b6e7bb1b98b3",
+    "eventId":         "2167a211-e757-4185-abb4-59474e275019",
+    "document": {
+      "docType":      "invoice",
+      "docSubtype":   "factura",
+      "totalAmount":  100.00,
+      "taxAmount":    19.00,
+      "currencyCode": "COP",
+      "pdfUrl":       "https://files.seu-sistema.com/factura.pdf",
+      "xmlUrl":       "https://files.seu-sistema.com/factura.xml",
+      "emittedAt":    "2025-01-15T14:30:05.000Z",
+      "cufe":         "5fa31abc1234567890def1234567890abcdef1234567890",
+      "prefijo":      "FE-CO",
+      "numeroDian":   "FE-CO-1001",
+      "qrCode":       "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=5fa31abc…"
+    }
+  }'
+```
+
+Resposta de sucesso:
+
+```json
+{
+  "received":     true,
+  "receiptId":    "rcpt_2024_01_15_co_1001",
+  "outcome":      "created",
+  "documentId":   "doc_co_1001",
+  "processingMs": 38
+}
+```
+
+## Próximos passos
+
+- [Como funcionam os eventos](/pt/concepts/events) — visão completa do ciclo pedido → fiscal.
+- [API keys e scopes](/pt/configuration/api-keys) — crie a key com `webhooks:fiscal`.
+- [Configuração de webhooks](/pt/configuration/webhook-setup) — endpoint que **recebe** eventos do Fire.

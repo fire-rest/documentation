@@ -1,33 +1,135 @@
 ---
-title: 'Introducción'
-description: 'Sección de ejemplo para mostrar endpoints de API'
+title: "Introducción"
+description: "La API REST de Fire. Inyecta órdenes, consulta catálogo y reporta eventos fiscales desde una sola base URL."
 ---
 
-<Note>
-  Si no vas a crear documentación de referencia de API, puedes eliminar
-  esta sección borrando la carpeta api-reference.
-</Note>
+La API de Fire está organizada alrededor de REST. Usa URLs predecibles orientadas a recursos, acepta bodies JSON, devuelve respuestas JSON, y usa códigos HTTP, autenticación y verbos estándar.
 
-## Bienvenida
+<CardGroup cols={2}>
+  <Card title="Autenticación" icon="key" href="/es/api-reference/login">
+    Cambia credenciales por un access token. Úsalo como Bearer en cada solicitud.
+  </Card>
+  <Card title="Errores" icon="circle-exclamation" href="/es/api-reference/errors">
+    Códigos HTTP, envelope de error, y catálogo de valores `error.code`.
+  </Card>
+</CardGroup>
 
-Hay dos formas de documentar APIs: [OpenAPI](https://mintlify.com/docs/api-playground/openapi/setup) y [componentes MDX](https://mintlify.com/docs/api-playground/mdx/configuration). En este kit usamos la siguiente especificación OpenAPI.
+## Recursos
 
-<Card
-  title="Endpoints de la tienda de plantas"
-  icon="leaf"
-  href="https://github.com/mintlify/starter/blob/main/api-reference/openapi.json"
->
-  Ver el archivo OpenAPI
-</Card>
+<CardGroup cols={2}>
+  <Card title="Órdenes" icon="receipt" href="/es/api-reference/orders">
+    Inyectar, listar, obtener y cancelar órdenes.
+  </Card>
+  <Card title="Canales de venta" icon="plug" href="/es/api-reference/sales-channels">
+    Lee el catálogo de canales para mapear IDs Fire con IDs del agregador.
+  </Card>
+  <Card title="Callback fiscal" icon="receipt" href="/es/api-reference/fiscal-callback">
+    Reporta a Fire el resultado de tu autoridad fiscal local (CO, EC, CL, AR, VE).
+  </Card>
+</CardGroup>
+
+## Base URL
+
+```
+https://api.fire.rest/v1
+```
+
+Todas las rutas en esta referencia son relativas a esa base. Hay una sola URL de producción. Una URL de sandbox separada se aprovisiona por integración bajo solicitud.
 
 ## Autenticación
 
-Todos los endpoints usan tokens Bearer según la especificación.
+Cada solicitud lleva dos credenciales:
+
+```http
+x-api-key:     <tu_api_key>
+Authorization: Bearer <access_token>
+```
+
+`x-api-key` identifica tu integración. El Bearer token prueba que tu sesión está autenticada y se obtiene de [`POST /auth/login`](/es/api-reference/login). Las API keys se emiten desde el dashboard de Fire — ver [API keys y scopes](/es/configuration/api-keys).
+
+Para endpoints máquina a máquina (inyección de órdenes, callback fiscal) basta la API key — no se necesita Bearer token.
+
+## Formato de solicitud y respuesta
+
+| Aspecto | Convención |
+|---|---|
+| Content type | `application/json` para bodies y respuestas |
+| Codificación | UTF-8 |
+| Fechas | ISO 8601 con timezone explícito, ej. `2025-01-15T14:30:00.000Z` |
+| Decimales | Strings con punto separador, ej. `"45.80"`. Algunos totales fiscales brasileños viajan como `string × 10000` — ver [la página de eventos](/es/concepts/events#comportamiento-por-pais). |
+| Campos vacíos | Strings vacíos (`""`) cuando el campo existe pero está vacío. `null` cuando el campo conceptualmente no aplica. |
+
+## Idempotencia
+
+Los endpoints que crean recursos aceptan un header `Idempotency-Key` (UUID). Enviar la misma key con el mismo body retorna la respuesta original sin crear duplicados.
+
+```http
+Idempotency-Key: 7e2c8f12-9a44-4e67-bdf1-a3a5e2caa441
+```
+
+Las idempotency keys se almacenan por 24 horas. Después de eso, la misma key puede reutilizarse.
+
+Para inyección de órdenes, el campo `external_order_id` también se aplica como uniqueness constraint por (account, vendor): un duplicado retorna `409 Conflict` con el ID de la orden existente.
+
+## Paginación
+
+Los endpoints de listado soportan paginación basada en cursor con dos query parameters:
+
+| Parameter | Tipo | Descripción |
+|---|---|---|
+| `limit` | integer | Tamaño de página, default 50, máx 200. |
+| `starting_after` | string | Cursor retornado en `next_cursor` de la respuesta anterior. |
+
+Las respuestas incluyen:
 
 ```json
-"security": [
-  {
-    "bearerAuth": []
-  }
-]
+{
+  "data":         [ /* items */ ],
+  "has_more":     true,
+  "next_cursor":  "ord_abcdef0123456789"
+}
 ```
+
+Cuando `has_more` es `false`, llegaste al final.
+
+## Rate limits
+
+Las solicitudes están throttled por API key.
+
+| Plan | Sostenido | Burst |
+|---|---|---|
+| Default | 50 req/s | 100 req/s |
+| Enterprise | Negociado | Negociado |
+
+Cuando excedes el límite Fire devuelve `429 Too Many Requests` con un header `Retry-After` (segundos). Implementa backoff exponencial con jitter empezando en 1 segundo.
+
+## Versionado
+
+La API está versionada en el path (`/v1`). Cambios incompatibles van bajo una nueva versión mayor.
+
+Dentro de una versión mayor Fire solo agrega:
+
+- nuevos campos opcionales en el request
+- nuevos campos en respuestas
+- nuevos endpoints
+- nuevos tipos de evento
+
+Estos cambios no rompen clientes que ignoran campos desconocidos.
+
+Las deprecaciones se anuncian con al menos **6 meses** de anticipación vía el dashboard de Fire y un header HTTP `Deprecation` en las respuestas.
+
+## Webhooks vs API
+
+La API de Fire es bidireccional:
+
+- Tú **llamas** a Fire (`POST /orders`, `GET /sales-channels`, `POST /webhooks/fiscal/callback`).
+- Fire **te llama** en la URL que registraste (entrega eventos como `order.completed`).
+
+El lado webhook está documentado en [Referencia de webhooks](/es/webhook-reference/overview), no aquí.
+
+## Convenciones
+
+- Todos los IDs de recursos son strings opacos. No los parsees.
+- Booleanos son `true`/`false` literales, nunca strings.
+- Valores de enum string son uppercase snake-case (`COMPLETED`, `IN_PROGRESS`).
+- Códigos de moneda son ISO 4217 uppercase (`BRL`, `USD`, `COP`).

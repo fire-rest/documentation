@@ -1,0 +1,106 @@
+---
+title: "API keys and scopes"
+description: "How to create the API key your system needs to call the Fire API and report fiscal events back to Fire."
+---
+
+Every request your system sends to Fire — whether it injects an order, fetches the channel catalog, or reports a fiscal authorization — needs an **API key**. Fire identifies your integration by that key and decides what you can do based on the **scopes** attached to it.
+
+## Step 1 — Create the API key
+
+<Steps>
+  <Step title="Open the Fire dashboard">
+    Go to **Settings → API keys**.
+  </Step>
+  <Step title='Click "New API key"'>
+    Give it a name that explains its purpose, e.g. `prod-orchestrator-co` or `staging-webhook-fiscal`.
+  </Step>
+  <Step title="Pick the scopes">
+    Select only what your system actually needs. Scopes are additive — you can combine them on one key, or split them across multiple keys for least privilege.
+
+    | Scope | Lets you |
+    |---|---|
+    | `orders:write` | Inject orders via `POST /v1/orders`. |
+    | `orders:read` | List orders and read order details. |
+    | `channels:read` | Fetch the sales-channel catalog. |
+    | `webhooks:fiscal` | Report fiscal events to Fire via `POST /v1/webhooks/fiscal/callback`. |
+  </Step>
+  <Step title="Bind it to a vendor">
+    The dashboard shows the **vendor** the key is scoped to. Fire enforces tenant isolation per vendor — a key bound to vendor A cannot inject orders for vendor B even if the order body claims so.
+  </Step>
+  <Step title="Copy the key">
+    The key looks like `pk_live_a1b2c3…`. The full value is shown **only once**. Store it in your secrets manager immediately — Fire never displays it again.
+
+    The dashboard keeps the **prefix** (`pk_live_a1b2`) for identification.
+  </Step>
+</Steps>
+
+<Warning>
+  Treat the API key as a password. Never commit it to source control, never log it in plain text, never expose it in a browser.
+</Warning>
+
+## Step 2 — Use the key on every request
+
+Send the key in the `x-api-key` HTTP header:
+
+```http
+POST https://api.fire.rest/v1/orders
+x-api-key: pk_live_a1b2c3…
+Content-Type: application/json
+```
+
+For endpoints that also require a session (e.g. dashboard-style listings), pair the key with a Bearer token obtained from [`POST /auth/login`](/en/api-reference/login). For machine-to-machine endpoints like order injection and the fiscal callback, the key alone is enough.
+
+## Scope reference
+
+### `orders:write`
+
+Required for `POST /v1/orders`. Lets your system create orders inside Fire.
+
+```http
+POST /v1/orders
+x-api-key: <key with orders:write>
+```
+
+### `orders:read`
+
+Required to list orders and inspect their state.
+
+### `channels:read`
+
+Required to fetch the sales-channel catalog you use to map Fire IDs to aggregator IDs:
+
+```http
+GET /v1/sales-channels
+x-api-key: <key with channels:read>
+```
+
+### `webhooks:fiscal`
+
+Required for `POST /v1/webhooks/fiscal/callback`. This is the endpoint your system uses to **report back** the result of your local fiscal integration (DIAN, SRI, SII, AFIP, SENIAT, etc.).
+
+```http
+POST /v1/webhooks/fiscal/callback
+x-api-key: <key with webhooks:fiscal>
+```
+
+The `webhooks:fiscal` scope is **vendor-scoped**: Fire validates that the `orderId` you reference in the callback belongs to a store of the same vendor as the API key. A mismatched key returns `403 Forbidden`.
+
+## Rotation and revocation
+
+- **Rotate** keys regularly. Create a new key, deploy it, then revoke the old one once nothing is using it.
+- **Revoke** a leaked key immediately from **Settings → API keys → Revoke**. Fire blocks all subsequent requests that use it.
+- Each key shows `last_used_at` so you can detect unused or compromised credentials.
+
+## Common errors
+
+| Status | Meaning | What to check |
+|---|---|---|
+| `401 Unauthorized` | The key is missing, malformed, revoked, or expired. | Header name (`x-api-key`), value, key state in the dashboard. |
+| `403 Forbidden` | The key is valid but lacks the required scope, or the request crosses a tenant boundary. | Add the right scope; confirm the order/store belongs to the key's vendor. |
+| `429 Too Many Requests` | Rate limit hit. | Apply exponential backoff and retry. |
+
+## Next steps
+
+- [Webhook setup](/en/configuration/webhook-setup) — register the endpoint that **receives** Fire events.
+- [Fiscal callback](/en/configuration/fiscal-callback) — endpoint your system **calls** with fiscal results.
+- [Authentication](/en/authentication) — login flow + signature verification.
