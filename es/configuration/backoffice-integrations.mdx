@@ -1,0 +1,175 @@
+---
+title: "Integraciones de agregadores"
+description: "Configura integraciones B2B en el panel de Fire: endpoints de webhook, entregas salientes y eventos de prueba."
+---
+
+Usa **integraciones de agregadores** para registrar las URLs HTTPS a las que Fire envía webhooks de publicación y sincronización, elegir qué tipos de evento recibe cada URL y **enviar eventos de prueba** para validar tu receptor antes del tráfico real.
+
+Todo está en un solo flujo: crea una integración, abre su detalle y usa las pestañas **Endpoints de webhook** y **Eventos de prueba**.
+
+<Note>
+  Verifica firma y cabeceras como se describe en [Autenticación](/es/authentication) (`X-Fire-Event`, marca de tiempo y tu header de firma configurado, por ejemplo `X-Fire-Signature`).
+</Note>
+
+## Dónde está
+
+1. En el panel de Fire, elige el contexto **Agregadores** (canal / espacio de trabajo).
+2. Abre **Herramientas de desarrollo** → **Integraciones de agregadores**.  
+   En otras localizaciones los nombres pueden ser el equivalente en inglés (**Development tools** → **Aggregator integrations**).
+
+El listado está en `/aggregators/developer-tools/integrations`. Entrar en `/aggregators` redirige allí.
+
+Selecciona una **cuenta** en el encabezado. Si no hay cuenta, la pantalla pedirá elegir una.
+
+## Vistas principales
+
+| Vista | Ruta | Para qué sirve |
+|---|---|---|
+| Listado | `/aggregators/developer-tools/integrations` | Ver, filtrar y abrir integraciones. |
+| Crear | `…/integrations/new` | Crear una integración nueva. |
+| Detalle | `…/integrations/[id]` | Endpoints, pruebas y registros. |
+
+### Listado de integraciones
+
+Suele mostrar **Nombre**, **Entorno**, **Alcance**, **Canales**, **Estado** y **Actualizado**. Hay filtros por estado, entorno y búsqueda; la URL refleja filtros y paginación. La creación empieza con **Nueva integración** (o el equivalente en la UI).
+
+### Detalle de una integración
+
+El encabezado muestra nombre, descripción, **entorno** (Sandbox / Producción) y **estado** (Activo, Deshabilitado, Eliminado). **Más acciones** puede incluir editar, deshabilitar o eliminar cuando corresponda.
+
+Pestañas:
+
+1. **Endpoints de webhook** — registrar y gestionar URLs de destino.
+2. **Eventos de prueba** — enviar un evento puntual a un endpoint.
+3. **Registros** — historial de entregas salientes.
+
+## Crear una integración
+
+<Steps>
+  <Step title="Selecciona una cuenta">
+    Usa el selector de cuenta en el encabezado.
+  </Step>
+  <Step title="Abre Integraciones de agregadores">
+    **Agregadores** → **Herramientas de desarrollo** → **Integraciones de agregadores**.
+  </Step>
+  <Step title="Inicia la creación">
+    Pulsa **Nueva integración** (o equivalente).
+  </Step>
+  <Step title="Completa General, Alcance y Canales">
+    Rellena los campos obligatorios (tabla siguiente).
+  </Step>
+  <Step title="Crear">
+    Envía el formulario. Llegas al **detalle** de la integración.
+  </Step>
+</Steps>
+
+### Campos del formulario
+
+| Campo | Descripción | Obligatorio | Observaciones |
+|---|---|:---:|---|
+| Nombre | Nombre visible | Sí | Suele ser 1–200 caracteres. |
+| Descripción | Notas internas | No | Límite corto según la UI. |
+| Entorno | Sandbox o Producción | Sí | **No se puede cambiar** tras crear. |
+| Alcance | Cuenta completa o Vendor + país | Sí | **No se puede cambiar** tras crear. |
+| País | ISO país (2 letras) | Si alcance Vendor + país | Filtrado por permisos. |
+| Vendor | Vendor de ese país | Si alcance Vendor + país | Filtrado por país y permisos. |
+| Canales | Canales vinculados a la integración | Sí | Mínimo uno del catálogo. |
+
+**Cuenta completa** aplica a toda la cuenta; país y vendor no se usan. **Vendor + país** exige elegir país primero para filtrar vendors.
+
+La integración nueva queda **Activa** salvo que la UI indique otro estado.
+
+## Endpoints de webhook
+
+En el **detalle** de la integración, pestaña **Endpoints de webhook**, registras las URLs HTTPS a las que Fire llamará cuando ocurran eventos.
+
+Por cada endpoint sueles indicar:
+
+- **Nombre** y **Descripción** opcional
+- **URL de destino** (HTTPS)
+- **Nombre del header de firma** (a menudo `X-Fire-Signature`)
+- **Eventos suscritos** (uno o varios)
+
+Tras el primer guardado, el panel puede mostrar el **signing secret una sola vez**: cópialo a tu almacén de secretos. Después usa **Revelar** o **Rotar** solo como permita tu organización, cumpliendo **motivo** u otros campos de auditoría que pida la UI.
+
+Las acciones por fila suelen incluir **Editar**, **Enviar prueba**, **Revelar signing secret**, **Rotar signing secret**, **Deshabilitar** y **Eliminar**.
+
+<Warning>
+  Tu endpoint debe responder `2xx` dentro del tiempo de espera configurado en Fire para la entrega (habitualmente **10 segundos**), o el intento se considera fallido.
+</Warning>
+
+### Qué envía Fire
+
+Cada entrega es un `POST` HTTP con:
+
+- `Content-Type: application/json`
+- `X-Fire-Signature` (o el nombre configurado): firma del cuerpo — verifica según [Autenticación](/es/authentication)
+- `X-Fire-Event`: tipo de evento (por ejemplo `menu.updated`)
+
+Verifica siempre la firma antes de procesar el cuerpo.
+
+### Responde enseguida
+
+Devuelve `2xx` en cuanto aceptes la petición, **antes** de trabajo pesado. Procesa el cuerpo en segundo plano para no agotar el tiempo de espera.
+
+```js
+app.post("/fire-webhook", (req, res) => {
+  res.sendStatus(200); // Acknowledge first
+
+  processFireEvent(req.body).catch(console.error);
+});
+```
+
+## Eventos de prueba
+
+La pestaña **Eventos de prueba** envía **un** evento a un endpoint **registrado y activo** para comprobar conectividad, cabeceras y forma del payload.
+
+### Qué seleccionar
+
+1. La integración debe estar **Activa** (si no, la pestaña avisa).
+2. Elige el **Endpoint de webhook** (solo salen los activos).
+3. Elige el **Tipo de evento** (solo los suscritos en ese endpoint).
+4. Si el evento lo requiere, elige **Canal**, **Tienda** y/o **Producto** — el formulario solo muestra lo aplicable.
+
+Espera a que termine la **Vista previa de la petición** y pulsa **Enviar evento de prueba**.
+
+### Eventos disponibles en la UI de pruebas
+
+| Evento | Área | Canal | Tienda | Producto |
+|---|---|:---:|:---:|:---:|
+| `channel.updated` | Canal | Sí | — | — |
+| `channel.deleted` | Canal | Sí | — | — |
+| `channels.sync` | Canal | — | — | — |
+| `store.updated` | Tienda | — | Sí | — |
+| `store.deleted` | Tienda | — | Sí | — |
+| `stores.sync` | Tienda | — | — | — |
+| `menu.updated` | Menú | — | — | — |
+| `menus.sync` | Menú | Sí | — | — |
+| `product.updated` | Producto | — | Sí | Sí |
+| `product.availability_changed` | Producto | — | Sí | Sí |
+
+### Interpretar el resultado
+
+**Último resultado** muestra estado HTTP, duración, **ID de entrega** (búscalo en **Registros**) y mensaje de error si lo hay.
+
+## Vista previa de la petición
+
+La vista previa lista **POST** + URL, **nombres** de cabeceras (`Content-Type`, `X-Fire-Event`, `X-Fire-Timestamp`, header de firma con `sha256=`) y el **cuerpo** JSON: sobre con `event` (`id`, `type`, `executionId`, `createdAt`, `timezone`) y `data` según el tipo. El detalle de campos está en **Referencia de webhooks**.
+
+<Note>
+  La firma y la marca de tiempo reales se generan **al enviar**; la vista previa puede mostrar marcadores hasta entonces.
+</Note>
+
+## Problemas frecuentes
+
+| Síntoma | Qué revisar |
+|---|---|
+| Sin cuenta seleccionada | Elige cuenta en el encabezado. |
+| No puedes crear la integración | Mensajes de validación; canales y alcance. |
+| «Selecciona al menos un canal» | Añade canales en la sección **Canales**. |
+| Listas país/vendor vacías | Permisos del usuario y metadatos de la cuenta. |
+| Sin tiendas en el selector de prueba | Alcance, canal y reglas de estado en la UI. |
+| Lista de eventos vacía | Suscripciones del endpoint — edítalo. |
+| Pruebas bloqueadas | La integración debe estar **Activa**. |
+| Vista previa bloqueada | Faltan campos obligatorios o la previsualización aún carga. |
+| Error HTTP en tu servidor | **Registros** → detalle de entrega y cuerpo de respuesta. |
