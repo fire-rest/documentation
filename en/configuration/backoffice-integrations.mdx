@@ -1,0 +1,175 @@
+---
+title: "Aggregator integrations"
+description: "Configure B2B aggregator integrations in the Fire dashboard: webhook endpoints, outbound delivery, and test events."
+---
+
+Use **aggregator integrations** to register the HTTPS URLs where Fire sends publication and sync webhooks, choose which event types each URL receives, and **send test events** to validate your receiver before production traffic.
+
+All of this lives in one place: create an integration, open its detail page, then use the **Webhook endpoints** and **Test events** tabs.
+
+<Note>
+  Verify signatures and headers as described in [Authentication](/en/authentication) (`X-Fire-Event`, timestamp, and your configured signing header, for example `X-Fire-Signature`).
+</Note>
+
+## Where to find it
+
+1. In the Fire dashboard, select the **Aggregators** context (channel / workspace).
+2. Open **Development tools** → **Aggregator integrations**.  
+   In localized UIs the labels may appear as **Herramientas de desarrollo** → **Integraciones de agregadores** (or the equivalent in your language).
+
+The list loads at `/aggregators/developer-tools/integrations`. Visiting `/aggregators` redirects there.
+
+Select an **account** in the header first. If none is selected, the screen prompts you to choose one.
+
+## Main views
+
+| View | Route | Purpose |
+|---|---|---|
+| List | `/aggregators/developer-tools/integrations` | Browse, filter, and open integrations. |
+| Create | `…/integrations/new` | Create a new integration. |
+| Detail | `…/integrations/[id]` | Webhook endpoints, test events, and logs. |
+
+### Integration list
+
+Columns typically include **Name**, **Environment**, **Scope**, **Channels**, **Status**, and **Updated**. Filters cover status, environment, and search; the URL reflects filters and pagination. Create flows start from **New integration** (or the localized equivalent).
+
+### Integration detail
+
+The header shows name, description, **environment** (Sandbox / Production), and **status** (Active, Disabled, Deleted). **More actions** can include edit, disable, and delete when allowed.
+
+Tabs:
+
+1. **Webhook endpoints** — register and manage destination URLs.
+2. **Test events** — send a single event to an endpoint.
+3. **Logs** — outbound delivery history.
+
+## Create an integration
+
+<Steps>
+  <Step title="Select an account">
+    Use the account selector in the header.
+  </Step>
+  <Step title="Open Aggregator integrations">
+    **Aggregators** → **Development tools** → **Aggregator integrations**.
+  </Step>
+  <Step title="Start creation">
+    Click **New integration** (or equivalent).
+  </Step>
+  <Step title="Complete General, Scope, and Channels">
+    Fill required fields (see table below).
+  </Step>
+  <Step title="Create">
+    Submit the form. You land on the integration **detail** view.
+  </Step>
+</Steps>
+
+### Form fields
+
+| Field | Description | Required | Notes |
+|---|---|:---:|---|
+| Name | Visible name | Yes | Often 1–200 characters. |
+| Description | Internal notes | No | Short text limit per UI. |
+| Environment | Sandbox or Production | Yes | **Cannot change** after creation. |
+| Scope | Full account or Vendor + country | Yes | **Cannot change** after creation. |
+| Country | ISO country (2 letters) | If Vendor + scope | Filtered by permissions. |
+| Vendor | Vendor in that country | If Vendor + scope | Filtered by country and permissions. |
+| Channels | Channels linked to the integration | Yes | At least one from the catalog. |
+
+**Full account** scope applies to the whole account; country and vendor are not used. **Vendor + country** requires choosing country first so the vendor list filters correctly.
+
+New integrations are created **Active** unless the UI states otherwise.
+
+## Webhook endpoints
+
+Open an integration’s **detail** page and use the **Webhook endpoints** tab. That is where you register HTTPS URLs for Fire to call when events occur.
+
+For each endpoint you typically set:
+
+- **Name** and optional **Description**
+- **Destination URL** (HTTPS)
+- **Signing header name** (often `X-Fire-Signature`)
+- **Subscribed events** (one or more types)
+
+After the first save, the dashboard may show the **signing secret once** — copy it into your secret store. Later, use **Reveal** or **Rotate** only as your organization allows, completing any **reason** or audit fields the UI requires.
+
+Row actions commonly include **Edit**, **Send test**, **Reveal signing secret**, **Rotate signing secret**, **Disable**, and **Delete**.
+
+<Warning>
+  Your endpoint must return a `2xx` status within the timeout shown in your Fire delivery settings (commonly **10 seconds**), or the attempt is treated as failed.
+</Warning>
+
+### What Fire sends
+
+Each delivery is an HTTP `POST` with:
+
+- `Content-Type: application/json`
+- `X-Fire-Signature` (or the header name you configured): body signature — verify per [Authentication](/en/authentication)
+- `X-Fire-Event`: event type (for example `menu.updated`)
+
+Always verify the signature before processing the body.
+
+### Acknowledge quickly
+
+Return `2xx` as soon as you accept the request, **before** heavy work. Process the payload asynchronously to avoid timeouts.
+
+```js
+app.post("/fire-webhook", (req, res) => {
+  res.sendStatus(200); // Acknowledge first
+
+  processFireEvent(req.body).catch(console.error);
+});
+```
+
+## Test events
+
+The **Test events** tab sends **one** event to a **registered, active** endpoint so you can confirm connectivity, headers, and payload shape.
+
+### What to select
+
+1. Integration must be **Active** (the tab warns otherwise).
+2. Pick the **Webhook endpoint** (only active endpoints are listed).
+3. Pick the **Event type** (only types subscribed on that endpoint).
+4. If the event requires it, pick **Channel**, **Store**, and/or **Product** — the form shows only applicable fields.
+
+Wait until the **Request preview** finishes loading, then click **Send test event**.
+
+### Events available in the test UI
+
+| Event | Area | Channel | Store | Product |
+|---|---|:---:|:---:|:---:|
+| `channel.updated` | Channel | Yes | — | — |
+| `channel.deleted` | Channel | Yes | — | — |
+| `channels.sync` | Channel | — | — | — |
+| `store.updated` | Store | — | Yes | — |
+| `store.deleted` | Store | — | Yes | — |
+| `stores.sync` | Store | — | — | — |
+| `menu.updated` | Menu | — | — | — |
+| `menus.sync` | Menu | Yes | — | — |
+| `product.updated` | Product | — | Yes | Yes |
+| `product.availability_changed` | Product | — | Yes | Yes |
+
+### Read the result
+
+**Last result** shows HTTP status, duration, **Delivery ID** (search for it under **Logs**), and any error message.
+
+## Request preview
+
+The preview lists **POST** + URL, header **names** (`Content-Type`, `X-Fire-Event`, `X-Fire-Timestamp`, signing header with `sha256=`), and the JSON **body** envelope: `event` (`id`, `type`, `executionId`, `createdAt`, `timezone`) plus event-specific `data`. Field-level detail is in **Webhook reference**.
+
+<Note>
+  The real signing value and timestamp are produced **at send time**; the preview may show placeholders until then.
+</Note>
+
+## Common issues
+
+| Symptom | Check |
+|---|---|
+| No account selected | Pick an account in the header. |
+| Cannot create integration | Validation messages on the form; channels and scope. |
+| “Select at least one channel” | Add channels in the Channels section. |
+| Empty country/vendor lists | User permissions and account metadata. |
+| No stores in test picker | Scope, channel, and store status rules in the UI. |
+| Empty event list | Endpoint subscriptions — edit the endpoint. |
+| Tests blocked | Integration must be **Active**. |
+| Preview stuck | Required fields missing or preview request still loading. |
+| HTTP error from your server | **Logs** → delivery detail for response body. |

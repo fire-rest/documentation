@@ -21,24 +21,24 @@ Fire → Tu sistema — para notificaciones de estado de órdenes
 - Fire emite eventos de publicación: tienda, menú, producto
 - El payload incluye TODA la data embebida (misma estructura que X-Mart recibía)
 - El evento indica a qué canales/agregadores hay que publicar
-- El cliente necesita poder consultar los canales de Fire y hacer un mapeo (Fire recibe)
+- El cliente obtiene identificadores de canal/servicio desde los webhooks de publicación o la configuración en el panel
 - El cliente inyecta órdenes en un endpoint de Fire
 - El payload debe incluir el canal de venta
 - Fire notificará cambios de estado de la orden de vuelta al cliente
 
 ## Configuración de webhooks
-- Se configurará desde el dashboard de Fire > Settings > Endpoints
-- El cliente registra su endpoint URL y credenciales
+- Desde el dashboard de Fire: contexto **Agregadores** → **Herramientas de desarrollo** → **Integraciones de agregadores** (endpoints, secretos, eventos de prueba)
+- El cliente registra la URL de destino y la suscripción a eventos por integración
 
 ## Idioma
 Trilingüe: inglés (EN), español (ES) y portugués (PT)
 
 ## Estructura de doc planificada
 1. Get Started: Introduction, Key Concepts, Authentication, Quickstart
-2. Configuration: Webhook Setup, Sales Channels (mapeo de IDs)
+2. Configuration: Integraciones de agregadores (webhooks y pruebas)
 3. Guides: Store Publication, Menu Publication, Product Publication, Order Injection, Order Status Notifications
 4. Webhook Reference: Events Overview + payload de cada evento
-5. API Reference: POST Orders, GET Sales Channels
+5. API Reference: POST Orders
 
 ## Referencia
 Doc anterior de X-Mart: https://docs.x-mart.io/ingles/introduction
