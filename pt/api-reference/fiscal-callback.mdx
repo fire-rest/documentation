@@ -102,11 +102,33 @@ O body é um objeto JSON com estes campos top-level. O formato do `document` é 
 
 ## Documento por país
 
-O formato exigido do campo `document` depende do `countryCode`. Todas as variantes compartilham campos base (`docType`, `docSubtype`) mais identificadores específicos do país exigidos por aquela autoridade.
+O formato exigido do campo `document` depende do `countryCode`. **Todas as variantes compartilham os campos base abaixo** (comuns aos 6 países) mais os identificadores específicos do país exigidos por aquela autoridade.
+
+### Campos base comuns
+
+Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatórios**; o restante é **opcional** — envie-os sempre que seu provedor fiscal os tiver disponíveis. O Fire os persiste em `fiscal_documents` / `orders.fiscal` e os reemite nos eventos outbound `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` e no próximo `order.completed` / `order.cancelled`.
+
+| Campo | Tipo | Obrigatório | Notas |
+|---|---|---|---|
+| `docType` | `"invoice"` / `"cancellation"` | ✓ | Classe do documento — `invoice` para emissão, `cancellation` para cancelamento |
+| `docSubtype` | string | ✓ | Subtipo conforme país/provedor (ex.: `nfce`, `nfe`, `factura`, `boleta`, `factura_a`) |
+| `pdfUrl` | string (URL) \| null | | Link de download do PDF do documento (DANFE / representação gráfica) |
+| `xmlUrl` | string (URL) \| null | | Link de download do XML canônico da autoridade fiscal |
+| `emittedAt` | string (ISO 8601) \| null | | Timestamp UTC de quando a autoridade autorizou/emitiu o documento |
+| `cancelledAt` | string (ISO 8601) \| null | | Timestamp UTC do cancelamento — relevante quando `eventType` é `cancelled` |
+| `totalAmount` | number \| null | | Valor total bruto do documento |
+| `taxAmount` | number \| null | | Valor total de impostos |
+| `currencyCode` | string \| null | | Código de moeda ISO 4217 — exatamente 3 letras (ex.: `BRL`, `COP`, `USD`) |
+
+<Note>
+  `pdfUrl` e `xmlUrl` são armazenados **exatamente como você os envia** — o Fire não baixa nem re-hospeda o arquivo. Se seu provedor assina essas URLs com expiração, considere que o link armazenado pode caducar; baixe e persista o artefato do seu lado se precisar de acesso durável.
+</Note>
 
 <Tabs>
   <Tab title="Brasil (BR)">
     Documentos fiscais brasileiros (NF-e / NFC-e). Use este código de país ao enviar callbacks do seu provedor fiscal ou de qualquer outro provedor BR.
+
+    Além dos [campos base comuns](#campos-base-comuns) (`docType`, `docSubtype`, `pdfUrl`, `xmlUrl`, `emittedAt`, etc.), o BR exige estes identificadores específicos:
 
     | Campo | Tipo | Obrigatório | Notas |
     |---|---|---|---|
@@ -116,6 +138,8 @@ O formato exigido do campo `document` depende do `countryCode`. Todas as variant
     | `serie` | int / string \| null | | Série do documento (codificada na chave) |
     | `modelo` | `55` / `65` \| null | | `55` = NF-e, `65` = NFC-e |
     | `cnpjEmitente` | string \| null | | CNPJ do emissor |
+
+    O exemplo abaixo inclui os campos base opcionais (`pdfUrl`, `xmlUrl`, `emittedAt`, `totalAmount`, `taxAmount`, `currencyCode`) — todos podem ser omitidos, mas envie-os se seu provedor os tiver:
 
     ```json
     {
@@ -132,7 +156,14 @@ O formato exigido do campo `document` depende do `countryCode`. Todas as variant
         "protocolo": "141210001176277",
         "numero": 1,
         "serie": 50,
-        "modelo": 65
+        "modelo": 65,
+        "cnpjEmitente": "29062609000177",
+        "emittedAt": "2026-04-26T14:32:10.000Z",
+        "totalAmount": 142.90,
+        "taxAmount": 18.57,
+        "currencyCode": "BRL",
+        "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
+        "xmlUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/xml"
       }
     }
     ```
@@ -161,7 +192,14 @@ O formato exigido do campo `document` depende do `countryCode`. Todas as variant
         "docSubtype": "factura",
         "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
         "prefijo": "C012",
-        "numeroDian": "C012-001"
+        "numeroDian": "C012-001",
+        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=633732c7a2a577bfa1828551e64d03f715f0",
+        "emittedAt": "2026-04-26T14:32:10.000Z",
+        "totalAmount": 95000.00,
+        "taxAmount": 15170.17,
+        "currencyCode": "COP",
+        "pdfUrl": "https://api.fiscal-provider.example/dian/C012-001/pdf",
+        "xmlUrl": "https://api.fiscal-provider.example/dian/C012-001/xml"
       }
     }
     ```
@@ -189,7 +227,13 @@ O formato exigido do campo `document` depende do `countryCode`. Todas as variant
         "docSubtype": "factura",
         "claveAcceso": "0102030405060708091011121314151617181920212223242",
         "numeroAutorizacion": "AUT-EC-001",
-        "ambiente": "2"
+        "ambiente": "2",
+        "emittedAt": "2026-04-26T14:32:10.000Z",
+        "totalAmount": 24.50,
+        "taxAmount": 3.15,
+        "currencyCode": "USD",
+        "pdfUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/pdf",
+        "xmlUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/xml"
       }
     }
     ```
@@ -218,7 +262,14 @@ O formato exigido do campo `document` depende do `countryCode`. Todas as variant
         "docSubtype": "factura",
         "folio": 12345,
         "ted": "<TED>...base64-or-xml...</TED>",
-        "tipoDte": 33
+        "tipoDte": 33,
+        "trackId": "SII-TRK-998877",
+        "emittedAt": "2026-04-26T14:32:10.000Z",
+        "totalAmount": 18900,
+        "taxAmount": 3019,
+        "currencyCode": "CLP",
+        "pdfUrl": "https://api.fiscal-provider.example/sii/12345/pdf",
+        "xmlUrl": "https://api.fiscal-provider.example/sii/12345/xml"
       }
     }
     ```
@@ -250,7 +301,13 @@ O formato exigido do campo `document` depende do `countryCode`. Todas as variant
         "fechaVtoCae": "2026-05-31",
         "puntoVenta": 1,
         "numeroComprobante": 12345,
-        "tipoComprobante": 1
+        "tipoComprobante": 1,
+        "emittedAt": "2026-04-26T14:32:10.000Z",
+        "totalAmount": 12100.00,
+        "taxAmount": 2100.00,
+        "currencyCode": "ARS",
+        "pdfUrl": "https://api.fiscal-provider.example/afip/0001-12345/pdf",
+        "xmlUrl": "https://api.fiscal-provider.example/afip/0001-12345/xml"
       }
     }
     ```
@@ -277,7 +334,14 @@ O formato exigido do campo `document` depende do `countryCode`. Todas as variant
         "docType": "invoice",
         "docSubtype": "factura",
         "numeroControl": "00-00012345",
-        "numeroFactura": "12345"
+        "numeroFactura": "12345",
+        "rifEmisor": "J-12345678-9",
+        "emittedAt": "2026-04-26T14:32:10.000Z",
+        "totalAmount": 480.00,
+        "taxAmount": 76.80,
+        "currencyCode": "VES",
+        "pdfUrl": "https://api.fiscal-provider.example/seniat/00-00012345/pdf",
+        "xmlUrl": "https://api.fiscal-provider.example/seniat/00-00012345/xml"
       }
     }
     ```
