@@ -1,15 +1,15 @@
 ---
 title: "Integration Flows"
-description: "Como seu sistema assina eventos do Fire. Um flow é um grafo de nós que você configura no dashboard — seu nó HTTP é dono da requisição que chega ao seu endpoint."
+description: "Como seu sistema assina eventos do Fire. Você configura flows no dashboard, e o nó HTTP de um flow é dono da requisição que chega ao seu endpoint."
 ---
 
 Um **Integration Flow** é o mecanismo de assinatura de eventos do Fire. Em vez de uma URL global de webhook, você configura um ou mais flows no dashboard, cada um com escopo de um account/vendor/loja específico e escutando um trigger type específico. Quando dispara um evento que combina, o Fire roda cada flow ativo em paralelo.
 
-Esta página cobre o modelo ponta a ponta: regras de matching, estrutura do grafo do flow, o que o nó HTTP controla e como o body template referencia o trigger data.
+Esta página cobre regras de matching, como você monta um flow, o que o nó HTTP controla e como o body template referencia o trigger data.
 
 ## Como funciona o matching
 
-Quando dispara um evento de negócio dentro do Fire, o runtime consulta cada flow ativo cujos critérios combinam:
+Quando dispara um evento de negócio dentro do Fire, cada flow ativo cujos critérios combinam é selecionado:
 
 ```mermaid
 flowchart LR
@@ -29,26 +29,18 @@ Um flow é selecionado quando **tudo** o seguinte é verdade:
 
 Você pode ter **múltiplos flows ativos para o mesmo trigger** — eles rodam independentes. Use isso para distribuir eventos a vários serviços downstream sem mudanças de código (ex.: um flow por consumidor: ERP, analítica, cache fiscal, message broker).
 
-## A definição do flow
+## Montando um flow
 
-Uma flow definition é um grafo armazenado como JSON. O nó trigger é o ponto de entrada; nós seguintes consomem o trigger context.
+Um flow roda como um pequeno pipeline: o trigger o inicia quando dispara um evento que combina, e então cada nó conectado roda por vez — registrar um passo, chamar seu endpoint por HTTP, ramificar conforme uma condição ou reformatar data — até o flow terminar.
 
-```ts
-{
-  startNodeId: string,
-  nodes: Array<{
-    id: string,
-    type: "trigger" | "http" | "condition" | "log" | ...,
-    position: { x, y },         // layout do dashboard
-    data: { /* config específico do nó */ },
-  }>,
-  edges: Array<{
-    id: string,
-    source: string,             // node id
-    target: string,
-    sourceHandle?: string,       // ex.: "200", "_error"
-  }>,
-}
+Você monta um flow visualmente no dashboard: parta de um nó trigger e conecte os nós que devem rodar depois dele. Cada nó tem um tipo e sua própria configuração, e os nós seguintes podem ler o trigger context.
+
+```mermaid
+flowchart LR
+    T([Trigger<br/>evento dispara]) --> L[Log]
+    L --> H[HTTP<br/>POST ao seu endpoint]
+    H -->|2xx| S[Log sucesso]
+    H -->|4xx / 5xx| E[Log erro]
 ```
 
 ### Nó trigger
@@ -102,13 +94,12 @@ Além de trigger e HTTP, os flows podem incluir:
 | `condition` | Ramifica com uma expressão `{{trigger.data.*}}` — paths distintos para casos distintos |
 | `log` | Emite uma linha de log para rastreabilidade (visível em **Settings → Integration Flows → Executions**) |
 | `transform` | Reformata data com JavaScript antes de passar para um nó seguinte |
-| Internal nodes | Chama serviços internos do Fire (emit fiscal, status update, etc.) — usado para orquestração cross-tenant |
 
 Um flow típico de "send to webhook" tem: trigger → log → HTTP → log (sucesso/erro). Veja o exemplo **Webhook Test — Full Order Data** do dashboard para um ponto de partida executável.
 
 ## Trigger context
 
-Cada template de nó pode referenciar o **trigger context**, gerado pelo runtime quando o flow roda:
+Cada template de nó pode referenciar o **trigger context**, disponível quando o flow roda:
 
 ```ts
 {
@@ -162,7 +153,7 @@ Se você usar este template, seu endpoint recebe exatamente o body documentado e
 
 ## Autenticação
 
-O Fire não assina requisições de saída com HMAC hoje. Autentique configurando credenciais no nó HTTP do flow:
+Autentique configurando credenciais no nó HTTP do flow:
 
 | Tipo de auth | Quando usar |
 |---|---|
@@ -190,13 +181,13 @@ O nó HTTP pode distribuir para diferentes nós seguintes baseado no status da r
 
 ## Isolamento por tenant
 
-Cada linha de flow carrega `accountId` e `vendorId` — o runtime nunca roda um flow entre tenants. O isolamento é feito a nível de DB (modelo FLAT: colunas `account_id`, `vendor_id` em `integration_flows`). Quando você configura um flow, ele tem escopo no seu tenant por padrão; você não pode assinar eventos de outro account.
+Cada flow tem escopo no seu account e vendor. O Fire nunca roda um flow entre tenants — quando você configura um flow, ele fica vinculado ao seu tenant por padrão, e você não pode assinar eventos de outro account.
 
 ## Ativação, versionamento e dry-run
 
-- Os flows têm uma flag `is_active` — toggle para começar ou parar de receber eventos sem deletar o flow.
-- Cada save cria uma nova `version`. Versões passadas são mantidas para auditoria; apenas a última versão ativa roda.
-- O botão **Probar Flujo** do dashboard roda um flow com um payload sintético (`GENERIC_SAMPLE_PAYLOAD` ou um cenário por país) sem afetar dados reais — perfeito para verificar body templates antes de ir para produção.
+- Os flows podem ser ativados ou desativados — pause ou retome o recebimento de eventos sem deletar o flow.
+- Cada save cria uma nova versão; versões passadas são mantidas para auditoria, e apenas a última versão ativa roda.
+- O botão **Probar Flujo** do dashboard roda um flow contra um payload sintético de exemplo (um cenário por país) sem afetar dados reais — perfeito para verificar body templates antes de ir para produção.
 
 ## Padrões comuns
 
