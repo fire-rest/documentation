@@ -7,6 +7,10 @@ authMethod: "bearer"
 
 Este endpoint é **inbound** — seu provedor fiscal faz POST nele sempre que um documento fiscal é autorizado, rejeitado, denegado, cancelado ou falha. É a **API canônica multi-país de fiscal callback** que aceita payloads de BR, CO, EC, CL, AR, VE. O Fire valida o payload, atualiza o estado fiscal do pedido em `fiscal_documents` e `orders.fiscal`, e despacha eventos outbound `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` para seus Integration Flows.
 
+<Note>
+  **Este endpoint é assíncrono.** O Fire autentica, valida, roda o guard de tenancy, pré-marca o pedido como `processing` e **enfileira** o callback — depois retorna **`202 Accepted`** com um `eventId` (tipicamente em menos de 100&nbsp;ms). A atualização de `fiscal_documents` / `orders.fiscal` acontece um instante depois em um worker em segundo plano (normalmente em ~2&nbsp;segundos). Para ver o resultado do processamento, consulte [`GET /v1/webhooks/events/{eventId}`](#verificar-o-resultado). Problemas corrigíveis pelo cliente (payload inválido, pedido inexistente, tenant errado) são rejeitados **sincronamente** com `4xx` **antes** do `202`.
+</Note>
+
 ## Como complementa `order.completed` e `order.cancelled`
 
 `order.completed` e `order.cancelled` carregam o **estado de negócio** de um pedido. O callback fiscal carrega o **estado fiscal** (autorização SEFAZ / DIAN / SRI / SII / AFIP / SENIAT). Juntos formam este lifecycle:
@@ -64,7 +68,7 @@ O body é um objeto JSON com estes campos top-level. O formato do `document` é 
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  Chave de idempotência. Deve ser único por `(provider_code, providerEventId)` — duplicatas retornam HTTP `200` com `outcome: "duplicate"` sem reprocessar. Use o ID nativo do evento do provedor se disponível; caso contrário, um UUID.
+  Chave de idempotência. Deve ser único por evento — uma duplicata retorna HTTP `202` com o `eventId` original e `duplicate: true`, sem re-enfileirar nem reprocessar. Use o ID nativo do evento do provedor se disponível; caso contrário, um UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -370,48 +374,40 @@ Para estados não autorizados, omita `document` e forneça `error`. O `countryCo
 
 ## Resposta
 
+Em caso de sucesso o endpoint retorna **`202 Accepted`** — o evento foi autenticado, validado e **enfileirado**. Um `202` **não** significa que o documento fiscal já foi atualizado; isso acontece de forma assíncrona em um worker em segundo plano. Use o [endpoint de status](#verificar-o-resultado) para confirmar o resultado final.
+
 <ResponseField name="received" type="boolean">
-  Sempre `true` quando a requisição chegou ao handler.
+  Sempre `true` quando a requisição foi aceita e enfileirada.
 </ResponseField>
 
-<ResponseField name="receiptId" type="string">
-  UUID da linha escrita em `fiscal_event_logs`. Use para correlacionar com logs internos do Fire ao depurar.
+<ResponseField name="eventId" type="string">
+  UUID do evento enfileirado em `webhook_events`. Passe para `GET /v1/webhooks/events/{eventId}` para consultar o resultado do processamento.
 </ResponseField>
 
-<ResponseField name="outcome" type="string">
-  Resultado final:
-  - `updated` — documento fiscal encontrado e status transicionado com sucesso
-  - `idempotent` — o documento já está no estado solicitado; nenhuma alteração aplicada
-  - `regression` — a transição solicitada moveria o documento para um estado anterior; rejeitada (ainda `200`)
-  - `notFound` — não existia documento fiscal ainda; um foi auto-criado usando o callback como fonte da verdade
-  - `duplicate` — `providerEventId` já foi processado; resposta cacheada retornada
-  - `error` — processado com erros (apenas para falhas internas inesperadas; HTTP ainda `200` para prevenir tempestades de retry)
+<ResponseField name="status" type="string">
+  Status da fila ao enfileirar — `queued` para um evento novo (ou o status existente se foi uma duplicata).
 </ResponseField>
 
-<ResponseField name="documentId" type="string">
-  UUID da linha `fiscal_documents` afetada. Retornado quando `outcome` é `updated`, `idempotent`, `regression` ou `notFound`.
-</ResponseField>
-
-<ResponseField name="processingMs" type="number">
-  Tempo de processamento do lado servidor em milissegundos.
+<ResponseField name="duplicate" type="boolean">
+  `true` quando este `providerEventId` já estava enfileirado — o `eventId` existente é retornado e o evento **não** é re-enfileirado. `false` para um evento novo.
 </ResponseField>
 
 <ResponseExample>
-```json 200 — sucesso
+```json 202 — aceito (enfileirado)
 {
   "received": true,
-  "receiptId": "9b2a3c4d-7e8f-4a1b-9c2d-3e4f5a6b7c8d",
-  "outcome": "updated",
-  "documentId": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
-  "processingMs": 47
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": false
 }
 ```
 
-```json 200 — duplicado
+```json 202 — duplicado (já enfileirado)
 {
   "received": true,
-  "outcome": "duplicate",
-  "processingMs": 3
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": true
 }
 ```
 
@@ -443,15 +439,50 @@ Para estados não autorizados, omita `document` e forneça `error`. O `countryCo
 ```
 </ResponseExample>
 
+## Verificar o resultado
+
+Como o processamento é assíncrono, o `202` só confirma que o evento foi **enfileirado**. Para ver se o documento fiscal foi atualizado, consulte o endpoint de status com o `eventId` retornado pelo `202`:
+
+```
+GET https://app.fire.rest/api/v1/webhooks/events/{eventId}
+x-api-key: <sua key webhooks:fiscal>
+```
+
+<ResponseField name="status" type="string">
+  Ciclo de vida na fila: `queued` → `processing` → `processed` (pronto) · `failed` / `dead` (esgotou as retentativas) · `retry` (aguardando a próxima tentativa) · `ignored`.
+</ResponseField>
+<ResponseField name="attempts" type="number">Tentativas de processamento até agora.</ResponseField>
+<ResponseField name="result" type="object | null">Em sucesso, o resultado do worker — ex. `{ "kind": "updated", "documentId": "…", "receiptId": "…" }`.</ResponseField>
+<ResponseField name="error" type="object | null">`{ "message": "…" }` quando a última tentativa falhou; `null` caso contrário.</ResponseField>
+
+<ResponseExample>
+```json 200 — processado
+{
+  "id": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "source": "fiscal_generic",
+  "eventType": "authorized",
+  "status": "processed",
+  "attempts": 1,
+  "processedAt": "2026-04-26T14:32:13.000Z",
+  "result": { "kind": "updated", "documentId": "1a2b3c4d-…", "receiptId": "9b2a3c4d-…" },
+  "error": null
+}
+```
+</ResponseExample>
+
+Um `404` é retornado para ids desconhecidos — ou ids de outro tenant — sem vazar existência. Autentique com a mesma key `webhooks:fiscal` que usou no callback.
+
 ## Idempotência
 
-O Fire deduplica callbacks por `(provider_code, providerEventId)` — um índice parcial único em `fiscal_event_logs`. Replays retornam `200` com `outcome: "duplicate"` sem mais processamento. Envie sempre o mesmo `providerEventId` para retentativas; nunca gere um novo para o mesmo evento lógico.
+O Fire deduplica callbacks por `providerEventId` — uma restrição única em `webhook_events`. Um replay **não** é re-enfileirado: retorna `202` com o `eventId` original e `duplicate: true`. Envie sempre o mesmo `providerEventId` para retentativas; nunca gere um novo para o mesmo evento lógico.
 
 ## Concorrência
 
 As transições de estado em `fiscal_documents` usam **locking otimista**. Se dois callbacks para o mesmo documento chegarem simultaneamente, um tem sucesso e o outro resolve para `idempotent` ou `regression` conforme a ordem. O merge de `orders.fiscal` JSONB é atômico.
 
-## O que acontece após uma chamada bem-sucedida
+## O que acontece após o 202
+
+O `202` apenas enfileira o evento. Um worker em segundo plano então o pega — em ~2&nbsp;segundos via o wake-up instantâneo, ou no próximo ciclo de polling como fallback — e:
 
 1. **A linha `fiscal_documents` é upsertada** com o novo status e referências do documento (`chaveAcesso`, `protocolo`, `cufe`, `cae`, etc., conforme o país).
 2. **A coluna `orders.fiscal` JSONB é mergeada** com os mesmos dados — visível no próximo evento `order.completed` / `order.cancelled` para o mesmo `orderId`, independente do país.
