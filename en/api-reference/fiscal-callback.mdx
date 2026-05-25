@@ -7,6 +7,10 @@ authMethod: "bearer"
 
 This endpoint is **inbound** — your fiscal provider POSTs to it whenever a fiscal document is authorized, rejected, denied, cancelled, or errors out. It is the **canonical, multi-country fiscal callback API** that accepts payloads from BR, CO, EC, CL, AR, VE. Fire validates the payload, updates the order's fiscal state in `fiscal_documents` and `orders.fiscal`, and dispatches downstream `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` events to your Integration Flows.
 
+<Note>
+  **This endpoint is asynchronous.** Fire authenticates, validates, runs the tenant guard, pre-marks the order as `processing`, and **enqueues** the callback — then returns **`202 Accepted`** with an `eventId` (typically in under 100&nbsp;ms). The `fiscal_documents` / `orders.fiscal` update happens a moment later in a background worker (usually within ~2&nbsp;seconds). To check the processing outcome, poll [`GET /v1/webhooks/events/{eventId}`](#checking-the-outcome). Client-fixable problems (bad payload, unknown order, wrong tenant) are still rejected **synchronously** with `4xx` **before** the `202`.
+</Note>
+
 ## How it complements `order.completed` and `order.cancelled`
 
 `order.completed` and `order.cancelled` carry an order's **business state**. The fiscal callback carries the **fiscal state** (SEFAZ / DIAN / SRI / SII / AFIP / SENIAT authorization). Together they form the lifecycle below:
@@ -64,7 +68,7 @@ The body is a JSON object with these top-level fields. The `document` shape is *
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  Idempotency key. Must be unique per `(provider_code, providerEventId)` — duplicates return HTTP `200` with `outcome: "duplicate"` without re-processing. Use the provider's native event ID if available; otherwise a UUID.
+  Idempotency key. Must be unique per event — a duplicate returns HTTP `202` with the original `eventId` and `duplicate: true`, without re-enqueueing or re-processing. Use the provider's native event ID if available; otherwise a UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -370,48 +374,40 @@ For non-authorized states, omit `document` and provide `error`. The `countryCode
 
 ## Response
 
+On success the endpoint returns **`202 Accepted`** — the event was authenticated, validated, and **enqueued**. A `202` does **not** mean the fiscal document was updated yet; that happens asynchronously in a background worker. Use the [status endpoint](#checking-the-outcome) to confirm the final outcome.
+
 <ResponseField name="received" type="boolean">
-  Always `true` when the request reached the handler.
+  Always `true` when the request was accepted and enqueued.
 </ResponseField>
 
-<ResponseField name="receiptId" type="string">
-  UUID of the row written to `fiscal_event_logs`. Use it to correlate with internal Fire logs when debugging.
+<ResponseField name="eventId" type="string">
+  UUID of the queued event in `webhook_events`. Pass it to `GET /v1/webhooks/events/{eventId}` to poll the processing outcome.
 </ResponseField>
 
-<ResponseField name="outcome" type="string">
-  Final outcome:
-  - `updated` — fiscal document found and status transitioned successfully
-  - `idempotent` — the document is already in the requested state; no change applied
-  - `regression` — the requested transition would move the document to an earlier state; rejected (still `200`)
-  - `notFound` — no fiscal document existed yet; one was autocreated using the callback as the source of truth
-  - `duplicate` — `providerEventId` was already processed; cached response returned
-  - `error` — processed with errors (only for unexpected internal failures; HTTP still `200` to prevent retry storms)
+<ResponseField name="status" type="string">
+  Queue status at enqueue time — `queued` for a new event (or the existing status if it was a duplicate).
 </ResponseField>
 
-<ResponseField name="documentId" type="string">
-  UUID of the affected `fiscal_documents` row. Returned when `outcome` is `updated`, `idempotent`, `regression`, or `notFound`.
-</ResponseField>
-
-<ResponseField name="processingMs" type="number">
-  Server-side processing time in milliseconds.
+<ResponseField name="duplicate" type="boolean">
+  `true` when this `providerEventId` was already enqueued — the existing `eventId` is returned and the event is **not** re-enqueued. `false` for a fresh event.
 </ResponseField>
 
 <ResponseExample>
-```json 200 — success
+```json 202 — accepted (queued)
 {
   "received": true,
-  "receiptId": "9b2a3c4d-7e8f-4a1b-9c2d-3e4f5a6b7c8d",
-  "outcome": "updated",
-  "documentId": "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
-  "processingMs": 47
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": false
 }
 ```
 
-```json 200 — duplicate
+```json 202 — duplicate (already enqueued)
 {
   "received": true,
-  "outcome": "duplicate",
-  "processingMs": 3
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": true
 }
 ```
 
@@ -443,15 +439,50 @@ For non-authorized states, omit `document` and provide `error`. The `countryCode
 ```
 </ResponseExample>
 
+## Checking the outcome
+
+Because processing is asynchronous, the `202` only confirms the event was **queued**. To see whether the fiscal document was actually updated, poll the companion status endpoint with the `eventId` returned by the `202`:
+
+```
+GET https://app.fire.rest/api/v1/webhooks/events/{eventId}
+x-api-key: <your webhooks:fiscal key>
+```
+
+<ResponseField name="status" type="string">
+  Queue lifecycle: `queued` → `processing` → `processed` (done) · `failed` / `dead` (gave up after retries) · `retry` (waiting for the next attempt) · `ignored`.
+</ResponseField>
+<ResponseField name="attempts" type="number">Processing attempts so far.</ResponseField>
+<ResponseField name="result" type="object | null">On success, the worker outcome — e.g. `{ "kind": "updated", "documentId": "…", "receiptId": "…" }`.</ResponseField>
+<ResponseField name="error" type="object | null">`{ "message": "…" }` when the last attempt failed; `null` otherwise.</ResponseField>
+
+<ResponseExample>
+```json 200 — processed
+{
+  "id": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "source": "fiscal_generic",
+  "eventType": "authorized",
+  "status": "processed",
+  "attempts": 1,
+  "processedAt": "2026-04-26T14:32:13.000Z",
+  "result": { "kind": "updated", "documentId": "1a2b3c4d-…", "receiptId": "9b2a3c4d-…" },
+  "error": null
+}
+```
+</ResponseExample>
+
+A `404` is returned for unknown ids — or ids that belong to another tenant — with no existence leak. Authenticate with the same `webhooks:fiscal` key you used for the callback.
+
 ## Idempotency
 
-Fire deduplicates callbacks by `(provider_code, providerEventId)` — a unique partial index on `fiscal_event_logs`. Replays return `200` with `outcome: "duplicate"` and no further processing. Always send the same `providerEventId` for retries; never generate a new one for the same logical event.
+Fire deduplicates callbacks by `providerEventId` — a unique constraint on `webhook_events`. A replay is **not** re-enqueued: it returns `202` with the original `eventId` and `duplicate: true`. Always send the same `providerEventId` for retries; never generate a new one for the same logical event.
 
 ## Concurrency
 
 Status transitions on `fiscal_documents` use **optimistic locking**. If two callbacks for the same document arrive concurrently, one succeeds and the other resolves to `idempotent` or `regression` depending on the order. The `orders.fiscal` JSONB merge is atomic.
 
-## What happens after a successful call
+## What happens after the 202
+
+The `202` only enqueues the event. A background worker then picks it up — within ~2&nbsp;seconds via the instant wake-up, or on the next poll cycle as a fallback — and:
 
 1. **`fiscal_documents` row is upserted** with the new status and document references (`chaveAcesso`, `protocolo`, `cufe`, `cae`, etc., per country).
 2. **`orders.fiscal` JSONB column is merged** with the same data — making it visible in the next `order.completed` / `order.cancelled` event for the same `orderId`, regardless of country.
