@@ -1,181 +1,187 @@
 ---
 title: "Cancel order"
-api: "POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders/{orderId}/cancel"
-description: "Cancel a previously injected order. Idempotent on subsequent calls; triggers the `order.cancelled` event to your Integration Flows once the order transitions to CANCELLED."
+api: "POST /api/v4/integrations/sales/aggregator/orders/{order_uid}/refund"
+description: "Cancel an aggregator order and, when supported by the payment processor, refund the payment."
 authMethod: "bearer"
 ---
 
-<Warning>
-  **Partner API.** This endpoint is intended for platform integrators. Standard Fire customers do not have direct access — contact your account manager if you need this integration.
-</Warning>
+Cancels an order previously created through [Inject order](/en/api-reference/orders). Fire looks up the order by `account` and `order_uid`, updates the order to `CANCELED`, and returns the updated order in the standard API envelope.
 
-Cancels an order that was previously injected via [`POST /v1/orders`](/en/api-reference/orders). Fire transitions the order's status to `CANCELLED`, records audit metadata (who, when, why), and triggers the [`order.cancelled`](/en/events/order-cancelled) event to your Integration Flows.
+If the stored payment processor supports refunds (for example, Deuna), Fire attempts the refund and sets `payment_status` to `REFUNDED` on success. For other processors, Fire cancels the payment state and sets `payment_status` to `CANCELED`.
 
-## Authentication
+<ParamField header="Authorization" type="string" required>
+  Bearer token obtained from [POST /login](/en/api-reference/login). Format: `Bearer <accessToken>`.
+</ParamField>
 
 <ParamField header="x-api-key" type="string" required>
-  Your Fire API key with the `orders:write` scope.
+  Your Fire API key.
 </ParamField>
 
-## Path parameters
-
-<ParamField path="orderId" type="string" required>
-  Fire's internal order UUID — same value as `data.orderId` in the [`order.completed`](/en/events/order-completed) event for this order. **Not** the `externalOrderId` you used at injection.
+<ParamField header="x-client-channel" type="string" required>
+  Must be `integration`. Identifies the request as coming from an external integration.
 </ParamField>
 
-## Request body
+<ParamField header="account" type="string" required>
+  Account identifier used to find the order.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" default="application/json">
+  Use `application/json` for the request body.
+</ParamField>
+
+<ParamField path="order_uid" type="string" required>
+  UID of the order to cancel.
+</ParamField>
 
 <ParamField body="reason" type="string" required>
-  Free-text reason for the cancellation. Minimum 5 characters, maximum 500. Recorded in `cancellation.cancellationReason` of the resulting `order.cancelled` event payload.
+  Reason for the cancellation or refund request.
+</ParamField>
+
+<ParamField body="payment_method_uid" type="string">
+  Optional. UID of the payment method used to resolve refund credentials when you need to target a specific method.
+</ParamField>
+
+<ParamField body="vendor_uid" type="string" required>
+  Vendor UID used to resolve payment credentials.
+</ParamField>
+
+<ParamField body="email" type="string">
+  Customer email sent to the payment processor when required.
+</ParamField>
+
+<ParamField body="customer_uid" type="string">
+  Registered customer UID. When present, Fire treats the refund payload as authenticated.
+</ParamField>
+
+<ParamField body="anonymous_customer_uid" type="string">
+  Anonymous customer UID. Used as the payment user identifier when `customer_uid` is not present.
+</ParamField>
+
+<ParamField body="store_uid" type="string">
+  Store UID used to resolve store-specific payment credentials.
+</ParamField>
+
+<ParamField body="media" type="string">
+  Sales medium used to resolve credentials. Supported values: `APP`, `WEB`.
 </ParamField>
 
 <RequestExample>
-```http
-POST https://api.fire.rest/v1/orders/21ec1f6c-c301-4528-b999-7836c1d21c6c/cancel
-x-api-key: <your_api_key>
-Content-Type: application/json
-
+```json Minimum cancellation
 {
-  "reason": "Customer requested cancellation — duplicate order"
+  "reason": "Duplicate charge",
+  "vendor_uid": "vendor-uid-abc"
+}
+```
+
+```json Cancellation with customer and channel
+{
+  "reason": "Customer cancellation",
+  "payment_method_uid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "vendor_uid": "vendor-uid-abc",
+  "store_uid": "store-uid-xyz",
+  "media": "WEB",
+  "email": "customer@example.com",
+  "customer_uid": "customer-uid-123"
 }
 ```
 </RequestExample>
 
-## Response
-
-<ResponseField name="id" type="string">
-  Fire's internal order UUID — matches the `orderId` you cancelled.
+<ResponseField name="data" type="object">
+  Updated order. Prices in `order_lines`, `totals`, and `payment_methods` are returned as external, unscaled amounts.
+  <Expandable title="data">
+    <ResponseField name="uid" type="string">Order UID.</ResponseField>
+    <ResponseField name="order_code" type="string | null">Human-readable order code.</ResponseField>
+    <ResponseField name="account_uid" type="string">Account identifier.</ResponseField>
+    <ResponseField name="vendor_uid" type="string | null">Vendor UID.</ResponseField>
+    <ResponseField name="store_uid" type="string | null">Store UID.</ResponseField>
+    <ResponseField name="status" type="string">Final order status. Successful cancellations return `CANCELED`.</ResponseField>
+    <ResponseField name="payment_status" type="string">Final payment status: `REFUNDED` or `CANCELED`.</ResponseField>
+    <ResponseField name="order_lines" type="array | null">Order lines with unscaled prices.</ResponseField>
+    <ResponseField name="totals" type="array | null">Order totals with unscaled prices.</ResponseField>
+    <ResponseField name="payment_methods" type="array | null">Payment methods with unscaled amounts.</ResponseField>
+    <ResponseField name="metadata" type="object | null">Order metadata.</ResponseField>
+  </Expandable>
 </ResponseField>
 
-<ResponseField name="cancellationId" type="string">
-  UUID of the cancellation audit record. Stable across retries; matches `cancellation.cancellationId` in the resulting `order.cancelled` event.
+<ResponseField name="status" type="number">
+  HTTP status code from the API envelope.
 </ResponseField>
 
-<ResponseField name="status" type="string">
-  Always `"CANCELLED"` on a successful response.
-</ResponseField>
-
-<ResponseField name="cancelledAt" type="string">
-  ISO 8601 UTC timestamp of when the cancellation was recorded.
-</ResponseField>
-
-<ResponseField name="cancelledBy" type="string">
-  Identifier of the principal that performed the cancellation. For API-key callers, this is `"api-key:<keyId>"`.
-</ResponseField>
-
-<ResponseField name="cancellationReason" type="string">
-  Echo of the `reason` you sent in the request body.
-</ResponseField>
-
-<ResponseField name="cancellationSource" type="string">
-  Always `"adapter"` for cancellations made through this endpoint. (Other sources are `"backoffice"` for dashboard cancellations and `"api"` for direct internal calls.)
-</ResponseField>
-
-<ResponseField name="cancelledFlowsCount" type="number">
-  Number of in-flight Integration Flow executions that were cancelled as part of this operation. Pending flows for the order are aborted before the new `order.cancelled` event fires, so you don't get conflicting deliveries.
+<ResponseField name="traceId" type="string">
+  Trace identifier for support and debugging.
 </ResponseField>
 
 <ResponseExample>
 ```json 200
 {
-  "id": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
-  "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
-  "status": "CANCELLED",
-  "cancelledAt": "2026-05-06T16:32:00.000Z",
-  "cancelledBy": "api-key:k_ab12cd34",
-  "cancellationReason": "Customer requested cancellation — duplicate order",
-  "cancellationSource": "adapter",
-  "cancelledFlowsCount": 2
+  "data": {
+    "uid": "550e8400-e29b-41d4-a716-446655440000",
+    "order_code": "ORD-2026-001234",
+    "account_uid": "acc-uid-12345",
+    "vendor_uid": "vendor-uid-abc",
+    "store_uid": "store-uid-xyz",
+    "status": "CANCELED",
+    "payment_status": "REFUNDED",
+    "order_lines": [],
+    "totals": [],
+    "payment_methods": [],
+    "metadata": {},
+    "created_at": "2026-03-30T12:00:00.000Z",
+    "updated_at": "2026-03-30T12:05:00.000Z",
+    "deleted_at": null
+  },
+  "status": 200,
+  "method": "POST",
+  "pathname": "/api/v4/integrations/sales/aggregator/orders/550e8400-e29b-41d4-a716-446655440000/refund",
+  "duration": 120,
+  "traceId": "abc123",
+  "isArray": false
 }
 ```
 
-```json 400 — validation error
+```json 422
 {
-  "error": {
-    "code": "validation_error",
-    "message": "reason must be between 5 and 500 characters"
+  "status": 422,
+  "errors": {
+    "status": "422",
+    "code": "invalid_type",
+    "title": "Validation error",
+    "detail": "reason is required"
   }
 }
 ```
 
-```json 400 — fiscal cancellation window exceeded (Brazil)
+```json 404
 {
-  "error": {
-    "code": "business_error",
-    "message": "Cannot cancel order: fiscal cancellation time limit exceeded. NFCE can be cancelled within 30 minutes of authorization. Elapsed: 45 minutes."
-  }
-}
-```
-
-```json 401 — missing or invalid API key
-{
-  "error": {
-    "code": "unauthorized",
-    "message": "Invalid or missing API key"
-  }
-}
-```
-
-```json 403 — wrong scope
-{
-  "error": {
-    "code": "forbidden",
-    "message": "API key is missing the orders:write scope"
-  }
-}
-```
-
-```json 404 — order not found
-{
-  "error": {
+  "status": 404,
+  "errors": {
+    "status": "404",
     "code": "not_found",
-    "message": "Order 21ec1f6c-c301-4528-b999-7836c1d21c6c was not found"
+    "title": "Not found",
+    "detail": "Order not found"
   }
 }
 ```
 
-```json 409 — invalid state
+```json 400
 {
-  "error": {
-    "code": "conflict",
-    "message": "Order cannot be cancelled — current status is CANCELLED"
-  }
+  "status": 400,
+  "errors": {
+    "status": "400",
+    "code": "custom",
+    "title": "Error",
+    "detail": "Payment methods not found"
+  },
+  "message": "Payment methods not found",
+  "code": 0,
+  "moreInfo": "https://docs.artisn.io/api/errors"
 }
 ```
 </ResponseExample>
 
-## Cancellation rules
+## Processing rules
 
-The order must be in a state that allows cancellation. Fire returns `409 Conflict` when:
-
-- The order's status is not `OPEN` or `COMPLETED` (e.g. it was already cancelled).
-- The fiscal status is `processing`, `error`, `cancelling`, or `cancelled` — there is an in-flight or terminal fiscal transition that prevents safe cancellation.
-- The order's business day is closed and the order belongs to a previous business day.
-
-**Brazil — fiscal cancellation window.** Once an order's NFC-e is authorized at SEFAZ it can only be cancelled within **30 minutes** of authorization (NF-e: **24 hours**). After that window SEFAZ no longer accepts the cancellation, so Fire rejects the request up front with `400 Business error` and leaves the order **unchanged** — issue a fiscal return / credit note instead. The window is measured from the fiscal authorization timestamp and applies only to Brazilian fiscal-enabled orders.
-
-For Brazilian fiscal-enabled orders that had been authorized at SEFAZ, this endpoint **starts** the cancellation: `order.cancelled` fires immediately, and a separate [`fiscal.cancelled.br`](/en/events/fiscal-cancelled-br) event fires later when SEFAZ confirms the cancellation. See the [order cancellation lifecycle](/en/events/order-cancelled#lifecycle-relative-to-other-events).
-
-## What happens after a successful call
-
-1. **Order status** transitions to `CANCELLED` and the cancellation audit row is written.
-2. **Pending flows for this order are aborted** — `cancelledFlowsCount` reflects how many.
-3. **`order.cancelled` event is dispatched** — your Integration Flows receive the event with the V4 order snapshot plus the `cancellation` block.
-4. **For BR fiscal-enabled orders**: a downstream cancellation request is queued at the fiscal authority. When SEFAZ confirms, `fiscal.cancelled.br` fires.
-
-## Related
-
-<CardGroup cols={2}>
-  <Card title="Inject order" icon="paper-plane" href="/en/api-reference/orders">
-    The endpoint that created the order this one cancels.
-  </Card>
-  <Card title="order.cancelled event" icon="ban" href="/en/events/order-cancelled">
-    The outbound event your Integration Flows receive after a successful cancel.
-  </Card>
-  <Card title="fiscal.cancelled.br event" icon="file-circle-xmark" href="/en/events/fiscal-cancelled-br">
-    Brazil only — fires later when SEFAZ confirms.
-  </Card>
-  <Card title="Authentication" icon="lock" href="/en/authentication">
-    How API keys, scopes, and vendor binding work.
-  </Card>
-</CardGroup>
+- When provided, `payment_method_uid` helps resolve credentials, but Fire evaluates the payment methods stored on the order.
+- For Deuna refunds, the order must include `metadata.order_token`; otherwise Fire returns `400`.
+- After saving the updated order, Fire returns prices transformed for external consumption.
+- Fire notifies the cancellation downstream after the order is saved.
