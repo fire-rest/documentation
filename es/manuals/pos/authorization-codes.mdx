@@ -1,0 +1,133 @@
+---
+title: "Códigos de autorización"
+description: "Cómo funcionan los códigos de autorización de manager en FIRE POS V2."
+---
+
+Los códigos de autorización son códigos de 6 dígitos, de un solo uso, generados por un manager en el backoffice de Fire. El POS los usa para completar operaciones sensibles que requieren aprobación del manager.
+
+Son distintos a los códigos de vinculación del terminal. Un código de vinculación registra un dispositivo. Un código de autorización aprueba una acción operativa, como cerrar una caja con faltante o ejecutar un retiro de efectivo.
+
+## Cuándo se necesita un código
+
+FIRE POS V2 puede pedir un código de autorización para operaciones como:
+
+- Cerrar caja con faltante de efectivo.
+- Corregir un monto declarado durante el cierre de caja.
+- Ejecutar un retiro de efectivo.
+- Desbloquear o forzar acciones administrativas, según la política de la tienda.
+
+El requisito exacto depende de la acción y de la configuración de la tienda. Por defecto, cualquier faltante en el cierre de caja requiere autorización del manager.
+
+## Quién genera el código
+
+Solo un manager con acceso al backoffice y scope sobre la tienda puede generar un código de autorización.
+
+El manager crea el código desde una de estas secciones del backoffice:
+
+- **POS → Solicitudes**: recomendado cuando el POS creó una solicitud pendiente. El contexto ya viene precargado.
+- **POS → Authorization Tokens**: generación manual por propósito y restricciones.
+
+<Note>
+  El cajero no debe elegir la razón ni el monto en operaciones controladas por manager. El manager revisa la solicitud en backoffice, escribe la razón y genera el código.
+</Note>
+
+## 1. El cajero inicia la operación
+
+En el POS, el cajero inicia una operación que requiere aprobación. Por ejemplo, intenta cerrar una caja con faltante.
+
+El POS vuelve a pedir el PIN del cajero cuando la operación es sensible. Esto confirma que el cajero activo sigue siendo la persona que ejecuta la acción.
+
+## 2. El POS crea una solicitud
+
+Cuando se necesita aprobación del manager, el POS crea una solicitud de autorización pendiente y muestra una pantalla para ingresar el código del manager.
+
+El cajero avisa al manager verbalmente o por el canal operativo normal de la tienda.
+
+<Frame>
+  <img src="/images/manuals/pos/coming-soon.svg" alt="Pantalla del POS esperando un código de autorización del manager" />
+</Frame>
+
+## 3. El manager abre Solicitudes
+
+En el backoffice, el manager abre **POS → Solicitudes** y revisa la solicitud pendiente.
+
+<Frame>
+  <img src="/images/manuals/pos/coming-soon.svg" alt="Solicitudes de autorización pendientes en el backoffice de Fire" />
+</Frame>
+
+La solicitud incluye contexto como tienda, terminal, cajero, sesión de caja y tipo de operación. Para cierres con faltante o retiros, el manager puede ver los valores operativos necesarios para decidir si aprueba.
+
+## 4. El manager escribe la razón y genera el código
+
+El manager completa los campos requeridos, como razón, monto o categoría según la solicitud, y hace clic en **Generar código**.
+
+El backoffice muestra un código de 6 dígitos. El código tiene vida corta y queda atado al propósito y las restricciones de la solicitud.
+
+<Frame>
+  <img src="/images/manuals/pos/coming-soon.svg" alt="Código de autorización de 6 dígitos generado en el backoffice" />
+</Frame>
+
+## 5. El cajero ingresa el código en el POS
+
+El manager dicta el código al cajero. El cajero ingresa los 6 dígitos en el campo de código de autorización del POS.
+
+Si el código es válido, el POS completa la operación y el backend registra el código consumido en la auditoría.
+
+<Frame>
+  <img src="/images/manuals/pos/coming-soon.svg" alt="Código de autorización ingresado en el POS" />
+</Frame>
+
+Si el código expiró, ya fue usado o no corresponde al alcance de la operación, el POS lo rechaza. La solicitud queda abierta para que el manager genere otro código si todavía se necesita aprobar la operación.
+
+## Cierre de caja con faltante
+
+Durante el cierre ciego de caja, el cajero declara el efectivo contado sin ver el efectivo esperado por el sistema. Si la declaración es menor que el esperado, el POS pide un código de manager.
+
+El manager revisa la solicitud en backoffice, escribe la razón y genera un código con propósito `pos:close_with_shortage` atado a esa sesión de caja.
+
+El cajero ingresa el código y cierra la caja. El faltante exacto es visible para el manager y para auditoría, no para el cajero durante el flujo.
+
+<Frame>
+  <img src="/images/manuals/pos/coming-soon.svg" alt="Flujo de cierre de caja solicitando código de manager por faltante" />
+</Frame>
+
+## Retiro de efectivo
+
+Para un retiro, el cajero solicita aprobación desde el POS. El manager revisa la solicitud en backoffice, ingresa monto, razón y categoría, y genera un código con propósito `pos:withdrawal_approval`.
+
+El cajero ingresa el código en el POS. Cuando el backend lo valida, el retiro queda registrado, la gaveta se abre y se crea un voucher digital.
+
+<Frame>
+  <img src="/images/manuals/pos/coming-soon.svg" alt="Flujo de retiro de efectivo autorizado con código de manager" />
+</Frame>
+
+<Warning>
+  La opción **Retirar efectivo** puede estar deshabilitada en algunos entornos mientras la funcionalidad se despliega. Cuando está deshabilitada, los managers pueden ver el modelo de códigos de autorización en backoffice, pero los cajeros no pueden ejecutar el flujo de retiro desde el POS.
+</Warning>
+
+## Reglas de seguridad
+
+Los códigos de autorización en FIRE POS V2 siguen estas reglas:
+
+- Tienen 6 dígitos.
+- Son de un solo uso.
+- Expiran rápidamente.
+- Se generan para un propósito específico, como `pos:close_with_shortage` o `pos:withdrawal_approval`.
+- Pueden incluir restricciones como sesión de caja destino, cajero destino o monto máximo.
+- Quedan registrados en auditoría cuando se generan, fallan o se consumen.
+
+<Check>
+  Un código válido solo autoriza la acción para la que fue generado. Un código de retiro no puede reutilizarse para cerrar caja, y un código de una sesión de caja no puede aprobar otra sesión.
+</Check>
+
+## Solución de problemas
+
+Si el POS rechaza el código, revisa las causas más comunes:
+
+- El código expiró.
+- El código ya fue usado.
+- El código se digitó mal.
+- El manager lo generó para otro propósito.
+- El código fue generado para otra sesión de caja, otro cajero u otro monto.
+
+Genera un nuevo código desde la misma solicitud pendiente cuando la operación todavía necesita aprobación.
