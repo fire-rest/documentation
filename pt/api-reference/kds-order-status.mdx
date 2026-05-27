@@ -1,0 +1,206 @@
+---
+title: "Status do pedido KDS"
+api: "POST https://app.fire.rest/api/v1/webhooks/kds/order-status"
+description: "Endpoint de entrada para o qual seu KDS faz POST quando um pedido da cozinha muda de status (pronto, despachado). O Fire registra o evento, deduplica e aplica anti-regressão para que o status do pedido nunca retroceda."
+authMethod: "bearer"
+---
+
+Este endpoint é **de entrada** — seu Sistema de Tela de Cozinha (KDS) faz POST nele sempre que um pedido avança na cozinha: ficou **pronto** para entrega, ou foi **despachado** (entregue / retirado). O Fire autentica a requisição, correlaciona com o pedido, aplica idempotência e um guard anti-regressão, e registra o evento no seu log de eventos KDS para observabilidade.
+
+<Note>
+  **Este endpoint é assíncrono.** O Fire autentica, valida, roda o tenant guard e **enfileira** o evento — então responde **`202 Accepted`** com um `eventId` (tipicamente em menos de 100&nbsp;ms). O evento é registrado um instante depois por um worker em segundo plano (normalmente em ~2&nbsp;segundos). Para verificar o resultado, consulte [`GET /v1/webhooks/events/{eventId}`](#verificar-o-resultado). Problemas corrigíveis pelo cliente (payload inválido, pedido inexistente, tenant errado) são rejeitados **sincronamente** com `4xx` **antes** do `202`.
+</Note>
+
+## Tipos de evento
+
+O ciclo de vida do KDS tem uma ordem estrita — um pedido fica **pronto** antes de ser **despachado**:
+
+| `eventType` | Significado | Rank |
+|---|---|---|
+| `order.ready` | O pedido está preparado e pronto para entrega / retirada | 1 |
+| `order.dispatched` | O pedido saiu da cozinha (entregue ou retirado) — terminal | 2 |
+
+Os valores são **minúsculos, com ponto** (`order.ready`, não `ORDER_READY`).
+
+## Autenticação
+
+Este endpoint requer uma **API key com o escopo `webhooks:kds`**. Dois tipos de key são aceitos:
+
+- **Key de parceiro / sistema** — não vinculada a uma conta específica (o KDS opera sobre todas). O evento é atribuído à conta dona do pedido referenciado.
+- **Key vendor-scoped** — vinculada a uma conta/vendor. O Fire também valida que o pedido pertença a essa conta/vendor.
+
+Keys sem o escopo `webhooks:kds` são rejeitadas com `403 Forbidden`.
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com escopo `webhooks:kds`. Gerada no dashboard — uma key de parceiro em **Admin → API Keys**, ou uma key vendor-scoped em **Developers → Gestão de API**.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>` opcional — aceito como alternativa legada ao `x-api-key`. Envie um ou outro.
+</ParamField>
+
+## Corpo da requisição
+
+<ParamField body="eventType" type="string" required>
+  O evento de ciclo de vida do KDS. `order.ready` ou `order.dispatched` (minúsculo, com ponto).
+</ParamField>
+
+<ParamField body="providerEventId" type="string" required>
+  Chave de idempotência — única e estável por evento do seu lado. Um reenvio com o mesmo valor responde `202` com o `eventId` original e `duplicate: true`, sem re-enfileirar nem reprocessar. Use o id de evento nativo do seu KDS se tiver; senão, um UUID.
+</ParamField>
+
+<ParamField body="occurredAt" type="string" required>
+  Timestamp ISO 8601 UTC de quando o evento ocorreu no KDS — não quando foi enviado.
+</ParamField>
+
+<ParamField body="orderId" type="string" required>
+  UUID do pedido no Fire. Corresponde a `data.orderId` nos eventos de pedido. O Fire correlaciona o evento com este pedido; ele deve existir previamente.
+</ParamField>
+
+<ParamField body="eventId" type="string" required>
+  UUID para correlação da tentativa de despacho (paridade com o callback fiscal). Se o Fire despachou o pedido para o seu KDS com um event id, devolva-o aqui; senão, atribua um UUID estável por evento.
+</ParamField>
+
+<ParamField body="stationName" type="string">
+  Estação do KDS de origem, opcional (ex. `Cozinha quente`, `Despacho 1`). Armazenada para observabilidade.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Saco livre opcional de campos extras. Armazenado como está, sem validação.
+</ParamField>
+
+### Exemplos
+
+```json order.ready
+{
+  "eventType": "order.ready",
+  "providerEventId": "evt_2026-05-26_000123",
+  "occurredAt": "2026-05-26T18:30:00.000Z",
+  "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "stationName": "Cozinha quente"
+}
+```
+
+```json order.dispatched
+{
+  "eventType": "order.dispatched",
+  "providerEventId": "evt_2026-05-26_000124",
+  "occurredAt": "2026-05-26T18:42:11.000Z",
+  "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
+  "eventId": "b2c3d4e5-6f70-4a8b-9c0d-1e2f3a4b5c6d",
+  "stationName": "Despacho 1"
+}
+```
+
+## Resposta
+
+Em caso de sucesso o endpoint responde **`202 Accepted`** — o evento foi autenticado, validado e **enfileirado**. Um `202` **não** significa que o evento já foi registrado; isso acontece de forma assíncrona. Use o [endpoint de status](#verificar-o-resultado) para confirmar.
+
+<ResponseField name="received" type="boolean">
+  Sempre `true` quando a requisição foi aceita e enfileirada.
+</ResponseField>
+
+<ResponseField name="eventId" type="string">
+  UUID do evento enfileirado em `webhook_events`. Passe-o para `GET /v1/webhooks/events/{eventId}` para consultar o resultado.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Status da fila no momento do enfileiramento — `queued` para um evento novo (ou o status existente se foi duplicado).
+</ResponseField>
+
+<ResponseField name="duplicate" type="boolean">
+  `true` quando este `providerEventId` já estava enfileirado — o `eventId` existente é retornado e o evento **não** é re-enfileirado. `false` para um evento novo.
+</ResponseField>
+
+<ResponseExample>
+```json 202 — aceito (enfileirado)
+{
+  "received": true,
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": false
+}
+```
+
+```json 202 — duplicado (já enfileirado)
+{
+  "received": true,
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": true
+}
+```
+
+```json 400 — erro de validação
+{
+  "error": {
+    "code": "validation_error",
+    "message": "eventId debe ser un UUID"
+  }
+}
+```
+
+```json 401 — API key ausente ou inválida
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key"
+  }
+}
+```
+
+```json 403 — falta escopo
+{
+  "error": {
+    "code": "forbidden",
+    "message": "Missing required scope: webhooks:kds"
+  }
+}
+```
+</ResponseExample>
+
+## Verificar o resultado
+
+Como o processamento é assíncrono, o `202` apenas confirma que o evento foi **enfileirado**. Para ver se foi registrado, consulte o endpoint de status com o `eventId` retornado pelo `202`:
+
+```
+GET https://app.fire.rest/api/v1/webhooks/events/{eventId}
+x-api-key: <sua key webhooks:kds>
+```
+
+<ResponseField name="status" type="string">
+  Ciclo de vida da fila: `queued` → `processing` → `processed` (concluído) · `failed` / `dead` (desistiu após retentativas) · `retry` (aguardando a próxima tentativa) · `ignored` (tratado, sem ação — ex. um duplicado ou um evento não-avançante).
+</ResponseField>
+<ResponseField name="attempts" type="number">Tentativas de processamento até agora.</ResponseField>
+<ResponseField name="result" type="object | null">Em caso de sucesso, o resultado do worker — ex. `{ "kind": "recorded" }` (avançou o pedido) ou `{ "kind": "ignored" }` (não-avançante).</ResponseField>
+<ResponseField name="error" type="object | null">`{ "message": "…" }` quando a última tentativa falhou; `null` caso contrário.</ResponseField>
+
+Um `404` é retornado para ids desconhecidos — ou ids de outro tenant — sem vazar existência. Autentique com a mesma key `webhooks:kds` que usou para o evento.
+
+## Idempotência
+
+O Fire deduplica os eventos por `providerEventId` — uma restrição única na fila de entrada. Um reenvio **não** é reprocessado: responde `202` com o `eventId` original e `duplicate: true`. Envie sempre o **mesmo** `providerEventId` nas retentativas; nunca gere um novo para o mesmo evento lógico.
+
+## Anti-regressão
+
+O status do pedido nunca deve retroceder. O Fire rastreia o **estágio máximo alcançado** pelo pedido (`order.dispatched` > `order.ready`) e compara cada evento de entrada com ele:
+
+- Um evento que **avança** o pedido (ex. `order.dispatched` depois de `order.ready`) é registrado como o novo status.
+- Um evento que **não avança** — uma regressão (`order.ready` chegando depois de `order.dispatched`) ou uma repetição do mesmo status — ainda é **registrado para observabilidade**, mas marcado como não-avançante com um motivo, e **não** retrocede o pedido.
+
+Isso torna o endpoint seguro contra entregas fora de ordem ou atrasadas: envie os eventos em qualquer ordem e o Fire mantém o pedido no seu estágio mais avançado.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Injetar pedido" icon="paper-plane" href="/pt/api-reference/orders">
+    O endpoint de injeção que cria o pedido que este evento referencia.
+  </Card>
+  <Card title="Callback fiscal" icon="receipt" href="/pt/api-reference/fiscal-callback">
+    O webhook de entrada irmão — mesmo modelo async + idempotência + correlação.
+  </Card>
+  <Card title="Autenticação" icon="lock" href="/pt/authentication">
+    Como funcionam as API keys, escopos e o binding de parceiro e vendor.
+  </Card>
+</CardGroup>

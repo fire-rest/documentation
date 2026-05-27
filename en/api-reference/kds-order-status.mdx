@@ -1,0 +1,206 @@
+---
+title: "KDS order status"
+api: "POST https://app.fire.rest/api/v1/webhooks/kds/order-status"
+description: "Inbound endpoint your KDS POSTs to when a kitchen order changes state (ready, dispatched). Fire logs the event, deduplicates it, and enforces anti-regression so the order state never moves backwards."
+authMethod: "bearer"
+---
+
+This endpoint is **inbound** — your Kitchen Display System (KDS) POSTs to it whenever an order advances in the kitchen: it became **ready** for hand-off, or it was **dispatched** (delivered / picked up). Fire authenticates the request, correlates it to the order, applies idempotency and an anti-regression gate, and records the event in its KDS event log for observability.
+
+<Note>
+  **This endpoint is asynchronous.** Fire authenticates, validates, runs the tenant guard, and **enqueues** the event — then returns **`202 Accepted`** with an `eventId` (typically under 100&nbsp;ms). The event is recorded a moment later by a background worker (usually within ~2&nbsp;seconds). To check the outcome, poll [`GET /v1/webhooks/events/{eventId}`](#checking-the-outcome). Client-fixable problems (bad payload, unknown order, wrong tenant) are rejected **synchronously** with `4xx` **before** the `202`.
+</Note>
+
+## Event types
+
+The KDS lifecycle has a strict order — an order is **ready** before it is **dispatched**:
+
+| `eventType` | Meaning | Rank |
+|---|---|---|
+| `order.ready` | The order is prepared and ready for hand-off / pickup | 1 |
+| `order.dispatched` | The order left the kitchen (delivered or picked up) — terminal | 2 |
+
+Values are **lowercase, dotted** (`order.ready`, not `ORDER_READY`).
+
+## Authentication
+
+This endpoint requires an **API key with the `webhooks:kds` scope**. Two key shapes are accepted:
+
+- **Partner / system key** — not bound to a single account (the KDS operates across all of them). The event is attributed to the account that owns the order it references.
+- **Vendor-scoped key** — bound to one account/vendor. Fire additionally enforces that the order belongs to that account/vendor.
+
+Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with scope `webhooks:kds`. Generated from the dashboard — a partner key from **Admin → API Keys**, or a vendor-scoped key from **Developers → API Management**.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  Optional `Bearer <token>` — accepted as a legacy alternative to `x-api-key`. Send one or the other.
+</ParamField>
+
+## Request body
+
+<ParamField body="eventType" type="string" required>
+  The KDS lifecycle event. One of `order.ready` or `order.dispatched` (lowercase, dotted).
+</ParamField>
+
+<ParamField body="providerEventId" type="string" required>
+  Idempotency key — unique and stable per event on your side. A replay with the same value returns `202` with the original `eventId` and `duplicate: true`, without re-enqueueing or re-processing. Use your KDS-native event ID if available; otherwise a UUID.
+</ParamField>
+
+<ParamField body="occurredAt" type="string" required>
+  ISO 8601 UTC timestamp of when the event happened in the KDS — not when it was sent.
+</ParamField>
+
+<ParamField body="orderId" type="string" required>
+  UUID of the order in Fire. Matches `data.orderId` in the order events. Fire correlates the event to this order; it must already exist.
+</ParamField>
+
+<ParamField body="eventId" type="string" required>
+  UUID for dispatch-attempt correlation (parity with the fiscal callback). If Fire dispatched the order to your KDS with an event id, echo it here; otherwise assign a stable UUID per event.
+</ParamField>
+
+<ParamField body="stationName" type="string">
+  Optional originating KDS station (e.g. `Hot line`, `Despacho 1`). Stored for observability.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Optional free-form bag of extra fields. Stored as-is, not validated.
+</ParamField>
+
+### Examples
+
+```json order.ready
+{
+  "eventType": "order.ready",
+  "providerEventId": "evt_2026-05-26_000123",
+  "occurredAt": "2026-05-26T18:30:00.000Z",
+  "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "stationName": "Hot line"
+}
+```
+
+```json order.dispatched
+{
+  "eventType": "order.dispatched",
+  "providerEventId": "evt_2026-05-26_000124",
+  "occurredAt": "2026-05-26T18:42:11.000Z",
+  "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
+  "eventId": "b2c3d4e5-6f70-4a8b-9c0d-1e2f3a4b5c6d",
+  "stationName": "Despacho 1"
+}
+```
+
+## Response
+
+On success the endpoint returns **`202 Accepted`** — the event was authenticated, validated, and **enqueued**. A `202` does **not** mean the event was recorded yet; that happens asynchronously. Use the [status endpoint](#checking-the-outcome) to confirm.
+
+<ResponseField name="received" type="boolean">
+  Always `true` when the request was accepted and enqueued.
+</ResponseField>
+
+<ResponseField name="eventId" type="string">
+  UUID of the queued event in `webhook_events`. Pass it to `GET /v1/webhooks/events/{eventId}` to poll the outcome.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Queue status at enqueue time — `queued` for a new event (or the existing status if it was a duplicate).
+</ResponseField>
+
+<ResponseField name="duplicate" type="boolean">
+  `true` when this `providerEventId` was already enqueued — the existing `eventId` is returned and the event is **not** re-enqueued. `false` for a fresh event.
+</ResponseField>
+
+<ResponseExample>
+```json 202 — accepted (queued)
+{
+  "received": true,
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": false
+}
+```
+
+```json 202 — duplicate (already enqueued)
+{
+  "received": true,
+  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "duplicate": true
+}
+```
+
+```json 400 — validation error
+{
+  "error": {
+    "code": "validation_error",
+    "message": "eventId debe ser un UUID"
+  }
+}
+```
+
+```json 401 — missing or invalid API key
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key"
+  }
+}
+```
+
+```json 403 — missing scope
+{
+  "error": {
+    "code": "forbidden",
+    "message": "Missing required scope: webhooks:kds"
+  }
+}
+```
+</ResponseExample>
+
+## Checking the outcome
+
+Because processing is asynchronous, the `202` only confirms the event was **queued**. To see whether it was recorded, poll the companion status endpoint with the `eventId` returned by the `202`:
+
+```
+GET https://app.fire.rest/api/v1/webhooks/events/{eventId}
+x-api-key: <your webhooks:kds key>
+```
+
+<ResponseField name="status" type="string">
+  Queue lifecycle: `queued` → `processing` → `processed` (done) · `failed` / `dead` (gave up after retries) · `retry` (waiting for the next attempt) · `ignored` (handled, no action needed — e.g. a duplicate or non-advancing event).
+</ResponseField>
+<ResponseField name="attempts" type="number">Processing attempts so far.</ResponseField>
+<ResponseField name="result" type="object | null">On success, the worker outcome — e.g. `{ "kind": "recorded" }` (advanced the order) or `{ "kind": "ignored" }` (non-advancing).</ResponseField>
+<ResponseField name="error" type="object | null">`{ "message": "…" }` when the last attempt failed; `null` otherwise.</ResponseField>
+
+A `404` is returned for unknown ids — or ids that belong to another tenant — with no existence leak. Authenticate with the same `webhooks:kds` key you used for the event.
+
+## Idempotency
+
+Fire deduplicates events by `providerEventId` — a unique constraint on the inbound queue. A replay is **not** re-processed: it returns `202` with the original `eventId` and `duplicate: true`. Always send the **same** `providerEventId` for retries; never generate a new one for the same logical event.
+
+## Anti-regression
+
+The order state must never move backwards. Fire tracks the **highest stage reached** by the order (`order.dispatched` > `order.ready`) and compares each incoming event against it:
+
+- An event that **advances** the order (e.g. `order.dispatched` after `order.ready`) is recorded as the new state.
+- An event that **does not advance** — a regression (`order.ready` arriving after `order.dispatched`) or a same-state repeat — is still **recorded for observability**, but flagged as non-advancing with a reason, and it does **not** move the order back.
+
+This makes the endpoint safe against out-of-order or late deliveries: send events in any order and Fire keeps the order at its most advanced stage.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Inject order" icon="paper-plane" href="/en/api-reference/orders">
+    The order injection endpoint that creates the order this event references.
+  </Card>
+  <Card title="Fiscal callback" icon="receipt" href="/en/api-reference/fiscal-callback">
+    The sibling inbound webhook — same async + idempotency + correlation model.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/en/authentication">
+    How API keys, scopes, partner and vendor binding work.
+  </Card>
+</CardGroup>
