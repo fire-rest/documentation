@@ -1,181 +1,187 @@
 ---
 title: "Cancelar pedido"
-api: "POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders/{orderId}/cancel"
-description: "Cancela um pedido previamente injetado. Idempotente em chamadas subsequentes; dispara o evento `order.cancelled` para os seus Integration Flows quando o pedido transiciona para CANCELLED."
+api: "POST /api/v4/integrations/sales/aggregator/orders/{order_uid}/refund"
+description: "Cancela um pedido de agregador e, quando o processador de pagamento suporta, reembolsa o pagamento."
 authMethod: "bearer"
 ---
 
-<Warning>
-  **API de parceiro.** Este endpoint é destinado a integradores de plataforma. Clientes padrão do Fire não têm acesso direto — entre em contato com seu account manager se precisar desta integração.
-</Warning>
+Cancela um pedido criado anteriormente com [Injetar pedido](/pt/api-reference/orders). O Fire busca o pedido por `account` e `order_uid`, atualiza o pedido para `CANCELED` e devolve o pedido atualizado no envelope padrão da API.
 
-Cancela um pedido que foi injetado previamente via [`POST /v1/orders`](/pt/api-reference/orders). O Fire transiciona o status do pedido para `CANCELLED`, registra metadata de auditoria (quem, quando, por quê) e dispara o evento [`order.cancelled`](/pt/events/order-cancelled) para os seus Integration Flows.
+Se o processador de pagamento salvo suporta reembolsos (por exemplo, Deuna), o Fire tenta o reembolso e define `payment_status` como `REFUNDED` em caso de sucesso. Para outros processadores, o Fire cancela o estado de pagamento e define `payment_status` como `CANCELED`.
 
-## Autenticação
+<ParamField header="Authorization" type="string" required>
+  Token Bearer obtido em [POST /login](/pt/api-reference/login). Formato: `Bearer <accessToken>`.
+</ParamField>
 
 <ParamField header="x-api-key" type="string" required>
-  Sua API key do Fire com scope `orders:write`.
+  Sua API key do Fire.
 </ParamField>
 
-## Path parameters
-
-<ParamField path="orderId" type="string" required>
-  UUID interno do pedido no Fire — mesmo valor que `data.orderId` no evento [`order.completed`](/pt/events/order-completed) deste pedido. **Não** é o `externalOrderId` que você usou na injeção.
+<ParamField header="x-client-channel" type="string" required>
+  Deve ser `integration`. Identifica a requisição como vinda de uma integração externa.
 </ParamField>
 
-## Corpo da requisição
+<ParamField header="account" type="string" required>
+  Identificador da conta usado para encontrar o pedido.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" default="application/json">
+  Use `application/json` para o corpo da requisição.
+</ParamField>
+
+<ParamField path="order_uid" type="string" required>
+  UID do pedido que será cancelado.
+</ParamField>
 
 <ParamField body="reason" type="string" required>
-  Razão free-text para o cancelamento. Mínimo 5 caracteres, máximo 500. Fica registrada em `cancellation.cancellationReason` do payload do evento `order.cancelled` resultante.
+  Motivo do cancelamento ou solicitação de reembolso.
+</ParamField>
+
+<ParamField body="payment_method_uid" type="string">
+  Opcional. UID do método de pagamento usado para resolver credenciais de reembolso quando você precisa direcionar um método específico.
+</ParamField>
+
+<ParamField body="vendor_uid" type="string" required>
+  UID do vendor usado para resolver credenciais de pagamento.
+</ParamField>
+
+<ParamField body="email" type="string">
+  Email do cliente enviado ao processador de pagamento quando aplicável.
+</ParamField>
+
+<ParamField body="customer_uid" type="string">
+  UID do cliente registrado. Quando presente, o Fire trata o payload de reembolso como autenticado.
+</ParamField>
+
+<ParamField body="anonymous_customer_uid" type="string">
+  UID do cliente anônimo. Usado como identificador de usuário do pagamento quando `customer_uid` não está presente.
+</ParamField>
+
+<ParamField body="store_uid" type="string">
+  UID da loja usado para resolver credenciais de pagamento específicas da loja.
+</ParamField>
+
+<ParamField body="media" type="string">
+  Meio de venda usado para resolver credenciais. Valores suportados: `APP`, `WEB`.
 </ParamField>
 
 <RequestExample>
-```http
-POST https://api.fire.rest/v1/orders/21ec1f6c-c301-4528-b999-7836c1d21c6c/cancel
-x-api-key: <sua_api_key>
-Content-Type: application/json
-
+```json Cancelamento mínimo
 {
-  "reason": "Cliente solicitou cancelamento — pedido duplicado"
+  "reason": "Duplicate charge",
+  "vendor_uid": "vendor-uid-abc"
+}
+```
+
+```json Cancelamento com cliente e canal
+{
+  "reason": "Customer cancellation",
+  "payment_method_uid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "vendor_uid": "vendor-uid-abc",
+  "store_uid": "store-uid-xyz",
+  "media": "WEB",
+  "email": "customer@example.com",
+  "customer_uid": "customer-uid-123"
 }
 ```
 </RequestExample>
 
-## Resposta
-
-<ResponseField name="id" type="string">
-  UUID interno do pedido no Fire — coincide com o `orderId` que você cancelou.
+<ResponseField name="data" type="object">
+  Pedido atualizado. Os preços em `order_lines`, `totals` e `payment_methods` são devolvidos como valores externos sem escala.
+  <Expandable title="data">
+    <ResponseField name="uid" type="string">UID do pedido.</ResponseField>
+    <ResponseField name="order_code" type="string | null">Código legível do pedido.</ResponseField>
+    <ResponseField name="account_uid" type="string">Identificador da conta.</ResponseField>
+    <ResponseField name="vendor_uid" type="string | null">UID do vendor.</ResponseField>
+    <ResponseField name="store_uid" type="string | null">UID da loja.</ResponseField>
+    <ResponseField name="status" type="string">Status final do pedido. Cancelamentos bem-sucedidos retornam `CANCELED`.</ResponseField>
+    <ResponseField name="payment_status" type="string">Status final do pagamento: `REFUNDED` ou `CANCELED`.</ResponseField>
+    <ResponseField name="order_lines" type="array | null">Linhas do pedido com preços sem escala.</ResponseField>
+    <ResponseField name="totals" type="array | null">Totais com preços sem escala.</ResponseField>
+    <ResponseField name="payment_methods" type="array | null">Métodos de pagamento com valores sem escala.</ResponseField>
+    <ResponseField name="metadata" type="object | null">Metadados do pedido.</ResponseField>
+  </Expandable>
 </ResponseField>
 
-<ResponseField name="cancellationId" type="string">
-  UUID do registro de auditoria do cancelamento. Estável através de retentativas; coincide com `cancellation.cancellationId` no evento `order.cancelled` resultante.
+<ResponseField name="status" type="number">
+  Código HTTP no envelope da API.
 </ResponseField>
 
-<ResponseField name="status" type="string">
-  Sempre `"CANCELLED"` em resposta bem-sucedida.
-</ResponseField>
-
-<ResponseField name="cancelledAt" type="string">
-  Timestamp ISO 8601 UTC de quando o cancelamento foi registrado.
-</ResponseField>
-
-<ResponseField name="cancelledBy" type="string">
-  Identificador do principal que realizou o cancelamento. Para callers via API key: `"api-key:<keyId>"`.
-</ResponseField>
-
-<ResponseField name="cancellationReason" type="string">
-  Eco do `reason` enviado no body.
-</ResponseField>
-
-<ResponseField name="cancellationSource" type="string">
-  Sempre `"adapter"` para cancelamentos feitos por este endpoint. (Outras fontes são `"backoffice"` para cancelamentos do dashboard e `"api"` para chamadas internas diretas.)
-</ResponseField>
-
-<ResponseField name="cancelledFlowsCount" type="number">
-  Quantidade de execuções de Integration Flow em voo que foram canceladas como parte desta operação. Os flows pendentes para o pedido são abortados antes do novo evento `order.cancelled` disparar, evitando entregas conflitantes.
+<ResponseField name="traceId" type="string">
+  Identificador de trace para suporte e diagnóstico.
 </ResponseField>
 
 <ResponseExample>
 ```json 200
 {
-  "id": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
-  "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
-  "status": "CANCELLED",
-  "cancelledAt": "2026-05-06T16:32:00.000Z",
-  "cancelledBy": "api-key:k_ab12cd34",
-  "cancellationReason": "Cliente solicitou cancelamento — pedido duplicado",
-  "cancellationSource": "adapter",
-  "cancelledFlowsCount": 2
+  "data": {
+    "uid": "550e8400-e29b-41d4-a716-446655440000",
+    "order_code": "ORD-2026-001234",
+    "account_uid": "acc-uid-12345",
+    "vendor_uid": "vendor-uid-abc",
+    "store_uid": "store-uid-xyz",
+    "status": "CANCELED",
+    "payment_status": "REFUNDED",
+    "order_lines": [],
+    "totals": [],
+    "payment_methods": [],
+    "metadata": {},
+    "created_at": "2026-03-30T12:00:00.000Z",
+    "updated_at": "2026-03-30T12:05:00.000Z",
+    "deleted_at": null
+  },
+  "status": 200,
+  "method": "POST",
+  "pathname": "/api/v4/integrations/sales/aggregator/orders/550e8400-e29b-41d4-a716-446655440000/refund",
+  "duration": 120,
+  "traceId": "abc123",
+  "isArray": false
 }
 ```
 
-```json 400 — erro de validação
+```json 422
 {
-  "error": {
-    "code": "validation_error",
-    "message": "reason must be between 5 and 500 characters"
+  "status": 422,
+  "errors": {
+    "status": "422",
+    "code": "invalid_type",
+    "title": "Validation error",
+    "detail": "reason is required"
   }
 }
 ```
 
-```json 400 — janela de cancelamento fiscal excedida (Brasil)
+```json 404
 {
-  "error": {
-    "code": "business_error",
-    "message": "Cannot cancel order: fiscal cancellation time limit exceeded. NFCE can be cancelled within 30 minutes of authorization. Elapsed: 45 minutes."
-  }
-}
-```
-
-```json 401 — API key faltando ou inválida
-{
-  "error": {
-    "code": "unauthorized",
-    "message": "Invalid or missing API key"
-  }
-}
-```
-
-```json 403 — scope incorreto
-{
-  "error": {
-    "code": "forbidden",
-    "message": "API key is missing the orders:write scope"
-  }
-}
-```
-
-```json 404 — pedido não encontrado
-{
-  "error": {
+  "status": 404,
+  "errors": {
+    "status": "404",
     "code": "not_found",
-    "message": "Order 21ec1f6c-c301-4528-b999-7836c1d21c6c was not found"
+    "title": "Not found",
+    "detail": "Order not found"
   }
 }
 ```
 
-```json 409 — estado inválido
+```json 400
 {
-  "error": {
-    "code": "conflict",
-    "message": "Order cannot be cancelled — current status is CANCELLED"
-  }
+  "status": 400,
+  "errors": {
+    "status": "400",
+    "code": "custom",
+    "title": "Error",
+    "detail": "Payment methods not found"
+  },
+  "message": "Payment methods not found",
+  "code": 0,
+  "moreInfo": "https://docs.artisn.io/api/errors"
 }
 ```
 </ResponseExample>
 
-## Regras de cancelamento
+## Regras de processamento
 
-O pedido deve estar em um estado que permita cancelamento. O Fire retorna `409 Conflict` quando:
-
-- O status do pedido não é `OPEN` nem `COMPLETED` (ex.: já foi cancelado).
-- O status fiscal é `processing`, `error`, `cancelling` ou `cancelled` — há uma transição fiscal em voo ou terminal que impede cancelamento seguro.
-- O dia de negócio do pedido está fechado e o pedido pertence a um dia de negócio anterior.
-
-**Brasil — janela de cancelamento fiscal.** Uma vez que a NFC-e do pedido está autorizada na SEFAZ, ela só pode ser cancelada dentro de **30 minutos** após a autorização (NF-e: **24 horas**). Passada essa janela, a SEFAZ não aceita mais o cancelamento, então o Fire rejeita a solicitação de imediato com `400 Business error` e mantém o pedido **inalterado** — em vez disso, emita uma devolução fiscal / nota de crédito. A janela é medida a partir do timestamp de autorização fiscal e aplica-se apenas a pedidos brasileiros fiscal-enabled.
-
-Para pedidos brasileiros fiscal-enabled que já estavam autorizados na SEFAZ, este endpoint **inicia** o cancelamento: `order.cancelled` dispara imediatamente, e um evento separado [`fiscal.cancelled.br`](/pt/events/fiscal-cancelled-br) dispara depois quando a SEFAZ confirma o cancelamento. Veja o [lifecycle de cancelamento de pedido](/pt/events/order-cancelled#lifecycle-relativo-a-outros-eventos).
-
-## O que acontece após uma chamada bem-sucedida
-
-1. **O status do pedido** transiciona para `CANCELLED` e a linha de auditoria é escrita.
-2. **Os flows pendentes para este pedido são abortados** — `cancelledFlowsCount` reflete quantos.
-3. **O evento `order.cancelled` é despachado** — seus Integration Flows recebem o evento com o snapshot V4 do pedido mais o bloco `cancellation`.
-4. **Para pedidos BR fiscal-enabled**: uma solicitação de cancelamento downstream é enfileirada para a autoridade fiscal. Quando a SEFAZ confirma, dispara `fiscal.cancelled.br`.
-
-## Relacionado
-
-<CardGroup cols={2}>
-  <Card title="Injetar pedido" icon="paper-plane" href="/pt/api-reference/orders">
-    O endpoint que criou o pedido que este cancela.
-  </Card>
-  <Card title="Evento order.cancelled" icon="ban" href="/pt/events/order-cancelled">
-    O evento outbound que seus Integration Flows recebem após um cancelamento bem-sucedido.
-  </Card>
-  <Card title="Evento fiscal.cancelled.br" icon="file-circle-xmark" href="/pt/events/fiscal-cancelled-br">
-    Apenas Brasil — dispara depois quando a SEFAZ confirma.
-  </Card>
-  <Card title="Autenticação" icon="lock" href="/pt/authentication">
-    Como funcionam API keys, scopes e vendor binding.
-  </Card>
-</CardGroup>
+- Quando enviado, `payment_method_uid` ajuda a resolver credenciais, mas o Fire avalia os métodos de pagamento salvos no pedido.
+- Para reembolsos com Deuna, o pedido deve incluir `metadata.order_token`; se não existir, o Fire retorna `400`.
+- Depois de salvar o pedido atualizado, o Fire devolve preços transformados para consumo externo.
+- O Fire notifica o cancelamento downstream depois de salvar o pedido.
