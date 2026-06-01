@@ -287,7 +287,7 @@ authMethod: "bearer"
       Totales de la orden con desglose de impuestos y descuentos. Cada entrada es un objeto price con `currencyCode`, `subtotalWithoutTaxes`, `discountPercentage`, `discountsValue`, `subtotalIncludeDiscounts`, `taxesPercentage`, `taxValue`, `total` y opcionalmente `rewardId`.
     </ParamField>
     <ParamField body="shippingCost" type="object[]">
-      Líneas de costo de envío. Cada entrada usa la **misma forma de tramo de precio** que `totals[]`: moneda, subtotales, descuentos, porcentajes de impuesto y total de la línea.
+      Líneas de costo de envío. Cada entrada usa la **misma forma de tramo de precio** que `totals[]`—envía el costo ya calculado (base, impuesto y `total`). Fire almacena los valores tal cual. Consulta [Envío y descuentos](#envío-y-descuentos).
       <Expandable title="shippingCost[n]">
         <ParamField body="currencyCode" type="string">Código de moneda ISO 4217.</ParamField>
         <ParamField body="subtotalWithoutTaxes" type="string">Monto antes de impuestos.</ParamField>
@@ -312,7 +312,7 @@ authMethod: "bearer"
       </Expandable>
     </ParamField>
     <ParamField body="discounts" type="object[]">
-      Líneas de descuento: cada fila es un descuento aplicado con los **mismos campos de tramo de precio** que `totals[]` y `shippingCost[]` (importes, porcentaje y valor de descuento, impuestos, total).
+      Filas de descuento a nivel de orden—una entrada por promo o cupón, con los **mismos campos de tramo** que `totals[]` y `shippingCost[]`. `discountsValue` es el importe descontado. Consulta [Envío y descuentos](#envío-y-descuentos).
       <Expandable title="discounts[n]">
         <ParamField body="currencyCode" type="string">Código de moneda ISO 4217.</ParamField>
         <ParamField body="subtotalWithoutTaxes" type="string">Base imponible antes del descuento.</ParamField>
@@ -380,68 +380,61 @@ authMethod: "bearer"
   Metadata extra a nivel de orden (p. ej. dirección IP del kiosko).
 </ParamField>
 
+## Montos y tramos de precio
+
+<Warning>
+  Fire **no** escala ni recalcula precios. Envía los montos en la **unidad final de la moneda** (por ejemplo `"8.99"` para USD 8.99, no centavos). Tu POS o agregador debe enviar valores ya calculados.
+</Warning>
+
+Las líneas de producto, `payments.totals[]`, `payments.shippingCost[]` y `payments.discounts[]` usan las mismas claves de **tramo de precio**: `currencyCode`, `subtotalWithoutTaxes`, `discountPercentage`, `discountsValue`, `subtotalIncludeDiscounts`, `taxesPercentage`, `taxValue`, `total`.
+
+| Campo del tramo | Significado habitual |
+|---|---|
+| `subtotalWithoutTaxes` | Base imponible antes del descuento de la línea |
+| `discountsValue` | Importe del descuento en esta línea |
+| `subtotalIncludeDiscounts` | Base tras el descuento, antes de impuestos |
+| `taxValue` | Impuesto sobre la base con descuento |
+| `total` | Total de la línea tal como se almacena |
+
+## Envío y descuentos
+
+### Descuentos por producto
+
+Aplica descuentos en `order.products[n].price.unitPrice` y `totalPrice` (mismos valores cuando `quantity` es 1). Ejemplo: **10% de descuento** sobre base **15.00** con **IVA 12%** → `discountsValue` **1.50**, `subtotalIncludeDiscounts` **13.50**, `taxValue` **1.62**, `total` de línea **15.12**.
+
+### `payments.shippingCost[]`
+
+Costos de envío como una o más filas con tramo de precio. En los ejemplos, el impuesto del envío se calcula sobre la base de envío igual que en los productos.
+
+### `payments.discounts[]`
+
+Descuentos a nivel de orden (promos, cupones) como filas de tramo de precio. Úsalo cuando el descuento **no** esté ya reflejado en el `discountsValue` de cada producto. Puedes combinar descuentos de producto y `payments.discounts[]`; concilia con `paymentMethods[].totalBill`.
+
+### `payments.totals[]`
+
+Resumen de la parte de **productos** de la orden. Al conciliar: **productos (totals) + envío − descuentos de orden ≈ monto pagado**.
+
+<Note>
+  Fire no rechaza la petición si `paymentMethods[].totalBill` difiere levemente de la suma de tramos; aun así envía valores coherentes desde tu sistema origen.
+</Note>
+
 <RequestExample>
-```json Example order
+```json Entrega simple (sin descuentos)
 {
-  "orderId": "0000012194-081101",
+  "orderId": "AGG-SIMPLE-001",
   "source": "App",
   "platform": "Android",
-  "channel": {
-    "uid": "CH-IFOOD-001",
-    "code": "Aggregator",
-    "metadata": {}
-  },
-  "service": {
-    "uid": "3",
-    "code": "DELIVERY",
-    "metadata": {}
-  },
-  "device": {
-    "uid": "38e17b63dead6d59",
-    "name": "KIOSK",
-    "platform": "android",
-    "metadata": {
-      "ip": "10.32.43.194"
-    }
-  },
-  "operator": {
-    "uid": "16ca9b25-fba0-4705-bfb4-mirror-5ff3b486",
-    "name": "Edgard",
-    "session": {
-      "uid": "sess-mirror-5ff3b486"
-    }
-  },
+  "channel": { "uid": "CH-IFOOD-001", "code": "Aggregator", "metadata": {} },
+  "service": { "uid": "3", "code": "DELIVERY", "metadata": {} },
   "selectedShippingMethod": "delivery",
-  "accumulatePoints": true,
-  "redeemPoints": false,
-  "discount": false,
-  "orderComment": "No onions please",
-  "client": {
-    "uid": "Bwsyaszx36b5UXXdqFDFBi6ki7j1",
-    "name": "Jane",
-    "lastName": "Doe",
-    "phone": "0972241639",
-    "email": "jane.doe@example.com",
-    "govIdType": "DNI",
-    "govIdNumber": "1751930486",
-    "id": "402399"
-  },
-  "store": {
-    "id": 10,
-    "name": "Gran Santa Fe",
-    "code": "T001",
-    "vendorId": 8,
-    "vendorName": "Blue Co",
-    "latitude": "-2.32423423",
-    "longitude": "-80.21312312"
-  },
+  "client": { "name": "Jane", "lastName": "Doe", "phone": "+1555000111" },
+  "store": { "id": 10, "name": "Gran Santa Fe", "code": "T001", "vendorId": 8 },
   "order": {
     "products": [
       {
         "productId": "991117",
         "product": "Classic Burger",
         "quantity": 1,
-        "comment": "Sin cebolla",
         "price": {
           "unitPrice": {
             "currencyCode": "USD",
@@ -451,8 +444,7 @@ authMethod: "bearer"
             "subtotalIncludeDiscounts": "7.7826",
             "taxesPercentage": "15.0000",
             "taxValue": "1.1739",
-            "total": "8.9900",
-            "suggestedPrice": "8.9900"
+            "total": "8.9900"
           },
           "totalPrice": {
             "currencyCode": "USD",
@@ -462,105 +454,16 @@ authMethod: "bearer"
             "subtotalIncludeDiscounts": "7.7826",
             "taxesPercentage": "15.0000",
             "taxValue": "1.1739",
-            "total": "8.9900",
-            "suggestedPrice": "8.9900"
+            "total": "8.9900"
           }
-        },
-        "modifierGroups": [
-          {
-            "id": "1121",
-            "description": "Choose your side",
-            "selectedModifiers": [
-              {
-                "answerId": "1055",
-                "productId": "1025",
-                "product": "Fries",
-                "rewardId": null,
-                "quantity": 1,
-                "removedQuantity": null,
-                "price": {
-                  "unitPrice": {
-                    "currencyCode": "USD",
-                    "totalBeforeSale": "0.0000",
-                    "subtotalWithoutTaxes": "1.7304",
-                    "discountPercentage": "0.0000",
-                    "discountsValue": "0.0000",
-                    "subtotalIncludeDiscounts": "1.7304",
-                    "taxesPercentage": "15.0000",
-                    "taxValue": "0.2696",
-                    "total": "2.2500",
-                    "suggestedPrice": "2.2500"
-                  },
-                  "totalPrice": {
-                    "currencyCode": "USD",
-                    "totalBeforeSale": "0.0000",
-                    "subtotalWithoutTaxes": "1.7304",
-                    "discountPercentage": "0.0000",
-                    "discountsValue": "0.0000",
-                    "subtotalIncludeDiscounts": "1.7304",
-                    "taxesPercentage": "15.0000",
-                    "taxValue": "0.2696",
-                    "total": "2.2500",
-                    "suggestedPrice": "2.2500"
-                  }
-                }
-              }
-            ]
-          },
-          {
-            "id": "1133",
-            "description": "Customize your burger — add or remove ingredients",
-            "selectedModifiers": [
-              {
-                "answerId": "1088",
-                "productId": "1026",
-                "rewardId": null,
-                "product": "No Tomato",
-                "quantity": null,
-                "removedQuantity": 1,
-                "price": {
-                  "unitPrice": {
-                    "currencyCode": "USD",
-                    "totalBeforeSale": "0.0000",
-                    "subtotalWithoutTaxes": "0.0000",
-                    "discountPercentage": "0.0000",
-                    "discountsValue": "0.0000",
-                    "subtotalIncludeDiscounts": "0.0000",
-                    "taxesPercentage": "0.0000",
-                    "taxValue": "0.0000",
-                    "total": "0.0000",
-                    "suggestedPrice": "0.0000"
-                  },
-                  "totalPrice": {
-                    "currencyCode": "USD",
-                    "totalBeforeSale": "0.0000",
-                    "subtotalWithoutTaxes": "0.0000",
-                    "discountPercentage": "0.0000",
-                    "discountsValue": "0.0000",
-                    "subtotalIncludeDiscounts": "0.0000",
-                    "taxesPercentage": "0.0000",
-                    "taxValue": "0.0000",
-                    "total": "0.0000",
-                    "suggestedPrice": "0.0000"
-                  }
-                }
-              }
-            ]
-          }
-        ],
-        "additionalInfo": {}
+        }
       }
     ]
   },
   "shippingMethod": {
     "delivery": {
-      "deliveryDate": "2022-11-02 08:45:00",
-      "latitude": "-2.2244266",
-      "longitude": "-80.9044868",
-      "country": "Ecuador",
       "city": "Guayaquil",
       "mainStreet": "Av. Principal 123",
-      "reference": "Grey house",
       "zipCode": "090101"
     }
   },
@@ -589,45 +492,239 @@ authMethod: "bearer"
         "total": "1.7250"
       }
     ],
-    "extraCharges": [],
-    "discounts": [
-      {
-        "currencyCode": "USD",
-        "subtotalWithoutTaxes": "2.0000",
-        "discountPercentage": "10.0000",
-        "discountsValue": "0.2000",
-        "subtotalIncludeDiscounts": "1.8000",
-        "taxesPercentage": "15.0000",
-        "taxValue": "0.2700",
-        "total": "2.0700"
-      }
-    ],
-    "taxes": [
-      {
-        "name": "IVA 15%",
-        "currencyCode": "USD",
-        "subtotalWithoutTaxes": "7.7826",
-        "percentage": "15.0000",
-        "total": "1.1739"
-      }
-    ],
+    "discounts": [],
     "paymentMethods": [
       {
         "processor": "Kushki",
         "currencyCode": "USD",
-        "paymentMethodCode": "2",
-        "transactionType": "credit",
-        "transactionId": "049258058662543450",
         "transactionStatus": "APPROVED",
-        "exactPayment": true,
-        "totalBill": "8.9900"
+        "totalBill": "10.7150"
+      }
+    ]
+  }
+}
+```
+
+```json Descuento en línea y envío
+{
+  "orderId": "AGG-DISC-LINE-001",
+  "source": "Kiosco",
+  "platform": "Android",
+  "channel": { "uid": "CH-KIOSK-001", "code": "Kiosk", "metadata": {} },
+  "service": { "uid": "3", "code": "DELIVERY", "metadata": {} },
+  "selectedShippingMethod": "delivery",
+  "client": { "name": "Maria", "phone": "+5511999999999" },
+  "store": { "id": 20, "name": "Centro", "code": "T020", "vendorId": 16 },
+  "order": {
+    "products": [
+      {
+        "productId": "SKU-COMBO-001",
+        "product": "Combo Especial",
+        "quantity": 1,
+        "comment": "Sin cebolla",
+        "price": {
+          "unitPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "15.00",
+            "discountPercentage": "10.0000",
+            "discountsValue": "1.50",
+            "subtotalIncludeDiscounts": "13.50",
+            "taxesPercentage": "12.0000",
+            "taxValue": "1.62",
+            "total": "15.12"
+          },
+          "totalPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "15.00",
+            "discountPercentage": "10.0000",
+            "discountsValue": "1.50",
+            "subtotalIncludeDiscounts": "13.50",
+            "taxesPercentage": "12.0000",
+            "taxValue": "1.62",
+            "total": "15.12"
+          }
+        }
       }
     ]
   },
-  "additionalInfo": {}
+  "shippingMethod": {
+    "delivery": {
+      "city": "São Paulo",
+      "mainStreet": "Rua Exemplo 100",
+      "zipCode": "01310-100"
+    }
+  },
+  "payments": {
+    "totals": [
+      {
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "15.00",
+        "discountPercentage": "10.0000",
+        "discountsValue": "1.50",
+        "subtotalIncludeDiscounts": "13.50",
+        "taxesPercentage": "12.0000",
+        "taxValue": "1.62",
+        "total": "15.12"
+      }
+    ],
+    "shippingCost": [
+      {
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "3.50",
+        "discountPercentage": "0.0000",
+        "discountsValue": "0.0000",
+        "subtotalIncludeDiscounts": "3.50",
+        "taxesPercentage": "12.0000",
+        "taxValue": "0.42",
+        "total": "3.92"
+      }
+    ],
+    "discounts": [],
+    "paymentMethods": [
+      {
+        "processor": "CREDIT_CARD",
+        "currencyCode": "BRL",
+        "transactionStatus": "APPROVED",
+        "totalBill": "19.04"
+      }
+    ]
+  }
+}
+```
+
+```json Varios productos, envío y descuento de orden
+{
+  "orderId": "AGG-PROMO-001",
+  "source": "Aggregator",
+  "channel": { "uid": "CH-AGG-001", "code": "Aggregator", "metadata": {} },
+  "service": { "uid": "3", "code": "DELIVERY", "metadata": {} },
+  "selectedShippingMethod": "delivery",
+  "client": { "name": "João", "lastName": "Silva", "phone": "+5511987654321" },
+  "store": { "id": 30, "name": "Lab Brasil", "code": "K000", "vendorId": 8 },
+  "order": {
+    "products": [
+      {
+        "productId": "BURG-001",
+        "product": "Hamburguesa Clásica",
+        "quantity": 2,
+        "price": {
+          "unitPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "11.52",
+            "discountPercentage": "0.0000",
+            "discountsValue": "0.0000",
+            "subtotalIncludeDiscounts": "11.52",
+            "taxesPercentage": "12.0000",
+            "taxValue": "1.38",
+            "total": "12.90"
+          },
+          "totalPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "23.04",
+            "discountPercentage": "0.0000",
+            "discountsValue": "0.0000",
+            "subtotalIncludeDiscounts": "23.04",
+            "taxesPercentage": "12.0000",
+            "taxValue": "2.76",
+            "total": "25.80"
+          }
+        }
+      },
+      {
+        "productId": "BEV-001",
+        "product": "Refresco 500ml",
+        "quantity": 1,
+        "price": {
+          "unitPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "4.46",
+            "discountPercentage": "0.0000",
+            "discountsValue": "0.0000",
+            "subtotalIncludeDiscounts": "4.46",
+            "taxesPercentage": "12.0000",
+            "taxValue": "0.54",
+            "total": "5.00"
+          },
+          "totalPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "4.46",
+            "discountPercentage": "0.0000",
+            "discountsValue": "0.0000",
+            "subtotalIncludeDiscounts": "4.46",
+            "taxesPercentage": "12.0000",
+            "taxValue": "0.54",
+            "total": "5.00"
+          }
+        }
+      }
+    ]
+  },
+  "shippingMethod": {
+    "delivery": { "city": "São Paulo", "mainStreet": "Av. Paulista 1000" }
+  },
+  "payments": {
+    "totals": [
+      {
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "27.50",
+        "discountPercentage": "0.0000",
+        "discountsValue": "0.0000",
+        "subtotalIncludeDiscounts": "27.50",
+        "taxesPercentage": "12.0000",
+        "taxValue": "3.30",
+        "total": "30.80"
+      }
+    ],
+    "shippingCost": [
+      {
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "3.50",
+        "discountPercentage": "0.0000",
+        "discountsValue": "0.0000",
+        "subtotalIncludeDiscounts": "3.50",
+        "taxesPercentage": "0.0000",
+        "taxValue": "0.0000",
+        "total": "3.50"
+      }
+    ],
+    "discounts": [
+      {
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "34.30",
+        "discountPercentage": "0.0000",
+        "discountsValue": "2.00",
+        "subtotalIncludeDiscounts": "32.30",
+        "taxesPercentage": "0.0000",
+        "taxValue": "0.0000",
+        "total": "2.00"
+      }
+    ],
+    "paymentMethods": [
+      {
+        "processor": "99",
+        "currencyCode": "BRL",
+        "transactionStatus": "APPROVED",
+        "totalBill": "32.30"
+      }
+    ]
+  }
 }
 ```
 </RequestExample>
+
+## Conciliación de los ejemplos
+
+| Ejemplo | Productos (`totals[].total`) | Envío (`shippingCost[].total`) | Descuento de orden (`discounts[].discountsValue`) | Pagado (`totalBill`) |
+|---|---:|---:|---:|---:|
+| Entrega simple | 8.99 | 1.73 | — | **10.72** |
+| Descuento en línea + envío | 15.12 | 3.92 | — | **19.04** |
+| Varios productos + promo | 30.80 | 3.50 | 2.00 | **32.30** |
+
+Notas de cálculo:
+
+- **Entrega simple:** 8.99 + 1.73 = **10.72**.
+- **Descuento en línea:** 10% sobre 15.00 → IVA sobre 13.50 → producto **15.12**; envío 3.50 + IVA 12% = **3.92**; **15.12 + 3.92 = 19.04**.
+- **Varios productos + promo:** hamburguesas **25.80** + bebida **5.00** = **30.80**; + envío **3.50** = 34.30; − promo **2.00** = **32.30** pagado.
 
 <ResponseExample>
 ```json 200
