@@ -24,10 +24,30 @@ Un flow es seleccionado cuando **todo** lo siguiente es verdadero:
 | `accountId` | Igual al account dueño de la entidad |
 | `vendorId` | Igual al brand/vendor dueño de la tienda |
 | `triggerType` | Igual al tipo de evento (`order.completed`, `order.cancelled`, `fiscal.authorized.br`, `fiscal.cancelled.br`) |
-| `storeCodes` | Vacío (matchea todas las tiendas) o contiene el código de tienda del evento |
+| `kind` | `'store'` (alcance por `storeCodes`) o `'channel'` (alcance por `channelCodes`) |
+| `storeCodes` | Solo `kind='store'`: vacío (matchea todas las tiendas) o contiene el código de tienda del evento |
+| `channelCodes` | Solo `kind='channel'`: contiene el código de canal de la orden del evento |
 | `isActive` | `true` |
 
 Puedes tener **múltiples flows activos para el mismo trigger** — corren independientes. Úsalo para distribuir eventos a varios servicios downstream sin cambios de código (p. ej. un flow por consumidor: ERP, analítica, cache fiscal, broker de mensajes).
+
+## Alcance: tienda vs canal
+
+Un mismo evento se publica por uno de **dos mecanismos de alcance**, según el `kind` del flow:
+
+- **Flujo de tienda (`kind='store'`)** — matchea por `storeCodes` (vacío = todas las tiendas del vendor). Es el clásico para integraciones de backoffice: ERP, analítica, impresión, fiscal.
+- **Flujo de canal (`kind='channel'`)** — matchea por `channelCodes`, el canal de origen de la orden. Sirve para **eco al canal/agregador**: cuando una orden de un canal (un kiosko, un marketplace) cambia de estado, el evento vuelve al endpoint de ese canal.
+
+```mermaid
+flowchart TD
+    E([Evento de negocio<br/>p. ej. order.cancelled]) --> M{Match de flows activos}
+    M -->|kind=store y storeCodes<br/>incluye la tienda| S[Flujo de tienda<br/>hacia tu backoffice / ERP]
+    M -->|kind=channel y channelCodes<br/>incluye el canal| C[Flujo de canal<br/>hacia el endpoint del agregador]
+    S --> W1[Nodo HTTP o Webhook]
+    C --> W2[Nodo Webhook firmado<br/>HMAC]
+```
+
+Ambos usan el mismo motor de flows; solo cambia **cómo se selecciona** el flow (por tienda o por canal) y a quién entrega. Un flujo de canal típicamente usa el **nodo Webhook firmado** (abajo) porque el receptor es un tercero que necesita verificar el origen.
 
 ## Armando un flow
 
@@ -84,6 +104,58 @@ Este es el nodo que llega a tu endpoint. Su config controla la petición entera:
 ```
 
 Cada campo es opcional excepto `method` y `url`. `body`, `headers` y `auth` se evalúan como templates contra el [trigger context](#trigger-context).
+
+### Nodo Webhook firmado (HMAC)
+
+El nodo **Webhook** es un nodo HTTP que además **firma el body** con HMAC-SHA256. Úsalo cuando el receptor (típicamente un canal/agregador) necesita verificar que el payload viene de Fire y no fue manipulado. Tiene la misma configuración que el nodo HTTP (URL, método, headers, body, status routes, auth de transporte) más un **secreto compartido**.
+
+La firma es **independiente** del auth de transporte (Bearer / API key / OAuth2): la auth identifica el transporte; la firma HMAC garantiza la integridad del body y el anti-replay. Son complementarios.
+
+**Headers que agrega Fire:**
+
+| Header | Valor |
+|---|---|
+| `X-Fire-Signature` | `v1=` + `hex(HMAC-SHA256(secret, "{timestamp}.{rawBody}"))` |
+| `X-Fire-Timestamp` | Timestamp Unix en **segundos** |
+
+**Cómo verificar (de tu lado):**
+
+<Steps>
+  <Step title="Lee los headers">Toma `X-Fire-Timestamp` y `X-Fire-Signature`.</Step>
+  <Step title="Anti-replay">Rechaza si `abs(now - timestamp)` supera 300 segundos (ventana de 5 minutos).</Step>
+  <Step title="Recalcula">Computa `v1=hex(HMAC-SHA256(secret, timestamp + "." + rawBody))` sobre el **body crudo** (no re-serialices el JSON).</Step>
+  <Step title="Compara">Usa comparación de **tiempo constante** (`crypto.timingSafeEqual`), nunca `===`.</Step>
+</Steps>
+
+```js
+import crypto from "crypto";
+
+function verifyFireSignature(rawBody, signatureHeader, timestampHeader, secret, toleranceSec = 300) {
+  const ts = parseInt(timestampHeader, 10);
+  if (!Number.isFinite(ts)) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - ts) > toleranceSec) return false; // anti-replay
+
+  const m = /^v1=([a-f0-9]+)$/i.exec(signatureHeader || "");
+  if (!m) return false;
+
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${ts}.${rawBody}`)
+    .digest("hex");
+
+  const a = Buffer.from(m[1], "hex");
+  const b = Buffer.from(expected, "hex");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+<Warning>
+  Firma sobre el **body crudo exacto** que recibiste (los mismos bytes). Si parseas y re-serializas el JSON antes de verificar, la firma no va a coincidir.
+</Warning>
+
+<Note>
+  El secreto se comparte fuera de banda: lo configuras en el nodo del flow y en tu receptor. Ante firma inválida, responde `401`; ante éxito, `200`.
+</Note>
 
 ### Otros tipos de nodo
 

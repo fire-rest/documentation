@@ -24,10 +24,30 @@ A flow is selected when **all** of these are true:
 | `accountId` | Equals the account that owns the entity |
 | `vendorId` | Equals the brand/vendor that owns the store |
 | `triggerType` | Equals the event type (`order.completed`, `order.cancelled`, `fiscal.authorized.br`, `fiscal.cancelled.br`) |
-| `storeCodes` | Either empty (matches all stores) or contains the event's store code |
+| `kind` | `'store'` (scoped by `storeCodes`) or `'channel'` (scoped by `channelCodes`) |
+| `storeCodes` | `kind='store'` only: empty (matches all stores) or contains the event's store code |
+| `channelCodes` | `kind='channel'` only: contains the channel code of the event's order |
 | `isActive` | `true` |
 
 You can have **multiple active flows for the same trigger** — they run independently. Use this to fan out events to several downstream services without code changes (e.g. one flow per consumer: ERP, analytics, fiscal cache, message broker).
+
+## Scope: store vs channel
+
+The same event is published through one of **two scoping mechanisms**, depending on the flow's `kind`:
+
+- **Store flow (`kind='store'`)** — matches by `storeCodes` (empty = all stores of the vendor). The classic choice for backoffice integrations: ERP, analytics, printing, fiscal.
+- **Channel flow (`kind='channel'`)** — matches by `channelCodes`, the order's originating channel. Use it to **echo back to the channel/aggregator**: when an order from a channel (a kiosk, a marketplace) changes state, the event returns to that channel's endpoint.
+
+```mermaid
+flowchart TD
+    E([Business event<br/>e.g. order.cancelled]) --> M{Match active flows}
+    M -->|kind=store and storeCodes<br/>includes the store| S[Store flow<br/>to your backoffice / ERP]
+    M -->|kind=channel and channelCodes<br/>includes the channel| C[Channel flow<br/>to the aggregator endpoint]
+    S --> W1[HTTP or Webhook node]
+    C --> W2[Signed Webhook node<br/>HMAC]
+```
+
+Both use the same flow engine; only **how the flow is selected** (by store or by channel) and who it delivers to changes. A channel flow typically uses the **signed Webhook node** (below) because the receiver is a third party that needs to verify the origin.
 
 ## Building a flow
 
@@ -84,6 +104,58 @@ This is the node that reaches your endpoint. Its config controls the entire requ
 ```
 
 Every field is optional except `method` and `url`. `body`, `headers`, and `auth` are evaluated as templates against the [trigger context](#trigger-context).
+
+### Signed Webhook node (HMAC)
+
+The **Webhook** node is an HTTP node that also **signs the body** with HMAC-SHA256. Use it when the receiver (typically a channel/aggregator) needs to verify the payload comes from Fire and was not tampered with. It has the same configuration as the HTTP node (URL, method, headers, body, status routes, transport auth) plus a **shared secret**.
+
+The signature is **independent** of transport auth (Bearer / API key / OAuth2): auth identifies the transport; the HMAC signature guarantees body integrity and anti-replay. They are complementary.
+
+**Headers Fire adds:**
+
+| Header | Value |
+|---|---|
+| `X-Fire-Signature` | `v1=` + `hex(HMAC-SHA256(secret, "{timestamp}.{rawBody}"))` |
+| `X-Fire-Timestamp` | Unix timestamp in **seconds** |
+
+**How to verify (on your side):**
+
+<Steps>
+  <Step title="Read the headers">Take `X-Fire-Timestamp` and `X-Fire-Signature`.</Step>
+  <Step title="Anti-replay">Reject if `abs(now - timestamp)` exceeds 300 seconds (5-minute window).</Step>
+  <Step title="Recompute">Compute `v1=hex(HMAC-SHA256(secret, timestamp + "." + rawBody))` over the **raw body** (do not re-serialize the JSON).</Step>
+  <Step title="Compare">Use a **constant-time** comparison (`crypto.timingSafeEqual`), never `===`.</Step>
+</Steps>
+
+```js
+import crypto from "crypto";
+
+function verifyFireSignature(rawBody, signatureHeader, timestampHeader, secret, toleranceSec = 300) {
+  const ts = parseInt(timestampHeader, 10);
+  if (!Number.isFinite(ts)) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - ts) > toleranceSec) return false; // anti-replay
+
+  const m = /^v1=([a-f0-9]+)$/i.exec(signatureHeader || "");
+  if (!m) return false;
+
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${ts}.${rawBody}`)
+    .digest("hex");
+
+  const a = Buffer.from(m[1], "hex");
+  const b = Buffer.from(expected, "hex");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+<Warning>
+  Sign over the **exact raw body** you received (the same bytes). If you parse and re-serialize the JSON before verifying, the signature will not match.
+</Warning>
+
+<Note>
+  The secret is shared out-of-band: you configure it on the flow node and on your receiver. On an invalid signature, respond `401`; on success, `200`.
+</Note>
 
 ### Other node types
 
