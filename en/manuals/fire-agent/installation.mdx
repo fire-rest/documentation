@@ -1,96 +1,200 @@
 ---
-title: "Fire Agent"
-description: "Install Fire Agent on Windows so the POS can print to local thermal printers."
+title: "Windows installation"
+description: "Install and uninstall Fire Agent on Windows 10/11 so the POS can print to local thermal printers."
 ---
 
-Fire Agent is a small Windows application that runs in the background and lets the browser print to local **thermal POS printers**. The POS (and other Fire web apps) talk to it over a local WebSocket, so receipts, vouchers and reports reach the printer connected to the machine.
+Fire Agent is a local agent that lets any browser (FIRE POS, XMART, etc.) print to thermal POS printers over WebSocket. Once installed, it runs in the background and starts automatically with Windows.
 
-Install it once per Windows device that has a printer attached. After installation it starts automatically with Windows and stays in the system tray.
+Install it once per Windows device that has a printer attached.
 
 ## Prerequisites
 
-- **Windows 10 or 11 (64-bit).** No Node.js or extra runtime is required.
-- **Administrator rights** on the machine to run the installer.
-- The thermal printer installed in Windows with its driver, so it appears under **Settings → Bluetooth & devices → Printers & scanners**.
+| Requirement | Detail |
+|---|---|
+| Operating system | Windows 10 or Windows 11, **64-bit** |
+| Permissions | An account with **Administrator** rights (only during install/uninstall) |
+| PowerShell | 5.1 or later (included with Windows 10/11) — only to verify the agent |
+| Node.js | **Not** required. The agent ships as a standalone `.exe` |
+| Printer | The thermal printer driver must already be installed in Windows |
 
 <Note>
-  Fire Agent only listens on the same machine (`127.0.0.1`, loopback). It is never reachable from the network, and no firewall rule is needed.
+  The agent only listens on `127.0.0.1` (localhost), so it **needs no open ports and no Windows Firewall rule**.
 </Note>
 
-## 1. Get the installer
+## Files you need
 
-Download `fireAgentSetup.exe` and save it to any folder on the device.
+Depending on the task, you need one of these files:
+
+| File | Purpose |
+|---|---|
+| `fireAgentSetup.exe` | **Graphical installer.** Installs the agent through a wizard. |
+| `fireAgentUninstall.exe` | **Standalone uninstaller.** Removes the agent even if you no longer have the original installer. |
 
 <Card title="Download Fire Agent (Windows)" icon="download" href="https://drive.google.com/uc?export=download&id=1OiqSbD5flcsc6cV2ZjxxkHy-cmxwH5d1">
   Windows installer for local thermal printing.
 </Card>
 
-The installer already carries the connection token for your operation, so you do not need to configure anything by hand.
+## Step-by-step installation
 
-## 2. Run the installer
+<Steps>
+  <Step title="Run the installer as administrator">
+    1. Locate `fireAgentSetup.exe`.
+    2. **Right-click** it and choose **Run as administrator**.
+    3. If the **User Account Control (UAC)** prompt appears, click **Yes**.
 
-1. Right-click `fireAgentSetup.exe` and choose **Run as administrator**.
-2. On the welcome page, click **Next**.
-3. Confirm the installation folder (`C:\Program Files\FireAgent` by default) and click **Next**.
-4. The installer copies the program, registers it to start with Windows and adds it to **Add or Remove Programs**.
-5. On the last page, leave **Start Fire Agent now** ticked and click **Finish**.
+    <Tip>
+      If Windows SmartScreen shows "Windows protected your PC", click **More info → Run anyway**.
+    </Tip>
+  </Step>
 
-<Frame>
-  <img src="/images/manuals/pos/coming-soon.svg" alt="Fire Agent setup wizard on Windows" />
-</Frame>
+  <Step title="Welcome screen">
+    The wizard shows the **Fire Agent 1.1.0** welcome message. Click **Next**.
 
-On its first launch Fire Agent prepares its own secure certificate so encrypted pages can reach it without warnings. This happens automatically — no extra prompts.
+    <Frame>
+      <img src="/images/manuals/fire-agent/installer-01-welcome.png" alt="Fire Agent setup wizard — welcome screen" />
+    </Frame>
+  </Step>
+
+  <Step title="Installation folder">
+    Confirm the installation folder (`C:\Program Files\FireAgent` by default). Keeping the default path is recommended. Click **Install**.
+
+    <Frame>
+      <img src="/images/manuals/fire-agent/installer-02-location.png" alt="Fire Agent setup wizard — installation folder" />
+    </Frame>
+  </Step>
+
+  <Step title="Automatic installation">
+    The wizard performs, with no user input:
+
+    1. Stops any previous instance of the agent.
+    2. Copies `fire-agent.exe` to the installation folder.
+    3. Stores the `FIRE_AGENT_TOKEN` as a **system environment variable**.
+    4. Registers **auto-start** with Windows for all users.
+    5. Registers the app in **Add or Remove Programs**.
+    6. Creates the uninstaller inside the installation folder.
+
+    <Frame>
+      <img src="/images/manuals/fire-agent/installer-03-installing.png" alt="Fire Agent setup wizard — progress bar" />
+    </Frame>
+
+    Wait for the progress bar to finish and click **Next**.
+  </Step>
+
+  <Step title="Finish">
+    The last screen confirms the installation and the **configured token**. To start the agent right away, leave **Start Fire Agent now** ticked and click **Finish**.
+
+    <Frame>
+      <img src="/images/manuals/fire-agent/installer-04-finish.png" alt="Fire Agent setup wizard — installation complete" />
+    </Frame>
+  </Step>
+
+  <Step title="First launch (SSL certificate)">
+    On its first launch the agent generates a **self-signed SSL certificate** in `%APPDATA%\FireAgent\ssl\` (pure JavaScript, no PowerShell) and trusts it in the current user's store with `certutil.exe`. This lets HTTPS pages connect to `wss://localhost:9101` without certificate warnings, with no admin prompt and in a GPO-friendly way.
+  </Step>
+</Steps>
 
 <Check>
-  Fire Agent is installed and runs in the background. It restarts automatically every time Windows boots.
+  Fire Agent is installed and starts automatically whenever a user signs in to Windows. It appears as an icon in the system tray (next to the clock).
 </Check>
 
-## 3. Verify it is running
+## Verify that the agent is running
 
-Fire Agent adds an icon to the **system tray** (near the clock). Click it to open the status panel, which shows:
+Open this address in a browser or use PowerShell:
 
-- The installed version and whether the agent is active.
-- The thermal printers detected on the machine.
-- The auto-update status.
-- The local connection URLs the POS uses.
+```powershell
+Invoke-RestMethod http://localhost:9100/health
+```
 
-<Frame>
-  <img src="/images/manuals/pos/coming-soon.svg" alt="Fire Agent tray panel showing status and detected printers" />
-</Frame>
+Expected response:
 
-If a printer is plugged in and installed in Windows but does not appear here, reinstall its driver from Windows settings and reopen the panel.
+```json
+{ "status": "ok", "version": "1.1.0", "uptime": 12, "platform": "win32" }
+```
 
-## Ports and firewall
+To list the detected printers:
 
-Fire Agent listens only on the local machine:
+```powershell
+Invoke-RestMethod http://localhost:9100/printers
+```
 
-| Port | Address | Use |
-|------|---------|-----|
-| `9100` | `127.0.0.1` | Standard local connection |
-| `9101` | `127.0.0.1` | Encrypted local connection |
+You can also click the Fire Agent tray icon to open the information panel. For print tests, see [Agent web tools](/en/manuals/fire-agent/web-tools).
 
-Because both ports are bound to loopback, the agent cannot be reached from other computers and **Windows Firewall does not need any rule**.
+### Ports used
 
-## Updates
-
-When auto-update is enabled for your operation, Fire Agent checks for a newer version on each start and updates itself silently. You can confirm the current version from the tray panel.
+| Port | Address | Protocol | Use |
+|---|---|---|---|
+| `9100` | `127.0.0.1` (local only) | HTTP / WS | Plain WebSocket and REST endpoints |
+| `9101` | `127.0.0.1` (local only) | HTTPS / WSS | Encrypted WebSocket (self-signed certificate) |
 
 ## Uninstall
 
-You can remove Fire Agent in either of these ways:
+There are three methods. All remove the agent completely (files, configuration, certificate, auto-start and registry).
 
-- **Add or Remove Programs:** open **Settings → Apps**, find **Fire Agent** and choose **Uninstall**.
-- **Standalone uninstaller:** right-click `fireAgentUninstall.exe` → **Run as administrator** and confirm.
+### Method 1 — Add or Remove Programs (recommended)
 
-Both methods stop the agent, remove the auto-start entry and the connection token, delete the security certificate it created, and remove its files.
+1. Open **Settings** (`Windows` + `I`).
+2. Go to **Apps → Installed apps**.
+3. Find **Fire Agent**, open the menu (⋯) → **Uninstall** and confirm.
+4. If the UAC prompt appears, click **Yes** and follow the wizard.
+
+### Method 2 — Standalone uninstaller (`fireAgentUninstall.exe`)
+
+Useful when the original installer is no longer available.
+
+1. **Right-click → Run as administrator**.
+2. Confirm in the dialog and follow the wizard (**Next → Uninstall → Finish**).
+
+### Method 3 — Silent uninstall (scripts or mass deployments)
+
+From PowerShell or CMD as administrator:
+
+```powershell
+.\fireAgentUninstall.exe /S
+```
+
+The `/S` flag runs the uninstall with no windows and no confirmation.
+
+<Note>
+  Any of the three methods stops `fire-agent.exe`, removes the auto-start entry, the `FIRE_AGENT_TOKEN` variable and the SSL certificate, deletes the files in `C:\Program Files\FireAgent\` and `%APPDATA%\FireAgent\`, and removes the Add or Remove Programs entry.
+</Note>
 
 ## Troubleshooting
 
-| Symptom | Likely cause | What to do |
-|---------|--------------|------------|
-| The POS cannot reach the agent | Fire Agent is not running | Open it from the Start menu or restart the PC; the agent starts with Windows |
-| A printer is missing from the list | The driver is not installed in Windows | Install the printer driver from Windows settings, then reopen the tray panel |
-| An encrypted page cannot connect | The browser does not trust the local certificate | Reinstall Fire Agent, or import `%APPDATA%\FireAgent\ssl\cert.cer` into **Trusted Root Certification Authorities** |
-| Connection rejected after a token change | The device token no longer matches | Reinstall with the correct installer provided by your Fire contact |
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `http://localhost:9100/health` does not respond | The agent is not running | Start `fire-agent.exe` from `C:\Program Files\FireAgent\` or restart the PC |
+| The antivirus quarantined the `.exe` | False positive with packaged Node executables | Restore the file or add an exclusion for `C:\Program Files\FireAgent` and `%APPDATA%\FireAgent`, then reinstall |
+| `401 Unauthorized` on the WebSocket connection | Wrong token | Check `FIRE_AGENT_TOKEN` in the system environment variables |
+| The printer is missing from the list | The driver is not installed in Windows | Install the printer driver from Windows settings |
+| An HTTPS page cannot connect to `wss://localhost:9101` | `certutil` was blocked and the browser does not trust the certificate | Import `%APPDATA%\FireAgent\ssl\cert.cer` into **Trusted Root Certification Authorities** (`certmgr.msc`), or open `https://localhost:9101/health` once and accept the warning |
+| Firefox shows a certificate warning | Firefox uses its own certificate store | Enable `security.enterprise_roots.enabled` in `about:config`, or import the `.cer` under **Firefox → Settings → Privacy & Security → Certificates** |
 
-If the problem persists, share the agent version (from the tray panel) and a description of the printer with your Fire contact.
+## Appendix: what the installer changes on the system
+
+Reference for system administrators.
+
+### Files
+
+| Path | Contents |
+|---|---|
+| `C:\Program Files\FireAgent\fire-agent.exe` | Agent executable |
+| `C:\Program Files\FireAgent\uninstall.exe` | Uninstaller created by the installer |
+| `%APPDATA%\FireAgent\config.json` | Persistent configuration |
+| `%APPDATA%\FireAgent\ssl\` | Self-signed SSL certificate (key + `.cer`) |
+
+### Windows registry
+
+| Key | Purpose |
+|---|---|
+| `HKLM\...\CurrentVersion\Run\FireAgent` | Auto-start for all users |
+| `HKLM\SYSTEM\...\Environment\FIRE_AGENT_TOKEN` | System environment variable |
+| `HKLM\...\CurrentVersion\Uninstall\FireAgent` | Add or Remove Programs entry |
+
+### Supported environment variables (advanced)
+
+| Variable | Default | Description |
+|---|---|---|
+| `FIRE_AGENT_TOKEN` | `fire-agent-dev-token` | Token shared with the POS. **Change it in production.** |
+| `FIRE_AGENT_PORT` | `9100` | HTTP / WS port |
+| `FIRE_AGENT_SSL_PORT` | `9101` | HTTPS / WSS port |
+| `FIRE_AGENT_UPDATE_URL` | _(empty — disabled)_ | URL checked at startup for newer versions |
