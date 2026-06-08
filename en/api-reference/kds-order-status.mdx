@@ -1,11 +1,11 @@
 ---
 title: "KDS order status"
 api: "POST https://app.fire.rest/api/v1/webhooks/kds/order-status"
-description: "Inbound endpoint your KDS POSTs to when a kitchen order changes state (ready, dispatched). Fire logs the event, deduplicates it, and enforces anti-regression so the order state never moves backwards."
+description: "Inbound endpoint your KDS POSTs to when a kitchen order changes state (preparing, ready, dispatched). Fire logs the event, deduplicates it, and enforces anti-regression so the order state never moves backwards."
 authMethod: "bearer"
 ---
 
-This endpoint is **inbound** — your Kitchen Display System (KDS) POSTs to it whenever an order advances in the kitchen: it became **ready** for hand-off, or it was **dispatched** (delivered / picked up). Fire authenticates the request, correlates it to the order, applies idempotency and an anti-regression gate, and records the event in its KDS event log for observability.
+This endpoint is **inbound** — your Kitchen Display System (KDS) POSTs to it whenever an order advances in the kitchen: the kitchen started **preparing** it, it became **ready** for hand-off, or it was **dispatched** (delivered / picked up). Fire authenticates the request, correlates it to the order, applies idempotency and an anti-regression gate, and records the event in its KDS event log for observability.
 
 <Note>
   **This endpoint is asynchronous.** Fire authenticates, validates, runs the tenant guard, and **enqueues** the event — then returns **`202 Accepted`** with an `eventId` (typically under 100&nbsp;ms). The event is recorded a moment later by a background worker (usually within ~2&nbsp;seconds). To check the outcome, poll [`GET /v1/webhooks/events/{eventId}`](#checking-the-outcome). Client-fixable problems (bad payload, unknown order, wrong tenant) are rejected **synchronously** with `4xx` **before** the `202`.
@@ -13,14 +13,15 @@ This endpoint is **inbound** — your Kitchen Display System (KDS) POSTs to it w
 
 ## Event types
 
-The KDS lifecycle has a strict order — an order is **ready** before it is **dispatched**:
+The KDS lifecycle has a strict order — an order is **prepared** before it is **ready**, and **ready** before it is **dispatched**:
 
 | `eventType` | Meaning | Rank |
 |---|---|---|
-| `order.ready` | The order is prepared and ready for hand-off / pickup | 1 |
-| `order.dispatched` | The order left the kitchen (delivered or picked up) — terminal | 2 |
+| `order.preparing` | The kitchen started working on the order | 1 |
+| `order.ready` | The order is prepared and ready for hand-off / pickup | 2 |
+| `order.dispatched` | The order left the kitchen (delivered or picked up) — terminal | 3 |
 
-Values are **lowercase, dotted** (`order.ready`, not `ORDER_READY`).
+Values are **lowercase, dotted** (`order.preparing`, not `ORDER_PREPARING`).
 
 ## Authentication
 
@@ -42,7 +43,7 @@ Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
 ## Request body
 
 <ParamField body="eventType" type="string" required>
-  The KDS lifecycle event. One of `order.ready` or `order.dispatched` (lowercase, dotted).
+  The KDS lifecycle event. One of `order.preparing`, `order.ready`, or `order.dispatched` (lowercase, dotted).
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
@@ -70,6 +71,17 @@ Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
 </ParamField>
 
 ### Examples
+
+```json order.preparing
+{
+  "eventType": "order.preparing",
+  "providerEventId": "evt_2026-05-26_000122",
+  "occurredAt": "2026-05-26T18:28:00.000Z",
+  "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
+  "eventId": "3a1b2c3d-4e5f-6789-abcd-ef0123456789",
+  "stationName": "Hot line"
+}
+```
 
 ```json order.ready
 {
@@ -184,10 +196,10 @@ Fire deduplicates events by `providerEventId` — a unique constraint on the inb
 
 ## Anti-regression
 
-The order state must never move backwards. Fire tracks the **highest stage reached** by the order (`order.dispatched` > `order.ready`) and compares each incoming event against it:
+The order state must never move backwards. Fire tracks the **highest stage reached** by the order (`order.dispatched` > `order.ready` > `order.preparing`) and compares each incoming event against it:
 
-- An event that **advances** the order (e.g. `order.dispatched` after `order.ready`) is recorded as the new state.
-- An event that **does not advance** — a regression (`order.ready` arriving after `order.dispatched`) or a same-state repeat — is still **recorded for observability**, but flagged as non-advancing with a reason, and it does **not** move the order back.
+- An event that **advances** the order (e.g. `order.ready` after `order.preparing`) is recorded as the new state.
+- An event that **does not advance** — a regression (e.g. `order.preparing` arriving after `order.ready`) or a same-state repeat — is still **recorded for observability**, but flagged as non-advancing with a reason, and it does **not** move the order back.
 
 This makes the endpoint safe against out-of-order or late deliveries: send events in any order and Fire keeps the order at its most advanced stage.
 
