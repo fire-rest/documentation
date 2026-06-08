@@ -1,11 +1,11 @@
 ---
 title: "Status do pedido KDS"
 api: "POST https://app.fire.rest/api/v1/webhooks/kds/order-status"
-description: "Endpoint de entrada para o qual seu KDS faz POST quando um pedido da cozinha muda de status (pronto, despachado). O Fire registra o evento, deduplica e aplica anti-regressão para que o status do pedido nunca retroceda."
+description: "Endpoint de entrada para o qual seu KDS faz POST quando um pedido da cozinha muda de status (preparando, pronto, despachado). O Fire registra o evento, deduplica e aplica anti-regressão para que o status do pedido nunca retroceda."
 authMethod: "bearer"
 ---
 
-Este endpoint é **de entrada** — seu Sistema de Tela de Cozinha (KDS) faz POST nele sempre que um pedido avança na cozinha: ficou **pronto** para entrega, ou foi **despachado** (entregue / retirado). O Fire autentica a requisição, correlaciona com o pedido, aplica idempotência e um guard anti-regressão, e registra o evento no seu log de eventos KDS para observabilidade.
+Este endpoint é **de entrada** — seu Sistema de Tela de Cozinha (KDS) faz POST nele sempre que um pedido avança na cozinha: a cozinha começou a **prepará-lo**, ficou **pronto** para entrega, ou foi **despachado** (entregue / retirado). O Fire autentica a requisição, correlaciona com o pedido, aplica idempotência e um guard anti-regressão, e registra o evento no seu log de eventos KDS para observabilidade.
 
 <Note>
   **Este endpoint é assíncrono.** O Fire autentica, valida, roda o tenant guard e **enfileira** o evento — então responde **`202 Accepted`** com um `eventId` (tipicamente em menos de 100&nbsp;ms). O evento é registrado um instante depois por um worker em segundo plano (normalmente em ~2&nbsp;segundos). Para verificar o resultado, consulte [`GET /v1/webhooks/events/{eventId}`](#verificar-o-resultado). Problemas corrigíveis pelo cliente (payload inválido, pedido inexistente, tenant errado) são rejeitados **sincronamente** com `4xx` **antes** do `202`.
@@ -13,14 +13,15 @@ Este endpoint é **de entrada** — seu Sistema de Tela de Cozinha (KDS) faz POS
 
 ## Tipos de evento
 
-O ciclo de vida do KDS tem uma ordem estrita — um pedido fica **pronto** antes de ser **despachado**:
+O ciclo de vida do KDS tem uma ordem estrita — um pedido é **preparado** antes de ficar **pronto**, e fica **pronto** antes de ser **despachado**:
 
 | `eventType` | Significado | Rank |
 |---|---|---|
-| `order.ready` | O pedido está preparado e pronto para entrega / retirada | 1 |
-| `order.dispatched` | O pedido saiu da cozinha (entregue ou retirado) — terminal | 2 |
+| `order.preparing` | A cozinha começou a preparar o pedido | 1 |
+| `order.ready` | O pedido está preparado e pronto para entrega / retirada | 2 |
+| `order.dispatched` | O pedido saiu da cozinha (entregue ou retirado) — terminal | 3 |
 
-Os valores são **minúsculos, com ponto** (`order.ready`, não `ORDER_READY`).
+Os valores são **minúsculos, com ponto** (`order.preparing`, não `ORDER_PREPARING`).
 
 ## Autenticação
 
@@ -42,7 +43,7 @@ Keys sem o escopo `webhooks:kds` são rejeitadas com `403 Forbidden`.
 ## Corpo da requisição
 
 <ParamField body="eventType" type="string" required>
-  O evento de ciclo de vida do KDS. `order.ready` ou `order.dispatched` (minúsculo, com ponto).
+  O evento de ciclo de vida do KDS. `order.preparing`, `order.ready` ou `order.dispatched` (minúsculo, com ponto).
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
@@ -70,6 +71,17 @@ Keys sem o escopo `webhooks:kds` são rejeitadas com `403 Forbidden`.
 </ParamField>
 
 ### Exemplos
+
+```json order.preparing
+{
+  "eventType": "order.preparing",
+  "providerEventId": "evt_2026-05-26_000122",
+  "occurredAt": "2026-05-26T18:28:00.000Z",
+  "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
+  "eventId": "3a1b2c3d-4e5f-6789-abcd-ef0123456789",
+  "stationName": "Cozinha quente"
+}
+```
 
 ```json order.ready
 {
@@ -184,10 +196,10 @@ O Fire deduplica os eventos por `providerEventId` — uma restrição única na 
 
 ## Anti-regressão
 
-O status do pedido nunca deve retroceder. O Fire rastreia o **estágio máximo alcançado** pelo pedido (`order.dispatched` > `order.ready`) e compara cada evento de entrada com ele:
+O status do pedido nunca deve retroceder. O Fire rastreia o **estágio máximo alcançado** pelo pedido (`order.dispatched` > `order.ready` > `order.preparing`) e compara cada evento de entrada com ele:
 
-- Um evento que **avança** o pedido (ex. `order.dispatched` depois de `order.ready`) é registrado como o novo status.
-- Um evento que **não avança** — uma regressão (`order.ready` chegando depois de `order.dispatched`) ou uma repetição do mesmo status — ainda é **registrado para observabilidade**, mas marcado como não-avançante com um motivo, e **não** retrocede o pedido.
+- Um evento que **avança** o pedido (ex. `order.ready` depois de `order.preparing`) é registrado como o novo status.
+- Um evento que **não avança** — uma regressão (ex. `order.preparing` chegando depois de `order.ready`) ou uma repetição do mesmo status — ainda é **registrado para observabilidade**, mas marcado como não-avançante com um motivo, e **não** retrocede o pedido.
 
 Isso torna o endpoint seguro contra entregas fora de ordem ou atrasadas: envie os eventos em qualquer ordem e o Fire mantém o pedido no seu estágio mais avançado.
 
