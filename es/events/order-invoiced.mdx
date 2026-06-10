@@ -1,6 +1,6 @@
 ---
-title: "fiscal.authorized.br"
-description: "Solo Brasil — SEFAZ autorizó el documento fiscal (NFC-e o NF-e) de una orden vía tu proveedor fiscal."
+title: "order.invoiced"
+description: "La autoridad fiscal autorizó el documento (factura electrónica) de una orden vía tu proveedor fiscal — todos los países."
 ---
 
 <Tabs>
@@ -12,13 +12,13 @@ description: "Solo Brasil — SEFAZ autorizó el documento fiscal (NFC-e o NF-e)
   </Tab>
 </Tabs>
 
-`fiscal.authorized.br` dispara cuando SEFAZ (la autoridad tributaria brasileña) autoriza el documento fiscal asociado a una orden. Lo emite el pipeline fiscal brasileño que se integra con tu proveedor fiscal como proveedor de documentos.
+`order.invoiced` dispara cuando SEFAZ (la autoridad tributaria brasileña) autoriza el documento fiscal asociado a una orden. Lo emite el pipeline fiscal brasileño que se integra con tu proveedor fiscal como proveedor de documentos.
 
-Este evento es **separado de** [`order.completed`](/es/events/order-completed): la orden se paga primero (`order.completed`), después Fire pide la emisión fiscal vía tu proveedor fiscal, y `fiscal.authorized.br` dispara solo cuando SEFAZ devuelve un protocolo de autorización.
+Este evento es **separado de** [`order.completed`](/es/events/order-completed): la orden se paga primero (`order.completed`), después Fire pide la emisión fiscal vía tu proveedor fiscal, y `order.invoiced` dispara solo cuando SEFAZ devuelve un protocolo de autorización.
 
 ## Condición de disparo
 
-Fire emite `fiscal.authorized.br` una vez por documento fiscal, la primera vez que **todo** lo siguiente es verdadero:
+Fire emite `order.invoiced` una vez por documento fiscal, la primera vez que **todo** lo siguiente es verdadero:
 
 - La orden está en una tienda brasileña con `storeFiscalConfig.enabled === true`
 - Se emitió un documento fiscal a tu proveedor fiscal
@@ -26,7 +26,7 @@ Fire emite `fiscal.authorized.br` una vez por documento fiscal, la primera vez q
 
 | | |
 |---|---|
-| Cobertura | **Solo Brasil** — el sufijo `.br` es significativo; no hay equivalente para otros países hoy |
+| Cobertura | **Todos los países** — Brasil (NFC-e/NF-e vía SEFAZ) y CO/EC/CL/AR/VE vía el [callback fiscal genérico](/es/api-reference/fiscal-callback). El país viaja en `fiscal.countryCode`, ya no en el nombre del evento |
 | Tipos de documento | `nfce` (factura de consumidor) y `nfe` (factura B2B) |
 | Llave de idempotencia | `event.id` |
 | Dispara más de una vez | No, salvo en reintentos |
@@ -44,7 +44,7 @@ El `status` de la orden permanece `"COMPLETED"` y `paymentStatus` permanece `"SU
 {
   "event": {
     "id": "...",
-    "type": "fiscal.authorized.br",
+    "type": "order.invoiced",
     "createdAt": "2026-05-06T01:23:11.000Z"
   },
   "data": {
@@ -92,7 +92,7 @@ El `status` de la orden permanece `"COMPLETED"` y `paymentStatus` permanece `"SU
 
   <Expandable title="fiscal">
     <ResponseField name="status" type="string">
-      Status del documento. Para este evento, siempre `"authorized"`. Otros valores que puedes ver en tu proveedor fiscal (`pending`, `processing`, `rejected`, `denied`) **no** disparan `fiscal.authorized.br` — solo el estado terminal autorizado.
+      Status del documento. Para este evento, siempre `"authorized"`. Otros valores que puedes ver en tu proveedor fiscal (`pending`, `processing`, `rejected`, `denied`) **no** disparan `order.invoiced` — solo el estado terminal autorizado.
     </ResponseField>
     <ResponseField name="docSubtype" type="string">
       Tipo de documento. Valores: `nfce` (NFC-e — factura de consumidor, B2C) o `nfe` (NF-e — factura de negocio, B2B).
@@ -129,7 +129,7 @@ El `status` de la orden permanece `"COMPLETED"` y `paymentStatus` permanece `"SU
 
 ## Dónde viven los totales fiscales
 
-Los valores agregados fiscales (vBC, vNF, vICMS, etc.) **no están** dentro de `data.fiscal` — están en `data.payments.metadata.fiscal`, el mismo lugar donde [`order.completed`](/es/events/order-completed#datos-fiscales) los lleva. `fiscal.authorized.br` no los duplica; trata el snapshot de la orden como la única fuente de verdad para los agregados monetarios.
+Los valores agregados fiscales (vBC, vNF, vICMS, etc.) **no están** dentro de `data.fiscal` — están en `data.payments.metadata.fiscal`, el mismo lugar donde [`order.completed`](/es/events/order-completed#datos-fiscales) los lleva. `order.invoiced` no los duplica; trata el snapshot de la orden como la única fuente de verdad para los agregados monetarios.
 
 La clasificación por línea (NCM, CFOP, CSOSN, fiscalCategoryCode) vive en `data.orderLines[n].metadata.fiscal`. Igual que en `order.completed`.
 
@@ -177,7 +177,7 @@ async function onFiscalAuthorized(data) {
 - **`pdfUrl` y `xmlUrl` pueden ser efímeros.** En producción, tu proveedor fiscal puede firmar/expirar estos links. Descarga y persiste los artefactos al recibir, en lugar de linkear clientes directamente a tu proveedor fiscal.
 - **`cStat` a menudo es `null`.** No hagas lógica que dependa de él. Usa `status === "authorized"` y `protocolo` como señales autoritativas.
 - **No hay evento para `rejected` / `denied` / `error`.** Si SEFAZ rechaza el documento, no dispara evento hoy. El status del documento fiscal se persiste internamente pero no se dispara flow. Vigila esto en el roadmap.
-- **No hay eventos fiscales para otros países.** Solo Brasil hoy. Otros países' pipelines fiscales existen en el codebase (esquemas CO/EC/CL/AR/VE) pero no están cableados para disparar flow triggers todavía.
+- **El país ya no vive en el nombre del evento.** `order.invoiced` dispara para todos los países; usa `fiscal.countryCode` para filtrar. Los campos del bloque `fiscal` varían por país (chaveAcesso/protocolo en BR, cufe en CO, claveAcceso en EC, etc.).
 
 ## Eventos relacionados
 
@@ -185,7 +185,7 @@ async function onFiscalAuthorized(data) {
   <Card title="order.completed" icon="receipt" href="/es/events/order-completed">
     Dispara antes de este evento — la orden misma.
   </Card>
-  <Card title="fiscal.cancelled.br" icon="file-circle-xmark" href="/es/events/fiscal-cancelled-br">
+  <Card title="order.reversed" icon="file-circle-xmark" href="/es/events/order-reversed">
     Dispara después si el documento se cancela en SEFAZ.
   </Card>
 </CardGroup>

@@ -124,7 +124,7 @@ Mismo snapshot V4 que [`order.completed`](/es/events/order-completed) — todos 
           Campos: `serie`, `numero`, `pdfUrl`, `xmlUrl`, `protocolo`, `docSubtype` (p. ej. `nfce`, `nfe`), `chaveAcesso` (chave de acceso SEFAZ de 44 dígitos), `providerDocId` (ID interno de tu proveedor fiscal), `dataAutorizacao` (ISO 8601 UTC de la autorización original).
 
           <Note>
-            Esta es la data fiscal **original** en el momento de cancelación, **no** el resultado de cancelación SEFAZ. El resultado SEFAZ llega en un evento separado [`fiscal.cancelled.br`](/es/events/fiscal-cancelled-br) con `cancellation.metadata.fiscal.sefazCancellation` populado.
+            Esta es la data fiscal **original** en el momento de cancelación, **no** el resultado de cancelación SEFAZ. El resultado SEFAZ llega en un evento separado [`order.reversed`](/es/events/order-reversed) con `cancellation.metadata.fiscal.sefazCancellation` populado.
           </Note>
         </ResponseField>
       </Expandable>
@@ -139,22 +139,22 @@ Para una orden brasileña fiscal-enabled que se cancela, espera esta secuencia:
 ```mermaid
 flowchart LR
     A([orden pagada]) --> B([order.completed])
-    B --> C([fiscal.authorized.br])
+    B --> C([order.invoiced])
     C --> D([usuario cancela])
     D --> E([order.cancelled])
     E --> F([SEFAZ confirma])
-    F --> G([fiscal.cancelled.br])
+    F --> G([order.reversed])
 ```
 
 - `order.cancelled` se emite **inmediatamente** cuando ocurre la cancelación, antes de contactar cualquier autoridad fiscal externa.
-- `fiscal.cancelled.br` se emite **después** — una vez que SEFAZ confirma vía tu proveedor fiscal. Puede llegar segundos o minutos después de `order.cancelled`, según el tiempo de respuesta de SEFAZ.
+- `order.reversed` se emite **después** — una vez que SEFAZ confirma vía tu proveedor fiscal. Puede llegar segundos o minutos después de `order.cancelled`, según el tiempo de respuesta de SEFAZ.
 - Para órdenes no brasileñas o tiendas sin emisión fiscal, solo dispara `order.cancelled`.
 
 ## Variaciones por país
 
 `order.cancelled` es **global** — dispara para todos los países y todos los canales cuando una orden se cancela (Argentina, Brasil, Chile, Colombia, Ecuador, Venezuela y cualquier otro país con Integration Flows activos). El bloque de auditoría de cancelación (`cancellation.{cancellationId, cancelledAt, cancelledBy, cancellationReason, cancellationSource}`) es idéntico para todos los países.
 
-El único campo específico por país es `cancellation.metadata.fiscal`, que se popula **solo para tiendas brasileñas que tenían un documento fiscal previamente autorizado** (es decir, se emitió un `fiscal.authorized.br` para esta orden antes). Para todos los demás países — y para órdenes BR canceladas antes de la autorización fiscal — `cancellation.metadata.fiscal` es `null` y no seguirá ningún evento [`fiscal.cancelled.br`](/es/events/fiscal-cancelled-br).
+El único campo específico por país es `cancellation.metadata.fiscal`, que se popula **solo para tiendas brasileñas que tenían un documento fiscal previamente autorizado** (es decir, se emitió un `order.invoiced` para esta orden antes). Para todos los demás países — y para órdenes BR canceladas antes de la autorización fiscal — `cancellation.metadata.fiscal` es `null` y no seguirá ningún evento [`order.reversed`](/es/events/order-reversed).
 
 Para tiendas no-BR (Argentina, Chile, Colombia, Ecuador, Venezuela, otros), el bloque cancellation se ve así:
 
@@ -192,7 +192,7 @@ async function onOrderCancelled(data) {
 
   // 2. Si la tienda tiene fiscal habilitado y había un doc fiscal,
   //    abre un ticket de reconciliación — la cancelación SEFAZ
-  //    seguirá en fiscal.cancelled.br.
+  //    seguirá en order.reversed.
   if (cancellation.metadata?.fiscal) {
     await reconciliation.open({
       orderId,
@@ -212,7 +212,7 @@ async function onOrderCancelled(data) {
 - **`status === "CANCELLED"`, no `paymentStatus`.** Las órdenes pagadas canceladas mantienen `paymentStatus === "SUCCEEDED"`; la cancelación vive en el campo `status` más el bloque `cancellation`.
 - **`order.cancelled` ≠ refund.** Fire reporta la cancelación; el refund (si lo hay) lo inicia el canal/procesador y no está en este payload.
 - **No asumas que `order.completed` llegó primero.** Es posible la entrega fuera de orden — tu handler debería tolerar recibir `order.cancelled` para un `orderId` que aún no conoce (p. ej. log + crea un placeholder; reconcilia cuando llegue `order.completed`).
-- **`cancellation.metadata.fiscal` es el doc original, no el resultado de cancelación.** Para la confirmación SEFAZ, escucha [`fiscal.cancelled.br`](/es/events/fiscal-cancelled-br).
+- **`cancellation.metadata.fiscal` es el doc original, no el resultado de cancelación.** Para la confirmación SEFAZ, escucha [`order.reversed`](/es/events/order-reversed).
 
 ## Eventos relacionados
 
@@ -220,7 +220,7 @@ async function onOrderCancelled(data) {
   <Card title="order.completed" icon="receipt" href="/es/events/order-completed">
     El evento que verás para la misma orden antes de la cancelación.
   </Card>
-  <Card title="fiscal.cancelled.br" icon="file-circle-xmark" href="/es/events/fiscal-cancelled-br">
+  <Card title="order.reversed" icon="file-circle-xmark" href="/es/events/order-reversed">
     Solo Brasil — dispara cuando SEFAZ confirma la cancelación.
   </Card>
 </CardGroup>
