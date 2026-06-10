@@ -21,7 +21,7 @@ flowchart LR
     B --> C[Tu proveedor fiscal<br/>emite el documento]
     C --> D([POST /v1/webhooks/fiscal/callback])
     D --> E[Fire actualiza fiscal_documents<br/>+ orders.fiscal JSONB]
-    E -. solo BR .-> F([fiscal.authorized.br event])
+    E -. solo BR .-> F([order.invoiced event])
 ```
 
 Después de procesar el callback, el **siguiente** `order.completed` o `order.cancelled` para el mismo `orderId` refleja el estado fiscal actualizado en:
@@ -30,10 +30,10 @@ Después de procesar el callback, el **siguiente** `order.completed` o `order.ca
 - `data.payments.metadata.fiscal` — agregados fiscales totales (BR populado; otros países `null`)
 - `data.orderLines[].metadata.fiscal` — clasificación fiscal por línea (BR populado; otros `null`)
 
-Para Brasil específicamente, también se emite un evento `fiscal.authorized.br` (o `fiscal.cancelled.br`) separado con las referencias del documento SEFAZ en `data.fiscal`.
+Para Brasil específicamente, también se emite un evento `order.invoiced` (o `order.reversed`) separado con las referencias del documento SEFAZ en `data.fiscal`.
 
 <Note>
-  **Hoy, solo `fiscal.authorized.br` y `fiscal.cancelled.br` están cableados como eventos outbound.** El endpoint valida y guarda callbacks para los 6 países (CO, EC, CL, AR, VE, BR), y el estado fiscal actualizado aparece en el siguiente evento `order.completed` / `order.cancelled` sin importar el país. Los eventos `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` para CO/EC/CL/AR/VE están en camino.
+  **Hoy, solo `order.invoiced` y `order.reversed` están cableados como eventos outbound.** El endpoint valida y guarda callbacks para los 6 países (CO, EC, CL, AR, VE, BR), y el estado fiscal actualizado aparece en el siguiente evento `order.completed` / `order.cancelled` sin importar el país. Los eventos `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` para CO/EC/CL/AR/VE están en camino.
 </Note>
 
 ## Autenticación
@@ -80,7 +80,7 @@ El body es un objeto JSON con estos campos top-level. La forma del `document` es
 </ParamField>
 
 <ParamField body="eventId" type="string" required>
-  UUID para correlación de intentos de emisión. Fire lo usa para hacer match del callback con un intento específico de emisión y deduplicar intentos paralelos.
+  UUID para correlación. **Fire valida que referencie un evento que Fire emitió para esta misma orden** — ecoa el `event.id` de un envelope V4 que recibiste (el de la emisión, o el de la cancelación para callbacks `cancelled`). Un `eventId` que no corresponda a un evento de Fire para esa orden se rechaza con `400` antes del `202`. Nunca inventes este valor.
 </ParamField>
 
 <ParamField body="document" type="object">
@@ -488,7 +488,7 @@ El `202` solo encola el evento. Un worker en segundo plano lo toma — en ~2&nbs
 2. **La columna `orders.fiscal` JSONB se mergea** con la misma data — visible en el siguiente evento `order.completed` / `order.cancelled` para el mismo `orderId`, sin importar el país.
 3. **Se despacha un trigger outbound** con `triggerType = 'fiscal.authorized.{cc}'` (para `eventType=authorized`) o `'fiscal.cancelled.{cc}'` (para `eventType=cancelled`). Los Integration Flows activos para ese trigger corren y hacen POST a tu endpoint.
 
-  - **Hoy**, solo `fiscal.authorized.br` y `fiscal.cancelled.br` están cableados. Disparan cuando un callback authorized/cancelled para una tienda BR se procesa.
+  - **Hoy**, solo `order.invoiced` y `order.reversed` están cableados. Disparan cuando un callback authorized/cancelled para una tienda BR se procesa.
   - **Para CO/EC/CL/AR/VE**, los eventos outbound equivalentes aún no están cableados — los callbacks se validan y guardan, y el estado fiscal se refleja en el siguiente `order.completed` / `order.cancelled` para la misma orden.
 
 ## Relacionado
@@ -497,7 +497,7 @@ El `202` solo encola el evento. Un worker en segundo plano lo toma — en ~2&nbs
   <Card title="order.completed" icon="receipt" href="/es/events/order-completed">
     Ve dónde aterriza el estado fiscal dentro del snapshot V4 de la orden.
   </Card>
-  <Card title="fiscal.authorized.br" icon="file-invoice" href="/es/events/fiscal-authorized-br">
+  <Card title="order.invoiced" icon="file-invoice" href="/es/events/order-invoiced">
     Evento outbound BR-only disparado por este callback.
   </Card>
   <Card title="Inyectar orden" icon="paper-plane" href="/es/api-reference/orders">

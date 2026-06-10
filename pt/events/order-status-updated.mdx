@@ -1,0 +1,103 @@
+---
+title: "order.status-updated"
+description: "O status de cozinha de um pedido avançou — o KDS reportou preparing, ready ou dispatched."
+---
+
+<Note>
+  Evento novo (junho 2026). Nasce diretamente na **v1** — não existe forma v0.
+</Note>
+
+`order.status-updated` dispara quando o **KDS** (Kitchen Display System) reporta que um pedido avançou de status na cozinha: começou a ser preparado (`preparing`), está pronto (`ready`) ou foi despachado (`dispatched`).
+
+O Fire recebe o reporte do KDS pelo [webhook de status de entrada](/pt/api-reference/kds-order-status), valida que ele referencia um evento emitido pelo Fire para esse pedido, aplica um **gate anti-regressão** (um status nunca retrocede: `dispatched` não volta para `ready`) e só então emite este evento. Por isso você recebe **um evento por avanço real** — sem duplicados, sem retrocessos.
+
+## Condição de disparo
+
+O Fire emite `order.status-updated` quando **tudo** a seguir é verdadeiro:
+
+- O KDS reportou um status de cozinha para um pedido existente
+- O status **avança** o percurso (gate anti-regressão: `preparing` → `ready` → `dispatched`)
+- O reporte passou na validação de origem (referencia um evento que o Fire emitiu para esse pedido)
+
+| | |
+|---|---|
+| Cobertura | **Todos os países** |
+| Status | `preparing` → `ready` → `dispatched` (monotônico) |
+| Chave de idempotência | `event.id` |
+| Dispara mais de uma vez | Uma vez por **avanço** de status (máx. 3 por pedido); retentativas compartilham `event.id` |
+| Origem do dado | `kitchen.source` — apenas `kds` hoje; o campo fica aberto a fontes futuras |
+
+## O que vem em `data`
+
+O mesmo snapshot V4 de [`order.completed`](/pt/events/order-completed) mais um bloco top-level **`kitchen`** com o avanço que disparou o evento e o percurso completo até agora:
+
+```json
+{
+  "event": {
+    "id": "7f3c2a1b-9d4e-4f6a-8b2c-1e5d3a7f9c0b",
+    "type": "order.status-updated",
+    "createdAt": "2026-06-10T18:24:31.000Z"
+  },
+  "data": {
+    "orderId": "443bb714-fb69-4538-9ecb-de0acad7b88f",
+    "orderCode": "OC-br-001",
+    "status": "COMPLETED",
+    "store": { /* igual a order.completed */ },
+    "kitchen": {
+      "status": "ready",
+      "previousStatus": "preparing",
+      "occurredAt": "2026-06-10T18:24:29.000Z",
+      "stationName": "Cozinha quente",
+      "providerEventId": "kds-evt-8842",
+      "kdsEventLogId": "1a2b3c4d-...",
+      "source": "kds",
+      "history": [
+        { "status": "preparing", "occurredAt": "2026-06-10T18:12:02.000Z", "stationName": "Cozinha quente" },
+        { "status": "ready",     "occurredAt": "2026-06-10T18:24:29.000Z", "stationName": "Cozinha quente" }
+      ]
+    }
+  }
+}
+```
+
+### O bloco `kitchen`
+
+<ResponseField name="kitchen" type="object">
+  Presente **apenas** em `order.status-updated`. Distinto do bloco `kds` (dados estáticos do pedido capturados na injeção: buzzer, preferências de nota).
+
+  <Expandable title="kitchen">
+    <ResponseField name="status" type="string">
+      Status que disparou o evento: `preparing` | `ready` | `dispatched`.
+    </ResponseField>
+    <ResponseField name="previousStatus" type="string | null">
+      Status anterior. `null` no primeiro avanço.
+    </ResponseField>
+    <ResponseField name="occurredAt" type="string">
+      ISO 8601 — quando ocorreu no KDS (relógio do cliente).
+    </ResponseField>
+    <ResponseField name="stationName" type="string | null">
+      Estação que reportou, se o KDS enviar.
+    </ResponseField>
+    <ResponseField name="providerEventId" type="string">
+      Chave de dedup do reporte de entrada do KDS.
+    </ResponseField>
+    <ResponseField name="source" type="string">
+      Quem reportou. Apenas `kds` hoje.
+    </ResponseField>
+    <ResponseField name="history" type="array">
+      Percurso completo até agora — uma entrada por marco, monotônico. Permite ver o caminho inteiro em um único evento sem reconstruí-lo de entregas anteriores.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Casos de uso típicos
+
+- **Acompanhamento do pedido para o cliente** — "seu pedido está pronto" no app ou tela de retirada
+- **Notificar o agregador** — avisar iFood/Rappi/99food que o pedido está pronto para o entregador
+- **Métricas de cozinha** — tempos preparing→ready por loja/estação a partir de `history`
+
+## O que NÃO faz
+
+- **Não muda o status do pedido.** `data.status` continua `"COMPLETED"` — o percurso de cozinha é paralelo ao ciclo de pagamento/faturamento.
+- **Nunca retrocede.** Se o KDS reportar `ready` depois de `dispatched`, o Fire descarta (gate anti-regressão) e não emite nada.
+- **Não substitui `order.completed`.** Assine os dois: `order.completed` para o fato de negócio, `order.status-updated` para o progresso físico.

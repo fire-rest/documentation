@@ -3,11 +3,68 @@ title: "Events overview"
 description: "Fire is event-driven. When something meaningful happens inside Fire, an event is delivered to your endpoint via Integration Flows you configure in the dashboard."
 ---
 
-Fire emits **events** whenever a meaningful business transition happens — an order is completed, an order is cancelled, a fiscal document is authorized by the tax authority. Each event is delivered to your endpoint by an **Integration Flow** you configure in the Fire dashboard.
+Fire emits **events** whenever a meaningful business transition happens — an order is completed, an order is cancelled, a fiscal document is authorized by the tax authority, the kitchen advances an order. Each event is delivered to your endpoint by an **Integration Flow** you configure in the Fire dashboard.
 
 <Note>
-  Fire emits **four** event types in production today: [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`fiscal.authorized.br`](/en/events/fiscal-authorized-br), and [`fiscal.cancelled.br`](/en/events/fiscal-cancelled-br). No other event types are emitted.
+  Fire emits **five** order event types today: [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status-updated`](/en/events/order-status-updated), plus the scheduled [`store.day-closed`](/en/events/store-day-closed) event at business-day close.
 </Note>
+
+## Fire is the source of truth for the lifecycle
+
+An order can be born in any channel — POS, kiosk, app, aggregator — but from the moment it enters, **Fire normalizes it and takes control of its entire lifecycle**. Everything that happens around that order is centralized in Fire: payment completes it, the kitchen advances it, the fiscal provider invoices or reverses it, and the business-day close consolidates it. Each of those milestones reaches your systems as an event carrying the same canonical order snapshot.
+
+That centralization works in both directions: external systems **never write state on their own** — they report to Fire through inbound webhooks, and **every report must reference an event Fire emitted** (the `eventId` of the envelope you received). Fire validates that reference before accepting the report; a callback that does not point to an event Fire emitted for that order is rejected with `400`. This way an order's timeline has a single source of truth and never forks.
+
+```mermaid
+flowchart LR
+    CH(["🛒 POS · kiosk · app · aggregator"])
+    FIRE(("FIRE"))
+    FACT["🧾 Biller / fiscal provider"]
+    AUT["🏛️ Fiscal authority<br/>SEFAZ · SRI · DIAN…"]
+    KDS["👨‍🍳 KDS — kitchen"]
+    DOWN["🔌 Your integrations<br/>ERP · app · aggregator · archive"]
+
+    CH -- "① order" --> FIRE
+    FIRE -- "② order.completed / order.cancelled" --> FACT
+    FACT <-- "③ issues / voids" --> AUT
+    FACT -- "④ fiscal callback<br/>(authorized · cancelled)" --> FIRE
+    FIRE -- "⑤ order.invoiced / order.reversed" --> DOWN
+    FIRE -- "⑥ order to kitchen" --> KDS
+    KDS -- "⑦ reports progress<br/>(preparing · ready · dispatched)" --> FIRE
+    FIRE -- "⑧ order.status-updated" --> DOWN
+    FIRE -- "⑨ store.day-closed (day close)" --> DOWN
+
+    style FIRE fill:#1E293B,color:#F8FAFC,stroke:#1E293B
+```
+
+Notice the two **round trips**: Fire notifies the biller (②), the biller resolves with the authority (③) and **answers back to Fire** through the callback (④) — only then does Fire emit `order.invoiced` / `order.reversed` (⑤). Same with the kitchen: Fire dispatches the order to the KDS (⑥), the KDS **reports progress back to Fire** (⑦) and Fire emits `order.status-updated` (⑧). Nothing learns anything "on its own": everything goes through Fire and comes out of Fire.
+
+<Steps>
+  <Step title="order — enters through any channel">
+    An order is received from POS, kiosk, app or aggregator. Fire normalizes it and **takes control of the entire lifecycle** — from here on, every milestone flows out of Fire.
+  </Step>
+  <Step title="order.completed — outbound">
+    The order is paid and completed. This is the signal for the billing system to start issuing the electronic document. [Reference →](/en/events/order-completed)
+  </Step>
+  <Step title="order.cancelled — outbound">
+    The order was cancelled. Downstream systems void any pending process. [Reference →](/en/events/order-cancelled)
+  </Step>
+  <Step title="POST /webhooks/fiscal/callback — inbound">
+    The fiscal provider returns the authority's result (NFC-e, SRI, DIAN…). Fire **validates that the callback references an event Fire emitted for that order**, responds `202` and attaches the document to the order. [Reference →](/en/api-reference/fiscal-callback)
+  </Step>
+  <Step title="order.invoiced — outbound">
+    Fire confirms the order has the authorized invoice attached. Downstream can display or archive the receipt. [Reference →](/en/events/order-invoiced)
+  </Step>
+  <Step title="order.reversed — outbound">
+    Fire confirms the authorized cancellation receipt. The fiscal reversal is complete. [Reference →](/en/events/order-reversed)
+  </Step>
+  <Step title="order.status-updated — outbound (in parallel)">
+    The kitchen advances the order (`preparing` → `ready` → `dispatched`). The KDS reports to Fire through an inbound webhook and Fire emits the validated advance. [Reference →](/en/events/order-status-updated)
+  </Step>
+  <Step title="store.day-closed — scheduled">
+    Emitted at business-day close. Feeds ERP and Back of House integrations — inventory, cost of sales, accounting and cash reconciliation. [Reference →](/en/events/store-day-closed)
+  </Step>
+</Steps>
 
 ## How it works
 
@@ -54,7 +111,7 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
       Unique identifier of this delivery (the flow execution ID). **Use this as your idempotency key** — Fire may deliver the same event more than once during retries.
     </ResponseField>
     <ResponseField name="type" type="string">
-      Event type. One of: `order.completed`, `order.cancelled`, `fiscal.authorized.br`, `fiscal.cancelled.br`.
+      Event type. One of: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status-updated`, `store.day-closed`.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
       ISO 8601 UTC timestamp of the moment the event was materialized inside Fire (not the moment it reached your endpoint).
@@ -72,8 +129,8 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 |---|---|
 | [`order.completed`](/en/events/order-completed) | V4 order snapshot — order, store (with optional `storeFiscalConfig`), customer, payments, fulfillment, KDS, lines |
 | [`order.cancelled`](/en/events/order-cancelled) | V4 order snapshot + `cancellation` audit block |
-| [`fiscal.authorized.br`](/en/events/fiscal-authorized-br) | V4 order snapshot with `order.fiscal` (chave, protocolo, número…) + `storeFiscalConfig` |
-| [`fiscal.cancelled.br`](/en/events/fiscal-cancelled-br) | V4 order snapshot + `xmlCancelamento` + `sefazCancellation` |
+| [`order.invoiced`](/en/events/order-invoiced) | V4 order snapshot with `order.fiscal` (chave, protocolo, número…) + `storeFiscalConfig` |
+| [`order.reversed`](/en/events/order-reversed) | V4 order snapshot + `xmlCancelamento` + `sefazCancellation` |
 
 ### `_meta`
 
@@ -145,8 +202,9 @@ app.post("/fire/events", express.json(), async (req, res) => {
   switch (event.type) {
     case "order.completed":     return onOrderCompleted(data);
     case "order.cancelled":     return onOrderCancelled(data);
-    case "fiscal.authorized.br":return onFiscalAuthorized(data);
-    case "fiscal.cancelled.br": return onFiscalCancelled(data);
+    case "order.invoiced":       return onOrderInvoiced(data);
+    case "order.reversed":       return onOrderReversed(data);
+    case "order.status-updated": return onKitchenAdvance(data);
     default: console.warn("Unknown Fire event type", event.type);
   }
 });
@@ -222,7 +280,7 @@ You can write a different template that omits `_meta`, flattens `data`, renames 
   <Card title="order.completed" icon="receipt" href="/en/events/order-completed">
     The most common event — full V4 order snapshot.
   </Card>
-  <Card title="fiscal.authorized.br" icon="file-invoice" href="/en/events/fiscal-authorized-br">
+  <Card title="order.invoiced" icon="file-invoice" href="/en/events/order-invoiced">
     Brazilian fiscal authorization through your fiscal provider.
   </Card>
 </CardGroup>

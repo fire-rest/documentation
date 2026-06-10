@@ -1,6 +1,6 @@
 ---
-title: "fiscal.authorized.br"
-description: "Brazil only — SEFAZ has authorized the fiscal document (NFC-e or NF-e) for an order via your fiscal provider."
+title: "order.invoiced"
+description: "The fiscal authority has authorized the document (electronic invoice) for an order via your fiscal provider — all countries."
 ---
 
 <Tabs>
@@ -12,13 +12,13 @@ description: "Brazil only — SEFAZ has authorized the fiscal document (NFC-e or
   </Tab>
 </Tabs>
 
-`fiscal.authorized.br` fires once SEFAZ (the Brazilian tax authority) authorizes the fiscal document associated with an order. It is emitted by the Brazilian fiscal pipeline that integrates with your fiscal provider as the document provider.
+`order.invoiced` fires once SEFAZ (the Brazilian tax authority) authorizes the fiscal document associated with an order. It is emitted by the Brazilian fiscal pipeline that integrates with your fiscal provider as the document provider.
 
-This event is **separate from** [`order.completed`](/en/events/order-completed): the order is paid first (`order.completed`), then Fire requests fiscal emission via your fiscal provider, and `fiscal.authorized.br` fires only when SEFAZ returns an authorization protocol.
+This event is **separate from** [`order.completed`](/en/events/order-completed): the order is paid first (`order.completed`), then Fire requests fiscal emission via your fiscal provider, and `order.invoiced` fires only when SEFAZ returns an authorization protocol.
 
 ## Trigger condition
 
-Fire emits `fiscal.authorized.br` once per fiscal document, the first time **all** of these are true:
+Fire emits `order.invoiced` once per fiscal document, the first time **all** of these are true:
 
 - The order is in a Brazilian store with `storeFiscalConfig.enabled === true`
 - A fiscal document was emitted to your fiscal provider
@@ -26,7 +26,7 @@ Fire emits `fiscal.authorized.br` once per fiscal document, the first time **all
 
 | | |
 |---|---|
-| Coverage | **Brazil only** — the `.br` suffix is meaningful; no equivalent for other countries today |
+| Coverage | **All countries** — Brazil (NFC-e/NF-e via SEFAZ) and CO/EC/CL/AR/VE via the [generic fiscal callback](/en/api-reference/fiscal-callback). The country travels in `fiscal.countryCode`, no longer in the event name |
 | Document types | `nfce` (consumer invoice) and `nfe` (business-to-business invoice) |
 | Idempotency key | `event.id` |
 | Fires more than once | No, unless retried |
@@ -44,7 +44,7 @@ The order's `status` remains `"COMPLETED"` and `paymentStatus` remains `"SUCCEED
 {
   "event": {
     "id": "...",
-    "type": "fiscal.authorized.br",
+    "type": "order.invoiced",
     "createdAt": "2026-05-06T01:23:11.000Z"
   },
   "data": {
@@ -92,7 +92,7 @@ The order's `status` remains `"COMPLETED"` and `paymentStatus` remains `"SUCCEED
 
   <Expandable title="fiscal">
     <ResponseField name="status" type="string">
-      Document status. For this event, always `"authorized"`. Other values you may see in your fiscal provider (`pending`, `processing`, `rejected`, `denied`) do **not** trigger `fiscal.authorized.br` — only the terminal authorized state does.
+      Document status. For this event, always `"authorized"`. Other values you may see in your fiscal provider (`pending`, `processing`, `rejected`, `denied`) do **not** trigger `order.invoiced` — only the terminal authorized state does.
     </ResponseField>
     <ResponseField name="docSubtype" type="string">
       Document type. Values: `nfce` (NFC-e — consumer invoice, B2C) or `nfe` (NF-e — business invoice, B2B).
@@ -129,7 +129,7 @@ The order's `status` remains `"COMPLETED"` and `paymentStatus` remains `"SUCCEED
 
 ## Where the fiscal totals live
 
-The aggregate fiscal values (vBC, vNF, vICMS, etc.) **are not** inside `data.fiscal` — they're in `data.payments.metadata.fiscal`, the same place [`order.completed`](/en/events/order-completed#fiscal-data) carries them. `fiscal.authorized.br` does not duplicate them; treat the order snapshot as the single source of truth for monetary aggregates.
+The aggregate fiscal values (vBC, vNF, vICMS, etc.) **are not** inside `data.fiscal` — they're in `data.payments.metadata.fiscal`, the same place [`order.completed`](/en/events/order-completed#fiscal-data) carries them. `order.invoiced` does not duplicate them; treat the order snapshot as the single source of truth for monetary aggregates.
 
 Per-line classification (NCM, CFOP, CSOSN, fiscalCategoryCode) lives in `data.orderLines[n].metadata.fiscal`. Same as in `order.completed`.
 
@@ -177,7 +177,7 @@ async function onFiscalAuthorized(data) {
 - **`pdfUrl` and `xmlUrl` may be ephemeral.** In production, your fiscal provider may sign/expire these links. Download and persist the artifacts on receipt rather than linking customers directly to your fiscal provider.
 - **`cStat` is often `null`.** Don't make logic depend on it. Use `status === "authorized"` and `protocolo` as the authoritative signals.
 - **No event for `rejected` / `denied` / `error`.** If SEFAZ rejects the document, no event fires today. The fiscal document's status is persisted internally but no flow is triggered. Watch for this in the roadmap.
-- **No fiscal events for other countries.** Only Brazil today. Other countries' fiscal pipelines exist in the codebase (CO/EC/CL/AR/VE schemas) but are not wired to fire flow triggers yet.
+- **The country no longer lives in the event name.** `order.invoiced` fires for all countries; filter on `fiscal.countryCode`. The `fiscal` block fields vary per country (chaveAcesso/protocolo in BR, cufe in CO, claveAcceso in EC, etc.).
 
 ## Related events
 
@@ -185,7 +185,7 @@ async function onFiscalAuthorized(data) {
   <Card title="order.completed" icon="receipt" href="/en/events/order-completed">
     Fires before this event — the order itself.
   </Card>
-  <Card title="fiscal.cancelled.br" icon="file-circle-xmark" href="/en/events/fiscal-cancelled-br">
+  <Card title="order.reversed" icon="file-circle-xmark" href="/en/events/order-reversed">
     Fires later if the document gets cancelled at SEFAZ.
   </Card>
 </CardGroup>

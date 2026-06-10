@@ -1,6 +1,6 @@
 ---
-title: "fiscal.cancelled.br"
-description: "Apenas Brasil — a SEFAZ confirmou o cancelamento de um documento fiscal previamente autorizado via seu provedor fiscal."
+title: "order.reversed"
+description: "A autoridade fiscal confirmou o cancelamento (estorno) de um documento previamente autorizado via seu provedor fiscal — todos os países."
 ---
 
 <Tabs>
@@ -12,24 +12,24 @@ description: "Apenas Brasil — a SEFAZ confirmou o cancelamento de um documento
   </Tab>
 </Tabs>
 
-`fiscal.cancelled.br` dispara quando a SEFAZ confirma o cancelamento de um documento fiscal (NFC-e ou NF-e) que tinha sido previamente autorizado. É a contraparte SEFAZ-confirmada de [`order.cancelled`](/pt/events/order-cancelled): o pedido é cancelado primeiro dentro do Fire (disparando `order.cancelled`), o Fire então pede o cancelamento na SEFAZ via seu provedor fiscal, e `fiscal.cancelled.br` dispara apenas quando a SEFAZ carimba o protocolo de cancelamento.
+`order.reversed` dispara quando a SEFAZ confirma o cancelamento de um documento fiscal (NFC-e ou NF-e) que tinha sido previamente autorizado. É a contraparte SEFAZ-confirmada de [`order.cancelled`](/pt/events/order-cancelled): o pedido é cancelado primeiro dentro do Fire (disparando `order.cancelled`), o Fire então pede o cancelamento na SEFAZ via seu provedor fiscal, e `order.reversed` dispara apenas quando a SEFAZ carimba o protocolo de cancelamento.
 
 ## Condição de disparo
 
-O Fire emite `fiscal.cancelled.br` uma vez por cancelamento fiscal, na primeira vez em que **tudo** o seguinte é verdade:
+O Fire emite `order.reversed` uma vez por cancelamento fiscal, na primeira vez em que **tudo** o seguinte é verdade:
 
 - O pedido está em uma loja brasileira com `storeFiscalConfig.enabled === true`
-- Um documento fiscal tinha sido previamente autorizado (ou seja, `fiscal.authorized.br` foi emitido antes)
+- Um documento fiscal tinha sido previamente autorizado (ou seja, `order.invoiced` foi emitido antes)
 - Uma solicitação de cancelamento foi enviada ao seu provedor fiscal
 - O seu provedor fiscal reporta confirmação SEFAZ do cancelamento
 
 | | |
 |---|---|
-| Cobertura | **Apenas Brasil** |
+| Cobertura | **Todos os países** — o país viaja em `fiscal.countryCode` |
 | Chave de idempotência | `event.id` |
 | Dispara mais de uma vez | Não, salvo em retentativas |
 | Latência relativa a `order.cancelled` | Geralmente segundos; pode ser minutos se a SEFAZ estiver degradada |
-| Pré-condição | Um `fiscal.authorized.br` anterior para o mesmo `orderId` |
+| Pré-condição | Um `order.invoiced` anterior para o mesmo `orderId` |
 
 ## O que tem em `trigger.data`
 
@@ -43,7 +43,7 @@ Mesmo snapshot V4 que [`order.cancelled`](/pt/events/order-cancelled) — inclui
 {
   "event": {
     "id": "...",
-    "type": "fiscal.cancelled.br",
+    "type": "order.reversed",
     "createdAt": "2026-05-05T23:08:42.123Z"
   },
   "data": {
@@ -98,7 +98,7 @@ Mesmo snapshot V4 que [`order.cancelled`](/pt/events/order-cancelled) — inclui
 
 ## Referência de `data.cancellation.metadata.fiscal.sefazCancellation`
 
-Este é o único bloco que é único de `fiscal.cancelled.br`. Cada outro campo é compartilhado com [`order.cancelled`](/pt/events/order-cancelled) — veja essa página para os campos de auditoria de cancelamento.
+Este é o único bloco que é único de `order.reversed`. Cada outro campo é compartilhado com [`order.cancelled`](/pt/events/order-cancelled) — veja essa página para os campos de auditoria de cancelamento.
 
 <ResponseField name="sefazCancellation" type="object">
   Confirmação SEFAZ do cancelamento. Presente apenas após a SEFAZ ter carimbado o protocolo de cancelamento.
@@ -127,14 +127,14 @@ Este é o único bloco que é único de `fiscal.cancelled.br`. Cada outro campo 
 ```mermaid
 flowchart LR
     A([pedido pago]) --> B([order.completed])
-    B --> C([fiscal.authorized.br])
+    B --> C([order.invoiced])
     C --> D([usuário cancela])
     D --> E([order.cancelled])
     E --> F([Fire pede cancelamento SEFAZ<br/>via seu provedor fiscal])
-    F --> G([fiscal.cancelled.br])
+    F --> G([order.reversed])
 ```
 
-Para um pedido brasileiro fiscal-enabled, espere os quatro eventos acima. Para pedidos brasileiros **sem** autorização fiscal (porque o pedido foi cancelado antes da emissão fiscal, ou o fiscal estava desabilitado), apenas `order.cancelled` dispara — não `fiscal.cancelled.br`.
+Para um pedido brasileiro fiscal-enabled, espere os quatro eventos acima. Para pedidos brasileiros **sem** autorização fiscal (porque o pedido foi cancelado antes da emissão fiscal, ou o fiscal estava desabilitado), apenas `order.cancelled` dispara — não `order.reversed`.
 
 ## Handler de exemplo
 
@@ -175,7 +175,7 @@ async function onFiscalCancelled(data) {
 
 ## Erros comuns
 
-- **Não processe `fiscal.cancelled.br` sem `order.cancelled` primeiro.** Eles disparam em ordem em fluxo normal, mas entrega fora de ordem é possível. Se você receber `fiscal.cancelled.br` para um `orderId` que não tem como cancelado registrado, logue e crie o registro a partir do bloco `cancellation` deste evento — não jogue o evento fora.
+- **Não processe `order.reversed` sem `order.cancelled` primeiro.** Eles disparam em ordem em fluxo normal, mas entrega fora de ordem é possível. Se você receber `order.reversed` para um `orderId` que não tem como cancelado registrado, logue e crie o registro a partir do bloco `cancellation` deste evento — não jogue o evento fora.
 - **`sefazCancellation.date` e `cStat` podem ser `null` em sandbox.** Não faça com que a production-readiness dependa de eles estarem presentes em ambientes dev.
 - **A URL do XML de cancelamento é distinta do XML do documento original.** Garanta que sua lógica de arquivamento salve ambos — você precisará deles para auditoria.
 - **Mesmo `cancellation.cancellationId` que `order.cancelled`.** Ambos os eventos para o mesmo cancelamento compartilham o cancellation ID — útil como chave de join ao correlacionar os dois eventos no seu sistema.
@@ -187,7 +187,7 @@ async function onFiscalCancelled(data) {
   <Card title="order.cancelled" icon="ban" href="/pt/events/order-cancelled">
     Dispara antes deste evento — o cancelamento em si.
   </Card>
-  <Card title="fiscal.authorized.br" icon="file-invoice" href="/pt/events/fiscal-authorized-br">
+  <Card title="order.invoiced" icon="file-invoice" href="/pt/events/order-invoiced">
     O evento anterior que estabeleceu o documento fiscal sendo cancelado aqui.
   </Card>
 </CardGroup>
