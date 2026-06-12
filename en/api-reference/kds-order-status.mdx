@@ -8,7 +8,11 @@ authMethod: "bearer"
 This endpoint is **inbound** — your Kitchen Display System (KDS) POSTs to it whenever an order advances in the kitchen: the kitchen started **preparing** it, it became **ready** for hand-off, or it was **dispatched** (delivered / picked up). Fire authenticates the request, correlates it to the order, applies idempotency and an anti-regression gate, and records the event in its KDS event log for observability.
 
 <Note>
-  **This endpoint is asynchronous.** Fire authenticates, validates, runs the tenant guard, and **enqueues** the event — then returns **`202 Accepted`** with an `eventId` (typically under 100&nbsp;ms). The event is recorded a moment later by a background worker (usually within ~2&nbsp;seconds). To check the outcome, poll [`GET /v1/webhooks/events/{eventId}`](#checking-the-outcome). Client-fixable problems (bad payload, unknown order, wrong tenant) are rejected **synchronously** with `4xx` **before** the `202`.
+  **This endpoint is asynchronous.** Fire authenticates, runs the source-of-truth + tenant guard, deduplicates, and **enqueues** the event — then returns **`202 Accepted`** with a `webhookEventId` (typically under 100&nbsp;ms). The event is recorded a moment later by a background worker (usually within ~2&nbsp;seconds). To check the outcome, poll [`GET /v1/webhooks/events/{webhookEventId}`](#checking-the-outcome). Client-fixable problems (bad payload, wrong `eventId`, wrong tenant) are rejected **synchronously** with `4xx` **before** the `202`.
+</Note>
+
+<Note>
+  **One dispatch event, several status reports.** Unlike the fiscal callback — where each action carries its own `eventId` — the KDS reports the whole journey (`preparing` → `ready` → `dispatched`) against **one** `eventId`: the id Fire emitted when it dispatched the order to your device. They are distinguished by `eventType`, not by `eventId`. See [Idempotency & the journey](#idempotency--the-journey).
 </Note>
 
 ## Event types
@@ -25,15 +29,10 @@ Values are **lowercase, dotted** (`order.preparing`, not `ORDER_PREPARING`).
 
 ## Authentication
 
-This endpoint requires an **API key with the `webhooks:kds` scope**. Two key shapes are accepted:
-
-- **Partner / system key** — not bound to a single account (the KDS operates across all of them). The event is attributed to the account that owns the order it references.
-- **Vendor-scoped key** — bound to one account/vendor. Fire additionally enforces that the order belongs to that account/vendor.
-
-Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
+This endpoint requires a **vendor-scoped API key with the `webhooks:kds` scope** (account + vendor binding). Fire enforces that the order belongs to that account and vendor. Keys without the scope, or without a vendor binding, are rejected with `403 Forbidden`.
 
 <ParamField header="x-api-key" type="string" required>
-  Your Fire API key with scope `webhooks:kds`. Generated from the dashboard — a partner key from **Admin → API Keys**, or a vendor-scoped key from **Developers → API Management**.
+  Your Fire vendor-scoped API key with scope `webhooks:kds`. Generate one from **Developers → API Management** for the account/vendor whose orders this key may report on.
 </ParamField>
 
 <ParamField header="Authorization" type="string">
@@ -47,7 +46,7 @@ Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  Idempotency key — unique and stable per event on your side. A replay with the same value returns `202` with the original `eventId` and `duplicate: true`, without re-enqueueing or re-processing. Use your KDS-native event ID if available; otherwise a UUID.
+  Your KDS's own id for this delivery. Stored for audit/forensics — **it is not the idempotency key**. Fire deduplicates on `(orderId, eventId, eventType)`, so you may send a fresh `providerEventId` on every retry. Use your KDS-native event id if available; otherwise a UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -59,7 +58,10 @@ Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
 </ParamField>
 
 <ParamField body="eventId" type="string" required>
-  Correlation UUID (parity with the fiscal callback). **Fire validates that it references an event Fire emitted for this same order** — echo the `event.id` of the envelope Fire used to dispatch the order to your KDS. An `eventId` that does not correspond to a Fire event for that order is rejected with `400` before the `202`. Never invent this value.
+  Correlation UUID — the `event.id` of the envelope Fire emitted when it **dispatched the order to your device**. Echo it exactly; never invent it.
+
+  - **Source-of-truth check.** An `eventId` that does not reference a Fire event for that order is rejected with `400` before the `202`.
+  - **One eventId for the whole journey.** Send the **same** `eventId` for `preparing`, `ready`, and `dispatched` of that dispatch — they are told apart by `eventType`. (Each dispatch to a **different device** carries its own `eventId`, so two devices never collide.)
 </ParamField>
 
 <ParamField body="stationName" type="string">
@@ -72,13 +74,15 @@ Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
 
 ### Examples
 
+The three reports of the same dispatch share **one `eventId`** (the dispatch's) and differ only by `eventType` and `providerEventId`:
+
 ```json order.preparing
 {
   "eventType": "order.preparing",
   "providerEventId": "evt_2026-05-26_000122",
   "occurredAt": "2026-05-26T18:28:00.000Z",
   "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
-  "eventId": "3a1b2c3d-4e5f-6789-abcd-ef0123456789",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "stationName": "Hot line"
 }
 ```
@@ -100,84 +104,109 @@ Keys without the `webhooks:kds` scope are rejected with `403 Forbidden`.
   "providerEventId": "evt_2026-05-26_000124",
   "occurredAt": "2026-05-26T18:42:11.000Z",
   "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
-  "eventId": "b2c3d4e5-6f70-4a8b-9c0d-1e2f3a4b5c6d",
-  "stationName": "Despacho 1"
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "stationName": "Hot line"
 }
 ```
 
 ## Response
 
-On success the endpoint returns **`202 Accepted`** — the event was authenticated, validated, and **enqueued**. A `202` does **not** mean the event was recorded yet; that happens asynchronously. Use the [status endpoint](#checking-the-outcome) to confirm.
+On success the endpoint returns **`202 Accepted`** — the event was authenticated, validated, deduplicated, and **enqueued**. A `202` does **not** mean the event was recorded yet; that happens asynchronously. Use the [status endpoint](#checking-the-outcome) to confirm.
+
+The body carries **two distinct ids**: `eventId` is the id **you** sent (echoed), `webhookEventId` is **Fire's** id for the queued record. Same shape as the [fiscal callback](/en/api-reference/fiscal-callback#response).
 
 <ResponseField name="received" type="boolean">
   Always `true` when the request was accepted and enqueued.
 </ResponseField>
 
+<ResponseField name="duplicate" type="boolean">
+  `true` when this exact `(orderId, eventId, eventType)` was already ingested — the existing record is returned and nothing is re-enqueued. `false` for a fresh report (including a different `eventType` of the same dispatch — that's a new step, not a duplicate).
+</ResponseField>
+
 <ResponseField name="eventId" type="string">
-  UUID of the queued event in `webhook_events`. Pass it to `GET /v1/webhooks/events/{eventId}` to poll the outcome.
+  Echo of the `eventId` you sent (the dispatch's `event.id`).
+</ResponseField>
+
+<ResponseField name="webhookEventId" type="string">
+  Fire's id for the queued record. Pass it to `GET /v1/webhooks/events/{webhookEventId}` to poll the outcome. On a duplicate it is the **same** id returned the first time.
 </ResponseField>
 
 <ResponseField name="status" type="string">
-  Queue status at enqueue time — `queued` for a new event (or the existing status if it was a duplicate).
+  Current queue status — `queued` → `processing` → `processed` (and `retry` / `failed` / `dead` / `ignored`).
 </ResponseField>
 
-<ResponseField name="duplicate" type="boolean">
-  `true` when this `providerEventId` was already enqueued — the existing `eventId` is returned and the event is **not** re-enqueued. `false` for a fresh event.
+<ResponseField name="firstReceivedAt" type="string">
+  ISO 8601 UTC timestamp of when Fire **first** received this report. Stable across retries.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable summary.
 </ResponseField>
 
 <ResponseExample>
-```json 202 — accepted (queued)
+```json 202 — accepted (new step, queued)
 {
   "received": true,
-  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "duplicate": false,
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "webhookEventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
   "status": "queued",
-  "duplicate": false
+  "firstReceivedAt": "2026-05-26T18:30:00.512Z",
+  "message": "Event accepted and queued for processing."
 }
 ```
 
-```json 202 — duplicate (already enqueued)
+```json 202 — duplicate (same orderId + eventId + eventType)
 {
   "received": true,
-  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
-  "status": "queued",
-  "duplicate": true
+  "duplicate": true,
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "webhookEventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "processed",
+  "firstReceivedAt": "2026-05-26T18:30:00.512Z",
+  "message": "Event already received; no action needed."
 }
 ```
 
-```json 400 — validation error
+```json 400 — wrong eventId / validation error
 {
-  "error": {
-    "code": "validation_error",
-    "message": "eventId debe ser un UUID"
-  }
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "eventId does not reference an event emitted by Fire for this orderId. Echo the event.id from a V4 envelope you received for this order."
 }
 ```
 
 ```json 401 — missing or invalid API key
 {
-  "error": {
-    "code": "unauthorized",
-    "message": "Invalid or missing API key"
-  }
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
 }
 ```
 
-```json 403 — missing scope
+```json 403 — missing scope / not your tenant
 {
-  "error": {
-    "code": "forbidden",
-    "message": "Missing required scope: webhooks:kds"
-  }
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "webhooks:kds requires a vendor-scoped API key (account + vendor binding). Generate one from /developers/firepos-api-management."
+}
+```
+
+```json 503 — auth store temporarily unreachable (retry)
+{
+  "success": false,
+  "error": "SERVICE_UNAVAILABLE",
+  "message": "API key verification is temporarily unavailable (auth store unreachable). Retry the request."
 }
 ```
 </ResponseExample>
 
 ## Checking the outcome
 
-Because processing is asynchronous, the `202` only confirms the event was **queued**. To see whether it was recorded, poll the companion status endpoint with the `eventId` returned by the `202`:
+Because processing is asynchronous, the `202` only confirms the event was **queued**. To see whether it was recorded, poll the companion status endpoint with the `webhookEventId` returned by the `202`:
 
 ```
-GET https://app.fire.rest/api/v1/webhooks/events/{eventId}
+GET https://app.fire.rest/api/v1/webhooks/events/{webhookEventId}
 x-api-key: <your webhooks:kds key>
 ```
 
@@ -190,9 +219,21 @@ x-api-key: <your webhooks:kds key>
 
 A `404` is returned for unknown ids — or ids that belong to another tenant — with no existence leak. Authenticate with the same `webhooks:kds` key you used for the event.
 
-## Idempotency
+## Idempotency & the journey
 
-Fire deduplicates events by `providerEventId` — a unique constraint on the inbound queue. A replay is **not** re-processed: it returns `202` with the original `eventId` and `duplicate: true`. Always send the **same** `providerEventId` for retries; never generate a new one for the same logical event.
+Fire deduplicates on the triple **`(orderId, eventId, eventType)`** — *not* on `providerEventId` (which you may regenerate freely). This is what makes the journey work:
+
+| Scenario | Result |
+|---|---|
+| `preparing`, then `ready`, then `dispatched` — **same `eventId`**, different `eventType` | each is a **new step** → `202` `duplicate:false`. Same `eventId` is expected, not a conflict |
+| The **same** report resent — same `(orderId, eventId, eventType)` | `202` `duplicate:true` — existing record returned, not re-processed |
+| `eventId` not emitted by Fire for this `orderId` | `400` |
+| Order/event not under your API key's account + vendor | `403` |
+| Auth store momentarily unreachable | `503` — transient, **retry** |
+
+<Note>
+  **This is the key difference from the fiscal callback.** There, one `eventId` carries exactly **one** action, so reusing it for a different `eventType` is a conflict (`409`). Here, one dispatch `eventId` legitimately carries the **whole journey** (`preparing` → `ready` → `dispatched`) — the `eventType` is what tells the steps apart. Different devices get different dispatch `eventId`s, so their reports never collide.
+</Note>
 
 ## Anti-regression
 

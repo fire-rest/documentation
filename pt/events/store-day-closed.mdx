@@ -1,40 +1,40 @@
 ---
-title: "store.day-closed"
-description: "Uma loja fechou seu dia operacional — dispara uma vez por (store, businessDayDate) com um snapshot completo da atividade do dia."
+title: "store.business_day_closed"
+description: "Uma loja fechou seu dia de negócio — um evento thin com a identidade do fechamento, timing, quem fechou e uma ref mínima de loja."
 ---
 
 <Tabs>
-  <Tab title="v1 · atual">
-    Contrato **atual (v1)**. `sales` agora inclui **`product_discounts`**, **`gross_before_discounts`**, **`shipping`**, **`extra_charges`**, **`total_charged`** e **`taxes_by_type`** (detalhamento por imposto).
+  <Tab title="v1 · current">
+    Você está vendo o contrato **atual (v1)** de `store.business_day_closed` — um **payload thin**: identidade do fechamento, timing, `closedBy` e uma **`store` mínima**. Já não carrega as métricas agregadas do dia, os breakdowns nem o detalhe de anomalias — isso você consulta por `businessDayId` quando precisar.
   </Tab>
-  <Tab title="v0 · descontinuado">
-    <Warning>O contrato **v0** está **deprecado** — mantido apenas como referência histórica. Abra aqui: [store-day-closed — v0](/pt/events-v0/store-day-closed).</Warning>
+  <Tab title="v0 · deprecated">
+    <Warning>O contrato **v0** (o snapshot completo com `sales`/`metrics`/breakdowns embutidos) está **deprecado** — mantido apenas como referência histórica. Abra aqui: [store.business_day_closed — v0](/pt/events-v0/store-day-closed).</Warning>
   </Tab>
 </Tabs>
 
-`store.day-closed` dispara quando o pipeline automatizado de fechamento de dia do Fire termina de construir o snapshot imutável do dia operacional de uma loja. O payload é uma **projeção direta desse snapshot** mais o bloco `store` canônico v4 — os consumers (Kinesis, ERP, BI) montam seu próprio shape **sem precisar fazer queries de volta ao Fire**.
+`store.business_day_closed` dispara quando o pipeline automático de fechamento de dia do Fire termina de construir o snapshot imutável do dia operacional de uma loja. O payload é **thin**: carrega a **identidade** do fechamento (`businessDayId`), o **timing**, **quem fechou** e uma **ref mínima de loja** — o suficiente para reagir a "o dia fechou" e fazer o match do seu lado. Os agregados pesados (vendas, métricas, breakdowns por canal/pagamento, detalhe de force-closed e cancelamentos) vivem no snapshot e são obtidos por `businessDayId` — **não** vêm embutidos no evento.
 
-Diferente dos eventos de pedido, este é um evento **a nível loja**: um por loja fechada, não um por pedido. O snapshot contém métricas agregadas, breakdowns por canal/forma de pagamento, detalhe de pedidos force-closed e detalhe de cancelamentos do dia.
+Diferente dos eventos a nível pedido, este é um evento **a nível loja**: um por loja fechada, não um por pedido.
 
 ## Condição de disparo
 
-O Fire emite `store.day-closed` uma vez por snapshot `(storeId, businessDayDate)`, na primeira vez em que **todas** estas condições se cumprem:
+O Fire emite `store.business_day_closed` uma vez por snapshot `(storeId, businessDayDate)`, na primeira vez que **tudo** a seguir é verdadeiro:
 
-- A loja tinha um dia operacional aberto (`isBusinessDayOpen === true`) para a data a fechar
-- O pipeline de fechamento (`CloseBusinessDayService.execute()`) completou os 9 passos sem erro (force-close, cálculo de métricas, persistência do snapshot)
+- A loja tinha um dia de negócio aberto (`isBusinessDayOpen === true`) para a data sendo fechada
+- O pipeline de fechamento (`CloseBusinessDayService.execute()`) completou todos os passos sem erro (force-close, cálculo de métricas, persistência do snapshot)
 - Não existe já um snapshot para esse par `(storeId, businessDayDate)` (guard de idempotência)
 
 | | |
 |---|---|
-| Cobertura | **Universal** — todos os países. Diferente de `fiscal.*.br`, sem gating por país. |
-| Chave de idempotência | `event.id` (também `trigger.data.snapshotId`) |
-| Dispara mais de uma vez | Não, salvo retry. Um snapshot por (storeId, data). |
-| Origem | Pipeline cron (v1). O path de fechamento manual ainda não emite. |
-| Latência vs fechamento real | Síncrono — o evento é enfileirado imediatamente após `saveSnapshot()` retornar. |
+| Cobertura | **Universal** — todos os países. Sem gating por país. |
+| Chave de idempotência | `event.id` (também `trigger.data.businessDayId`) |
+| Dispara mais de uma vez | Não, salvo retentativa. Um snapshot por (storeId, data). |
+| Origem | Pipeline cron (v1). O fechamento manual ainda não emite. |
+| Latência vs fechamento real | Síncrono — o evento é enfileirado assim que `saveSnapshot()` retorna. |
 
-## O que está em `trigger.data`
+## O que vem em `trigger.data`
 
-O `V4StoreDayClosedSnapshot` completo — 17 keys top-level cobrindo identidade, o bloco store canônico, agregados de sales/metrics/summary, breakdowns por canal e por forma de pagamento, detalhe de pedidos force-closed, detalhe de cancelamentos, e metadata extensível.
+Um payload **thin**: identidade (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`, `closedAt`), o `closedBy` resolvido, e uma ref mínima de `store` (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). Sem métricas, breakdowns nem arrays de anomalias — consulte o snapshot por `businessDayId` se precisar do detalhe.
 
 ## Exemplo — payload real (sanitizado)
 
@@ -42,269 +42,136 @@ O `V4StoreDayClosedSnapshot` completo — 17 keys top-level cobrindo identidade,
 {
   "event": {
     "id": "43214dd1-e260-4245-945d-5bbdfc4a54be",
-    "type": "store.day-closed",
+    "type": "store.business_day_closed",
     "createdAt": "2026-05-18T21:59:01.306Z"
   },
   "data": {
-    "snapshotId": "2c332116-79ec-4c63-a53d-8b87fff5a654",
+    "businessDayId": "2c332116-79ec-4c63-a53d-8b87fff5a654",
     "businessDayDate": "2026-03-31",
     "timezone": "America/Sao_Paulo",
     "status": "CLOSED",
-    "openedAt": "2026-03-31T09:00:02.55+00:00",
-    "closedAt": "2026-05-18T21:58:09.882+00:00",
-
+    "openedAt": "2026-03-31T09:00:02.55Z",
+    "closedAt": "2026-05-18T21:58:09.882Z",
     "closedBy": {
       "uid": "00000000-0000-0000-0000-000000000000",
       "name": "Cierre Automático — Sandbox",
       "type": "system"
     },
-
     "store": {
       "uid": "a4019cad-bbac-4269-9f8d-f29654e92c45",
       "code": "BR-SP-001",
-      "name": "Sample Store SP",
       "externalId": "200400500",
-      "phone": "+551155512042",
-      "address": "Av. Paulista 1578, Bela Vista, São Paulo - SP",
-      "locationInfo": { "country": { "code": "BR" }, "city": { "code": "SAO" }, "timezone": "America/Sao_Paulo", "currencyCode": "BRL" },
-      "vendor": { "uid": "100.2.1", "name": "Deli Burger BR", "description": null, "loyaltyPlan": false },
-      "account": { "uid": "100", "name": "Sandbox", "description": null },
-      "storeFiscalConfig": { "enabled": true, "company": { "govIdType": "CNPJ", "legalName": "Dev Company" }, "metadata": { "storeCode3S": "50000001" } }
-    },
-
-    "summary": { "total_orders": 48, "completed_orders": 40, "open_orders": 2, "cancelled_orders": 6, "close_percentage": 95.2 },
-    "sales":   {
-      "gross": 1741,
-      "net": 1512.34,
-      "taxes": 228.66,
-      "discounts": 42.30,
-      "product_discounts": 23.00,
-      "gross_before_discounts": 1764.00,
-      "shipping": 124.50,
-      "extra_charges": 13.86,
-      "total_charged": 1837.06,
-      "taxes_by_type": { "ICMS": 98.04, "PIS": 11.03, "COFINS": 50.81, "IBS_UF": 1.83, "IBS_MUN": 0, "CBS": 5.91, "OTHER": 61.04 },
-      "currency": "BRL",
-      "order_count": 40
-    },
-    "metrics": { "average_order_value": 44, "operation_minutes": 887, "first_order_at": "2026-03-31T12:13:04.000Z", "last_order_at": "2026-03-31T23:59:48.000Z", "peak_hour": "20:00", "peak_hour_orders": 23, "payment_failures": 1 },
-
-    "byChannel": [
-      { "channel_id": "APP", "channel_name": "Sabor App", "order_count": 30, "total": 1240.50, "percentage": 71.2, "by_fulfillment": [{ "fulfillment_type": "DELIVERY", "order_count": 30, "total": 1240.50, "percentage": 100 }] },
-      { "channel_id": "POS", "channel_name": "Balcão",    "order_count": 10, "total": 500.50,  "percentage": 28.8, "by_fulfillment": [{ "fulfillment_type": "DINE_IN",  "order_count": 10, "total": 500.50,  "percentage": 100 }] }
-    ],
-    "byPaymentMethod": [
-      { "processor": "CARD", "transaction_count": 28, "total": 1200.00, "percentage": 68.9 },
-      { "processor": "PIX",  "transaction_count": 12, "total": 541.00,  "percentage": 31.1 }
-    ],
-
-    "forceClosedOrders": [
-      { "order_id": "1dda...", "order_uid": "XM-2026-03-31-871", "payment_status": "PENDING", "channel_id": "APP", "total": 42.0, "created_at": "2026-03-31T23:47:12.000Z", "closure_reason": "PAYMENT_PENDING", "payment_methods": [{ "processor": "PIX", "status": "PENDING", "total": 0 }] },
-      { "order_id": "1633...", "order_uid": "XM-2026-03-31-872", "payment_status": "FAILED",  "channel_id": "POS", "total": 87.5, "created_at": "2026-03-31T23:51:33.000Z", "closure_reason": "PAYMENT_FAILED",  "payment_methods": [{ "processor": "CARD", "status": "FAILED", "total": 87.5, "metadata": { "reason": "DECLINED" } }] }
-    ],
-    "closureStats": { "total_force_closed": 2, "total_lost_revenue": 129.5, "by_reason": { "abandoned": 0, "payment_pending": 1, "payment_failed": 1, "partial_payment": 0, "integration_error": 0 } },
-
-    "cancelledOrders": [
-      { "order_id": "e98f...", "order_uid": "ac331b68-66fb-...", "order_code": "OC-001", "cancelled_at": "2026-03-31T19:42:18.000Z", "cancellation_reason": "Cliente desistiu — item indisponível", "cancellation_source": "backoffice", "total": 96.30, "currency": "BRL" }
-    ],
-
-    "metadata": { "cash_reconciliation_summary": { "by_currency": [], "total_match": 0, "total_overage": 0, "total_shortage": 0, "total_reconciliations": 0 } }
+      "countryCode": "BR",
+      "timezone": "America/Sao_Paulo",
+      "currencyCode": "BRL"
+    }
   },
-  "_meta": { "executionId": "...", "flowId": "...", "flowName": "...", "attempt": 0, "triggerEntityId": "2c332116-..." }
+  "_meta": { "executionId": "...", "flowId": "...", "flowName": "...", "attempt": 0, "triggerEntityId": "2c332116-79ec-4c63-a53d-8b87fff5a654" }
 }
 ```
 
 ## Referência de `data.*`
 
-### Identidade & temporal
+### Identidade e temporal
 
-<ResponseField name="snapshotId" type="string">
-  UUID do snapshot persistido no DB do Fire. Também exposto como `_meta.triggerEntityId`. Use como chave de idempotência do seu lado — re-entregas do mesmo fechamento compartilham o mesmo `snapshotId`.
+<ResponseField name="businessDayId" type="string">
+  UUID do snapshot de dia de negócio persistido na base do Fire. Também aparece como `_meta.triggerEntityId`. Use-o como chave de idempotência do seu lado — reenvios do mesmo fechamento compartilham o mesmo `businessDayId` — e como chave de lookup para buscar os agregados do dia na API de snapshots do Fire quando precisar.
 </ResponseField>
 <ResponseField name="businessDayDate" type="string">
-  Data calendário que o fechamento representa, no timezone da loja (ex. `"2026-03-31"`). **Não** é a data UTC em que o evento disparou.
+  Data de calendário que o fechamento representa, no fuso da loja (ex. `"2026-03-31"`). **Não** a data UTC em que o evento disparou.
 </ResponseField>
 <ResponseField name="timezone" type="string">
-  Timezone IANA da loja (ex. `"America/Sao_Paulo"`). Use para interpretar `businessDayDate` e os timestamps `metrics.*_order_at`.
+  Fuso IANA da loja (ex. `"America/Sao_Paulo"`). Use-o para interpretar `businessDayDate`.
 </ResponseField>
 <ResponseField name="status" type="string">
-  Sempre `"CLOSED"` para este evento. O campo existe por paridade com o shape do row do snapshot; não há outro valor possível aqui.
+  Sempre `"CLOSED"` para este evento. Nenhum outro valor é possível.
 </ResponseField>
 <ResponseField name="openedAt" type="string | null">
-  Timestamp ISO 8601 UTC de quando o dia foi aberto. Pode ser `null` para lojas que nunca abriram explicitamente (data legacy); para lojas fechadas pelo cron v1 sempre está presente.
+  Timestamp ISO 8601 UTC de abertura do dia. Pode ser `null` para lojas que nunca abriram explicitamente (dados legados); para lojas fechadas por cron v1 está sempre presente.
 </ResponseField>
 <ResponseField name="closedAt" type="string">
-  Timestamp ISO 8601 UTC de quando o pipeline persistiu o snapshot. Use isto para medir SLI/SLO em vez de `event.createdAt` (que é o tempo de dispatch da fila).
+  Timestamp ISO 8601 UTC em que o pipeline persistiu o snapshot. Use-o para medir SLI/SLO em vez de `event.createdAt` (que é o momento do dispatch da fila).
 </ResponseField>
 
 ### `closedBy` — identidade do operador
 
 <ResponseField name="closedBy" type="object">
-  Identidade do operador já resolvida. **Nenhum lookup runtime necessário downstream.**
+  Identidade do operador já resolvida. **Sem lookups em runtime downstream.**
 
   <Expandable title="closedBy">
     <ResponseField name="uid" type="string">
-      Para `type: "system"` (v1): o UUID de `accounts.id` (ou um nil UUID estável `"00000000-0000-0000-0000-000000000000"` para accounts sem config explícita de system user). Para `type: "user"` (v2, ainda não emitido): o UUID do usuário da tabela de auth do Fire.
+      Para `type: "system"` (v1): o UUID `accounts.id` (ou um nil UUID estável `"00000000-0000-0000-0000-000000000000"` para contas sem system-user configurado). Para `type: "user"` (v2, ainda não emitido): o UUID do usuário na tabela de auth do Fire.
     </ResponseField>
     <ResponseField name="name" type="string">
       Label legível. Para system: tipicamente `"Cierre Automático — {accountName}"`. Para user: o display name do usuário.
     </ResponseField>
     <ResponseField name="type" type="string">
-      `"system"` para fechamentos automatizados por cron (v1). `"user"` fica reservado para fluxos de fechamento manual (v2, não implementado ainda).
+      `"system"` para fechamentos automáticos por cron (v1). `"user"` fica reservado para fechamentos manuais (v2, não implementado).
     </ResponseField>
   </Expandable>
 </ResponseField>
 
-### `store` — bloco store canônico
+### `store` — ref mínima de loja
 
-Mesmo shape que em `order.completed` — ver [`order.completed`](/pt/events/order-completed#store) para a referência de campos. Pontos-chave:
+<ResponseField name="store" type="object">
+  Uma referência mínima de loja — identidade mais país/fuso/moeda. O bloco store canônico completo (name, address, vendor, account, fiscal config) **não** vem aqui; se precisar, pegue-o dos eventos [`order.completed`](/pt/events/order-completed#store) da mesma loja.
 
-- `store.externalId` é o identificador controlado pelo Fire desde `settings.externalId`, não o que algum sistema POS tenha injetado. Use como chave de reconciliação do lado partner.
-- `store.storeFiscalConfig` viaja completo (CNPJ, IE, `storeCode3S`, etc. para BR; campos análogos para outros países). Credenciais nunca são incluídas.
-- `store.vendor.name` e `store.account.name` são populados desde o metadata de account do Fire. `description` e `loyaltyPlan` podem vir `null`/`false` aqui mesmo quando populados em eventos de pedido — esses campos vêm do payload POS injetado em eventos de pedido e não são parte do metadata de account do Fire hoje.
-
-### `summary`, `sales`, `metrics`
-
-<ResponseField name="summary" type="object">
-  Breakdown de contagem de pedidos do dia.
-
-  <Expandable title="summary">
-    <ResponseField name="total_orders" type="number">Todos os pedidos que matcham store + businessDayDate, independente do status.</ResponseField>
-    <ResponseField name="completed_orders" type="number">Pedidos com `status === "COMPLETED"`.</ResponseField>
-    <ResponseField name="open_orders" type="number">Pedidos que estavam ainda `OPEN` no momento do fechamento. Foram force-closed e aparecem em `forceClosedOrders[]`.</ResponseField>
-    <ResponseField name="cancelled_orders" type="number">Pedidos com `status === "CANCELLED"`. Detalhe em `cancelledOrders[]`.</ResponseField>
-    <ResponseField name="close_percentage" type="number">`completed / (total - cancelled) * 100`, 1 decimal. A métrica de "saúde" do dia.</ResponseField>
+  <Expandable title="store">
+    <ResponseField name="uid" type="string | null">UUID da loja no Fire.</ResponseField>
+    <ResponseField name="code" type="string | null">Código legível da loja (ex. `"BR-SP-001"`).</ResponseField>
+    <ResponseField name="externalId" type="string | null">O identificador externo controlado pelo Fire (`settings.externalId`), não o que algum POS injetou. Use-o como chave de reconciliação do seu lado.</ResponseField>
+    <ResponseField name="countryCode" type="string | null">Código de país ISO da loja (ex. `"BR"`).</ResponseField>
+    <ResponseField name="timezone" type="string | null">Fuso IANA da loja. Espelha `data.timezone`.</ResponseField>
+    <ResponseField name="currencyCode" type="string | null">Código de moeda ISO 4217 da loja (ex. `"BRL"`).</ResponseField>
   </Expandable>
-</ResponseField>
-
-<ResponseField name="sales" type="object">
-  Agregados de receita. **Inclui apenas pedidos `COMPLETED` + `SUCCEEDED`** na moeda dominante.
-
-  <Expandable title="sales">
-    <ResponseField name="gross" type="number">Total incluindo impostos.</ResponseField>
-    <ResponseField name="net" type="number">Subtotal sem impostos.</ResponseField>
-    <ResponseField name="taxes" type="number">Valor de impostos.</ResponseField>
-    <ResponseField name="discounts" type="number">Desconto a nível de pedido.</ResponseField>
-    <ResponseField name="product_discounts" type="number"><Tip>Adicionado na **v1**.</Tip> Soma dos descontos de produto (`order_lines[].line_totals[].discount_value`).</ResponseField>
-    <ResponseField name="gross_before_discounts" type="number"><Tip>Adicionado na **v1**.</Tip> `gross + product_discounts` — preço cheio antes dos descontos de produto.</ResponseField>
-    <ResponseField name="shipping" type="number">Total de entrega (`totals[0].shipping_cost`). Opcional.</ResponseField>
-    <ResponseField name="extra_charges" type="number">Taxa de serviço / gorjeta (`totals[0].extra_charges`). Opcional.</ResponseField>
-    <ResponseField name="total_charged" type="number">`gross + shipping + extra_charges − discounts`. Opcional.</ResponseField>
-    <ResponseField name="taxes_by_type" type="object"><Tip>Adicionado na **v1**.</Tip> Impostos detalhados por nome (`ICMS`, `PIS`, `COFINS`, `IBS_UF`, `IBS_MUN`, `CBS`). Um bucket `"OTHER"` reconcilia o restante.</ResponseField>
-    <ResponseField name="currency" type="string | null">Código de moeda ISO 4217 (`"USD"`, `"BRL"`, `"COP"`, …). `null` quando não houve pedidos pagos.</ResponseField>
-    <ResponseField name="order_count" type="number">Pedidos pagos contribuindo para o sales da moeda dominante.</ResponseField>
-  </Expandable>
-</ResponseField>
-
-<ResponseField name="metrics" type="object">
-  Indicadores de performance.
-
-  <Expandable title="metrics">
-    <ResponseField name="average_order_value" type="number">`sales.gross / sales.order_count`, arredondado.</ResponseField>
-    <ResponseField name="orders_per_minute" type="number">`summary.total_orders / metrics.operation_minutes`, 2 decimais.</ResponseField>
-    <ResponseField name="operation_minutes" type="number">Minutos entre os timestamps do primeiro e último pedido.</ResponseField>
-    <ResponseField name="first_order_at" type="string?">Timestamp ISO. Ausente quando não houve pedidos.</ResponseField>
-    <ResponseField name="last_order_at" type="string?">Timestamp ISO. Ausente quando não houve pedidos.</ResponseField>
-    <ResponseField name="peak_hour" type="string?">Hora com mais pedidos, formato `"HH:00"`. Ausente quando não há pedidos.</ResponseField>
-    <ResponseField name="peak_hour_orders" type="number?">Contagem de pedidos na hora de pico.</ResponseField>
-    <ResponseField name="payment_failures" type="number">Pedidos cujo pagamento terminou em `FAILED`.</ResponseField>
-  </Expandable>
-</ResponseField>
-
-### Breakdowns
-
-<ResponseField name="byChannel" type="array">
-  Sales por canal (APP, KIOSK, POS, WEB, …). Cada entrada inclui um sub-breakdown `by_fulfillment` (DELIVERY, PICKUP, DINE_IN, etc.). Apenas pedidos `COMPLETED` + `SUCCEEDED`.
-</ResponseField>
-
-<ResponseField name="byPaymentMethod" type="array">
-  Sales por processador de pagamento (`CASH`, `CARD`, `PIX`, …). Agregado desde `payment_methods[].processor` através dos pedidos pagos.
-</ResponseField>
-
-### Anomalias
-
-<ResponseField name="forceClosedOrders" type="array">
-  Detalhe de pedidos que estavam ainda `OPEN` no momento do fechamento. Cada entrada inclui `order_id`, `order_uid`, `payment_status`, `total`, o snapshot original de `payment_methods[]`, e um `closure_reason` classificando por que o pedido não completou naturalmente.
-
-  Valores possíveis de `closure_reason`: `ABANDONED`, `PAYMENT_PENDING`, `PAYMENT_FAILED`, `PARTIAL_PAYMENT`, `INTEGRATION_ERROR`.
-</ResponseField>
-
-<ResponseField name="closureStats" type="object">
-  Stats agregados de force-close — contagem por razão e total de receita não cobrada (soma de `forceClosedOrders[].total`).
-</ResponseField>
-
-<ResponseField name="cancelledOrders" type="array">
-  Detalhe por pedido de cancelamentos (`order_id`, `order_uid`, `order_code`, `cancelled_at`, `cancellation_reason`, `cancellation_source` de `"adapter"` ou `"backoffice"`, `total`, `currency`). Para snapshots criados antes de este campo existir (data legacy), este array é `[]`.
-</ResponseField>
-
-<ResponseField name="metadata" type="object | null">
-  Bucket extensível. Hoje carrega `cash_reconciliation_summary` (sempre, mesmo se vazio) e opcionalmente `currency_anomaly` (quando mais de uma moeda foi detectada no dia). Pode crescer com o tempo sem quebrar o contrato — trate chaves desconhecidas como forward-compatíveis.
 </ResponseField>
 
 ## Exemplo de handler
 
 ```js
 async function onStoreDayClosed(data) {
-  const { snapshotId, businessDayDate, store, sales, summary, closureStats, forceClosedOrders, cancelledOrders, closedBy } = data;
+  const { businessDayId, businessDayDate, timezone, store, closedBy } = data;
 
-  // 1. Idempotência — pular se já processamos este snapshot
-  const existing = await db.dayCloses.findUnique({ where: { snapshotId } });
+  // 1. Idempotência — pular se já processamos este fechamento
+  const existing = await db.dayCloses.findUnique({ where: { businessDayId } });
   if (existing) return;
 
-  // 2. Persistir agregados headline para BI
+  // 2. Registrar o fechamento (lean — identidade + ref de loja)
   await db.dayCloses.create({
     data: {
-      snapshotId,
+      businessDayId,
+      businessDayDate,
+      timezone,
       storeExternalId: store.externalId,
       storeCode: store.code,
-      businessDayDate,
-      currency: sales.currency,
-      gross: sales.gross,
-      net: sales.net,
-      orderCount: summary.completed_orders,
-      forceClosedCount: closureStats.total_force_closed,
-      cancelledCount: summary.cancelled_orders,
+      countryCode: store.countryCode,
+      currencyCode: store.currencyCode,
       closedByName: closedBy.name,
       closedByType: closedBy.type,
     },
   });
 
-  // 3. Alertar sobre anomalias
-  if (closureStats.total_force_closed > 5) {
-    await alerts.send({
-      severity: "warning",
-      title: `${closureStats.total_force_closed} pedidos force-closed em ${store.code}`,
-      detail: forceClosedOrders.map(o => `${o.order_uid}: ${o.closure_reason}`).join("\n"),
-    });
-  }
-
-  // 4. Encaminhar cancelamentos ao audit trail (sem queries extras — detalhe vem embutido)
-  for (const c of cancelledOrders) {
-    await audit.cancellations.upsert({
-      where: { orderId: c.order_id },
-      create: { ...c, storeExternalId: store.externalId, businessDayDate },
-      update: {},
-    });
-  }
+  // 3. Precisa dos agregados do dia (sales, metrics, anomalias)? Busque por businessDayId.
+  //    NÃO estão neste evento — consulte a API de snapshots do Fire on demand.
+  // const snapshot = await fire.businessDay.get(businessDayId);
 }
 ```
 
-## Pontos de atenção
+## Erros comuns
 
-- **`closedBy.uid` pode ser o nil UUID `"00000000-0000-0000-0000-000000000000"`** — para fechamentos system onde o account não configurou um system user custom. Use `closedBy.type === "system"` para detectar fechamentos system em vez de parsear `uid`.
-- **`sales.currency` pode ser `null`** quando a loja fechou sem pedidos pagos. Não assuma um default — bifurque sobre o null.
-- **As keys de `closureStats.by_reason` estão sempre presentes**, mesmo quando zero. Não filtre por presença; some/compare sobre os valores.
-- **`metrics.first_order_at` / `last_order_at` / `peak_hour*` estão ausentes** (não `null`, **ausentes**) quando a loja não teve pedidos. Use optional chaining.
-- **`cancelledOrders` é `[]` para snapshots criados antes do detalhe por-pedido de cancelamentos ser adicionado.** Se precisar disso em data histórica, consulte diretamente a API de snapshots do Fire — snapshots antigos não são backfilleados retroativamente.
-- **`store.vendor.description` e `store.vendor.loyaltyPlan` podem vir `null`/`false`** aqui mesmo quando populados em eventos a nível de pedido. Esses campos vêm do payload POS injetado em eventos de pedido e não são armazenados no metadata de account do Fire hoje.
+- **As métricas do dia NÃO estão neste evento.** `sales`, `metrics`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders` e `metadata` já não viajam inline. Se você dependia deles, busque o snapshot por `businessDayId`.
+- **`snapshotId` foi renomeado para `businessDayId`.** Se você parseava `data.snapshotId`, mude para `data.businessDayId` (mesmo valor — o id da linha do snapshot).
+- **`closedBy.uid` pode ser o nil UUID `"00000000-0000-0000-0000-000000000000"`** — em fechamentos system onde a conta não configurou um system user. Detecte fechamentos system com `closedBy.type === "system"`, não parseando o `uid`.
+- **`businessDayDate` é a data de calendário da loja, não UTC.** Interprete-a com `timezone`.
+- **Os campos `store.*` podem ser `null`** com configuração de loja incompleta. Não assuma non-null.
 
 ## Eventos relacionados
 
 <CardGroup cols={2}>
   <Card title="order.completed" icon="receipt" href="/pt/events/order-completed">
-    Dispara por cada pedido individual ao completar. `store.day-closed` agrega muitos eventos `order.completed`.
+    Dispara por cada pedido ao completar. O bloco store completo vive aqui.
   </Card>
   <Card title="order.cancelled" icon="circle-xmark" href="/pt/events/order-cancelled">
-    Evento por cancelamento individual. Cada cancelamento também aparece em `cancelledOrders[]` do fechamento do dia.
+    Evento por cancelamento. Use-o para o detalhe de cancelamentos em vez do payload de fechamento.
   </Card>
 </CardGroup>

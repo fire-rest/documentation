@@ -5,10 +5,10 @@ description: "Endpoint inbound al que tu proveedor fiscal hace POST cuando un do
 authMethod: "bearer"
 ---
 
-Este endpoint es **inbound** — tu proveedor fiscal le hace POST cada vez que un documento fiscal es autorizado, rechazado, denegado, cancelado o falla. Es la **API canónica multipaís de fiscal callback** que acepta payloads de BR, CO, EC, CL, AR, VE. Fire valida el payload, actualiza el estado fiscal de la orden en `fiscal_documents` y `orders.fiscal`, y despacha eventos outbound `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` a tus Integration Flows.
+Este endpoint es **inbound** — tu proveedor fiscal le hace POST cada vez que un documento fiscal es autorizado, rechazado, denegado, cancelado o falla. Es la **API canónica multipaís de fiscal callback** que acepta payloads de BR, CO, EC, CL, AR, VE. Fire valida el payload, actualiza el estado fiscal de la orden en `fiscal_documents` y `orders.fiscal`, y — para Brasil — despacha eventos outbound `order.invoiced` / `order.reversed` a tus Integration Flows.
 
 <Note>
-  **Este endpoint es asíncrono.** Fire autentica, valida, corre el guard de tenancy, pre-marca la orden como `processing` y **encola** el callback — luego devuelve **`202 Accepted`** con un `eventId` (típicamente en menos de 100&nbsp;ms). La actualización de `fiscal_documents` / `orders.fiscal` ocurre un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para ver el resultado del procesamiento, consultá [`GET /v1/webhooks/events/{eventId}`](#comprobar-el-resultado). Los problemas corregibles por el cliente (payload inválido, orden inexistente, tenant equivocado) se rechazan **sincrónicamente** con `4xx` **antes** del `202`.
+  **Este endpoint es asíncrono.** Fire autentica, corre el guard de source-of-truth + tenancy, deduplica, pre-marca la orden como `processing` y **encola** el callback — luego devuelve **`202 Accepted`** con un `webhookEventId` (típicamente en menos de 100&nbsp;ms). La actualización de `fiscal_documents` / `orders.fiscal` ocurre un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para ver el resultado del procesamiento, consultá [`GET /v1/webhooks/events/{webhookEventId}`](#comprobar-el-resultado). Los problemas corregibles por el cliente (payload inválido, `eventId` equivocado, tenant equivocado, una acción reusando el evento de otra) se rechazan **sincrónicamente** con `4xx` **antes** del `202`.
 </Note>
 
 ## Cómo complementa `order.completed` y `order.cancelled`
@@ -33,7 +33,7 @@ Después de procesar el callback, el **siguiente** `order.completed` o `order.ca
 Para Brasil específicamente, también se emite un evento `order.invoiced` (o `order.reversed`) separado con las referencias del documento SEFAZ en `data.fiscal`.
 
 <Note>
-  **Hoy, solo `order.invoiced` y `order.reversed` están cableados como eventos outbound.** El endpoint valida y guarda callbacks para los 6 países (CO, EC, CL, AR, VE, BR), y el estado fiscal actualizado aparece en el siguiente evento `order.completed` / `order.cancelled` sin importar el país. Los eventos `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` para CO/EC/CL/AR/VE están en camino.
+  **Hoy, solo `order.invoiced` y `order.reversed` están cableados como eventos outbound (Brasil).** El endpoint valida y guarda callbacks para los 6 países (CO, EC, CL, AR, VE, BR), y el estado fiscal actualizado aparece en el siguiente evento `order.completed` / `order.cancelled` sin importar el país. Los eventos outbound para CO/EC/CL/AR/VE están en camino.
 </Note>
 
 ## Autenticación
@@ -68,7 +68,7 @@ El body es un objeto JSON con estos campos top-level. La forma del `document` es
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  Llave de idempotencia. Debe ser único por evento — un duplicado devuelve HTTP `202` con el `eventId` original y `duplicate: true`, sin re-encolar ni reprocesar. Usa el ID nativo del evento del proveedor si está disponible; si no, un UUID.
+  El id propio de tu proveedor para esta entrega. Se guarda para auditoría/forense — **no es la llave de idempotencia**. Fire deduplica por `(orderId, eventId)`, así que podés enviar un `providerEventId` nuevo en cada reintento sin crear duplicados. Usa el ID nativo del evento del proveedor si está disponible; si no, un UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -80,7 +80,10 @@ El body es un objeto JSON con estos campos top-level. La forma del `document` es
 </ParamField>
 
 <ParamField body="eventId" type="string" required>
-  UUID para correlación. **Fire valida que referencie un evento que Fire emitió para esta misma orden** — ecoa el `event.id` de un envelope V4 que recibiste (el de la emisión, o el de la cancelación para callbacks `cancelled`). Un `eventId` que no corresponda a un evento de Fire para esa orden se rechaza con `400` antes del `202`. Nunca inventes este valor.
+  UUID de correlación **y llave de idempotencia** (junto con `orderId`). Debe ser el `event.id` de un envelope V4 que **Fire emitió para esta orden** — ecoalo exacto; nunca lo inventes.
+
+  - **Chequeo de fuente de verdad.** Un `eventId` que no referencie un evento de Fire para esa orden se rechaza con `400` antes del `202`.
+  - **Cada acción lleva su propio evento.** Ecoa el `event.id` del evento que disparó *esta* acción — la emisión `order.invoiced` para un callback `authorized`, el evento de cancelación/reverso para un callback `cancelled`. Reusar el `eventId` de una acción para otro `eventType` (ej. un `cancelled` que ecoa el `eventId` del `authorized`) se rechaza con **`409`** — una cancelación debe referenciar su **propio** evento, no colgarse del de la autorización. Ver [Idempotencia y escenarios](#idempotencia-y-escenarios).
 </ParamField>
 
 <ParamField body="document" type="object">
@@ -110,7 +113,7 @@ La forma requerida del campo `document` depende del `countryCode`. **Todas las v
 
 ### Campos base comunes
 
-Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**; el resto son **opcionales** — envíalos cuando tu proveedor fiscal los tenga disponibles. Fire los persiste en `fiscal_documents` / `orders.fiscal` y los reemite en los eventos outbound `fiscal.authorized.{cc}` / `fiscal.cancelled.{cc}` y en el siguiente `order.completed` / `order.cancelled`.
+Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**; el resto son **opcionales** — envíalos cuando tu proveedor fiscal los tenga disponibles. Fire los persiste en `fiscal_documents` / `orders.fiscal` y los reemite en los eventos outbound `order.invoiced` / `order.reversed` (Brasil) y en el siguiente `order.completed` / `order.cancelled`.
 
 | Campo | Tipo | Requerido | Notas |
 |---|---|---|---|
@@ -374,77 +377,110 @@ Para estados no autorizados, omite `document` y provee `error`. El `countryCode`
 
 ## Respuesta
 
-En caso de éxito el endpoint devuelve **`202 Accepted`** — el evento fue autenticado, validado y **encolado**. Un `202` **no** significa que el documento fiscal ya se actualizó; eso ocurre de forma asíncrona en un worker en segundo plano. Usá el [endpoint de status](#comprobar-el-resultado) para confirmar el resultado final.
+En caso de éxito el endpoint devuelve **`202 Accepted`** — el evento fue autenticado, validado, deduplicado y **encolado**. Un `202` **no** significa que el documento fiscal ya se actualizó; eso ocurre de forma asíncrona en un worker en segundo plano. Usá el [endpoint de status](#comprobar-el-resultado) para confirmar el resultado final.
+
+El body trae **dos ids distintos** para que no haya ambigüedad: `eventId` es el id que **vos** enviaste (devuelto como echo), `webhookEventId` es el id de **Fire** para el registro encolado.
 
 <ResponseField name="received" type="boolean">
   Siempre `true` cuando la petición fue aceptada y encolada.
 </ResponseField>
 
+<ResponseField name="duplicate" type="boolean">
+  `true` cuando este `(orderId, eventId)` ya se ingresó **con el mismo `eventType`** — se devuelve el registro existente y no se re-encola nada. `false` para un evento nuevo.
+</ResponseField>
+
 <ResponseField name="eventId" type="string">
-  UUID del evento encolado en `webhook_events`. Pasalo a `GET /v1/webhooks/events/{eventId}` para consultar el resultado del procesamiento.
+  Echo del `eventId` que enviaste (el `event.id` de la emisión de Fire). Usalo para casar este acuse con tu envío.
+</ResponseField>
+
+<ResponseField name="webhookEventId" type="string">
+  El id de Fire para el registro encolado en `webhook_events`. Pasalo a `GET /v1/webhooks/events/{webhookEventId}` para consultar el resultado del procesamiento. En un duplicado es el **mismo** id que se devolvió la primera vez.
 </ResponseField>
 
 <ResponseField name="status" type="string">
-  Status de la cola al encolar — `queued` para un evento nuevo (o el status existente si fue un duplicado).
+  Status actual del registro en la cola — `queued` → `processing` → `processed` (y `retry` / `failed` / `dead` / `ignored`).
 </ResponseField>
 
-<ResponseField name="duplicate" type="boolean">
-  `true` cuando este `providerEventId` ya estaba encolado — se devuelve el `eventId` existente y el evento **no** se re-encola. `false` para un evento nuevo.
+<ResponseField name="firstReceivedAt" type="string">
+  Timestamp ISO 8601 UTC de cuándo Fire recibió **por primera vez** este evento. Estable entre reintentos — útil como ancla de traza.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Resumen legible de lo que pasó.
 </ResponseField>
 
 <ResponseExample>
-```json 202 — aceptado (encolado)
+```json 202 — aceptado (nuevo, encolado)
 {
   "received": true,
-  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "duplicate": false,
+  "eventId": "1686fca1-0a26-4a89-b2f2-fe93b15a4434",
+  "webhookEventId": "6d950243-6a0c-415c-b547-bddf9af8ad61",
   "status": "queued",
-  "duplicate": false
+  "firstReceivedAt": "2026-06-11T15:00:34.729Z",
+  "message": "Event accepted and queued for processing."
 }
 ```
 
-```json 202 — duplicado (ya encolado)
+```json 202 — duplicado (mismo orderId + eventId + eventType)
 {
   "received": true,
-  "eventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
-  "status": "queued",
-  "duplicate": true
+  "duplicate": true,
+  "eventId": "1686fca1-0a26-4a89-b2f2-fe93b15a4434",
+  "webhookEventId": "6d950243-6a0c-415c-b547-bddf9af8ad61",
+  "status": "processed",
+  "firstReceivedAt": "2026-06-11T15:00:34.729Z",
+  "message": "Event already received; no action needed."
 }
 ```
 
-```json 400 — error de validación
+```json 409 — eventId reusado para otra acción
 {
-  "error": {
-    "code": "validation_error",
-    "message": "BR chaveAcesso must be 44 digits"
-  }
+  "success": false,
+  "error": "CONFLICT",
+  "message": "eventId \"1686fca1-…\" is already bound to event_type=\"authorized\" for this order. A \"cancelled\" callback must reference its own event (a distinct eventId emitted by Fire for that action), not reuse another event's id."
+}
+```
+
+```json 400 — eventId incorrecto / error de validación
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "eventId does not reference an event emitted by Fire for this orderId. Echo the event.id from a V4 envelope you received for this order."
 }
 ```
 
 ```json 401 — API key faltante o inválida
 {
-  "error": {
-    "code": "unauthorized",
-    "message": "Invalid or missing API key"
-  }
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
 }
 ```
 
-```json 403 — scope incorrecto
+```json 403 — scope incorrecto / no es tu tenant
 {
-  "error": {
-    "code": "forbidden",
-    "message": "webhooks:fiscal scope requires a vendor-scoped API key (accountId binding missing). Generate one from /developers/firepos-api-management."
-  }
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "webhooks:fiscal requires a vendor-scoped API key (account + vendor binding). Generate one from /developers/firepos-api-management."
+}
+```
+
+```json 503 — auth store temporalmente inalcanzable (reintentá)
+{
+  "success": false,
+  "error": "SERVICE_UNAVAILABLE",
+  "message": "API key verification is temporarily unavailable (auth store unreachable). Retry the request."
 }
 ```
 </ResponseExample>
 
 ## Comprobar el resultado
 
-Como el procesamiento es asíncrono, el `202` solo confirma que el evento fue **encolado**. Para ver si el documento fiscal se actualizó, consultá el endpoint de status con el `eventId` devuelto por el `202`:
+Como el procesamiento es asíncrono, el `202` solo confirma que el evento fue **encolado**. Para ver si el documento fiscal se actualizó, consultá el endpoint de status con el `webhookEventId` devuelto por el `202`:
 
 ```
-GET https://app.fire.rest/api/v1/webhooks/events/{eventId}
+GET https://app.fire.rest/api/v1/webhooks/events/{webhookEventId}
 x-api-key: <tu key webhooks:fiscal>
 ```
 
@@ -472,9 +508,30 @@ x-api-key: <tu key webhooks:fiscal>
 
 Un `404` se devuelve para ids desconocidos — o ids de otro tenant — sin filtrar existencia. Autenticá con la misma key `webhooks:fiscal` que usaste para el callback.
 
-## Idempotencia
+## Idempotencia y escenarios
 
-Fire deduplica callbacks por `providerEventId` — una restricción única en `webhook_events`. Un replay **no** se re-encola: devuelve `202` con el `eventId` original y `duplicate: true`. Envía siempre el mismo `providerEventId` para reintentos; nunca generes uno nuevo para el mismo evento lógico.
+Fire deduplica callbacks por **`(orderId, eventId)`** — *no* por `providerEventId` (que podés regenerar libremente). Un evento es único con su orden: el mismo `(orderId, eventId)` reenviado con el **mismo** `eventType` es un replay benigno; el mismo `(orderId, eventId)` con un `eventType` **distinto** es un intento de colgar una acción sobre el evento de otra, y Fire lo rechaza.
+
+Esta es la matriz completa de comportamiento — cada combinación que podés enviar:
+
+| Escenario | Resultado |
+|---|---|
+| `(orderId, eventId)` nuevo | **`202`** · `duplicate: false` — encolado |
+| Mismo `(orderId, eventId, eventType)` reenviado (cualquier `providerEventId`) | **`202`** · `duplicate: true` — se devuelve el registro existente, **no** se re-encola |
+| Mismo `(orderId, eventId)` pero **`eventType` distinto** (ej. `cancelled` con el `eventId` del `authorized`) | **`409`** — rechazado. Usá el evento que pertenece a *esta* acción |
+| `eventId` no emitido por Fire para ese `orderId` | **`400`** — `eventId` incorrecto/inventado |
+| Orden/evento fuera de la cuenta + vendor de tu API key | **`403`** |
+| Payload malformado (Zod), faltan campos obligatorios | **`400`** |
+| API key faltante / inválida | **`401`** |
+| Auth store momentáneamente inalcanzable | **`503`** — transitorio, **reintentá** |
+
+<Warning>
+  **Una cancelación necesita su propio evento.** No podés cancelar un documento reenviando el `eventId` de la autorización con `eventType: "cancelled"` — eso devuelve `409`. Fire es la fuente de verdad: una cancelación debe referenciar el **evento de cancelación/reverso que Fire emitió** (un `eventId` distinto). Devolver un `202 duplicado` aquí te diría erróneamente que la cancelación fue aceptada mientras Fire nunca canceló — por eso Fire lo rechaza explícitamente.
+</Warning>
+
+<Note>
+  **`409` vs `202`.** Un `409` es el único caso donde un callback *bien formado y autenticado* se rechaza en la capa de idempotencia — porque aceptarlo divergiría el estado. Un replay del mismo tipo nunca es un error: devuelve `202` para que tus reintentos queden limpios. Un `503` es **nuestro** (infra transitoria), así que es seguro y esperado reintentar.
+</Note>
 
 ## Concurrencia
 
@@ -486,7 +543,7 @@ El `202` solo encola el evento. Un worker en segundo plano lo toma — en ~2&nbs
 
 1. **La fila `fiscal_documents` se hace upsert** con el nuevo status y referencias del documento (`chaveAcesso`, `protocolo`, `cufe`, `cae`, etc., según país).
 2. **La columna `orders.fiscal` JSONB se mergea** con la misma data — visible en el siguiente evento `order.completed` / `order.cancelled` para el mismo `orderId`, sin importar el país.
-3. **Se despacha un trigger outbound** con `triggerType = 'fiscal.authorized.{cc}'` (para `eventType=authorized`) o `'fiscal.cancelled.{cc}'` (para `eventType=cancelled`). Los Integration Flows activos para ese trigger corren y hacen POST a tu endpoint.
+3. **Se despacha un trigger outbound** — para Brasil, `triggerType = 'order.invoiced'` (para `eventType=authorized`) o `'order.reversed'` (para `eventType=cancelled`). Los Integration Flows activos para ese trigger corren y hacen POST a tu endpoint.
 
   - **Hoy**, solo `order.invoiced` y `order.reversed` están cableados. Disparan cuando un callback authorized/cancelled para una tienda BR se procesa.
   - **Para CO/EC/CL/AR/VE**, los eventos outbound equivalentes aún no están cableados — los callbacks se validan y guardan, y el estado fiscal se refleja en el siguiente `order.completed` / `order.cancelled` para la misma orden.

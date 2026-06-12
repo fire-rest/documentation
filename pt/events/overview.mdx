@@ -6,7 +6,7 @@ description: "O Fire é event-driven. Quando algo significativo acontece dentro 
 O Fire emite **eventos** sempre que ocorre uma transição de negócio relevante — um pedido é completado, um pedido é cancelado, um documento fiscal é autorizado pela autoridade tributária, a cozinha avança um pedido. Cada evento é entregue ao seu endpoint por um **Integration Flow** que você configura no dashboard do Fire.
 
 <Note>
-  O Fire emite **cinco** tipos de evento de pedido hoje: [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status-updated`](/pt/events/order-status-updated), mais o evento agendado [`store.day-closed`](/pt/events/store-day-closed) no fechamento do dia.
+  O Fire emite **cinco** tipos de evento de pedido hoje: [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status_updated`](/pt/events/order-status-updated), mais o evento agendado [`store.business_day_closed`](/pt/events/store-day-closed) no fechamento do dia.
 </Note>
 
 ## O Fire é a fonte da verdade do ciclo de vida
@@ -15,7 +15,52 @@ Um pedido pode nascer em qualquer canal — POS, kiosk, app, agregador — mas a
 
 Essa centralização funciona em ambas as direções: sistemas externos **nunca escrevem estado por conta própria** — eles reportam ao Fire por webhooks de entrada, e **cada reporte deve referenciar um evento que o Fire emitiu** (o `eventId` do envelope que você recebeu). O Fire valida essa referência antes de aceitar o reporte; um callback que não aponte para um evento emitido pelo Fire para esse pedido é rejeitado com `400`. Assim, a linha do tempo de um pedido tem uma única fonte de verdade e nunca se bifurca.
 
+<Note>
+  O **diagrama de sequência** mostra o ciclo de vida no tempo — incluindo os dois *round-trips* em que o provedor fiscal e o KDS **resolvem e reportam de volta ao Fire**. O **diagrama estrutural** resume em quem fala com quem.
+</Note>
+
+### Ciclo de vida no tempo
+
 ```mermaid
+sequenceDiagram
+    autonumber
+    participant CH as 🛒 Canal
+    participant F as 🔥 FIRE
+    participant FP as 🧾 Provedor fiscal
+    participant AU as 🏛️ Autoridade fiscal
+    participant K as 👨‍🍳 KDS · cozinha
+    participant Y as 🔌 Seu sistema
+
+    CH->>F: pedido (qualquer canal)
+    Note over F: O Fire normaliza e assume o controle do lifecycle
+    F->>Y: order.completed
+    F->>Y: order.cancelled (se cancelado)
+
+    rect rgba(99, 102, 241, 0.14)
+    Note over F,AU: Ciclo fiscal — o provedor resolve e reporta
+    F->>FP: solicita emissão
+    FP->>AU: emite o documento
+    AU-->>FP: autoriza / cancela
+    FP->>F: callback fiscal (referencia um evento do Fire)
+    F-->>FP: 202
+    F->>Y: order.invoiced / order.reversed
+    end
+
+    rect rgba(16, 185, 129, 0.14)
+    Note over F,K: Ciclo de cozinha — o KDS reporta
+    F->>K: despacha o pedido
+    K->>F: reporta avanço (preparing · ready · dispatched)
+    F->>Y: order.status_updated
+    end
+
+    Note over F: fechamento do dia (agendado)
+    F->>Y: store.business_day_closed
+```
+
+### Quem fala com quem
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 120, 'rankSpacing': 190, 'padding': 18, 'useMaxWidth': true}, 'themeVariables': {'fontSize': '15px'}}}%%
 flowchart LR
     CH(["🛒 POS · kiosk · app · agregador"])
     FIRE(("FIRE"))
@@ -31,40 +76,29 @@ flowchart LR
     FIRE -- "⑤ order.invoiced / order.reversed" --> DOWN
     FIRE -- "⑥ pedido para a cozinha" --> KDS
     KDS -- "⑦ reporta avanço<br/>(preparing · ready · dispatched)" --> FIRE
-    FIRE -- "⑧ order.status-updated" --> DOWN
-    FIRE -- "⑨ store.day-closed (fechamento do dia)" --> DOWN
+    FIRE -- "⑧ order.status_updated" --> DOWN
+    FIRE -- "⑨ store.business_day_closed (fechamento do dia)" --> DOWN
 
     style FIRE fill:#1E293B,color:#F8FAFC,stroke:#1E293B
 ```
 
-Repare nos dois **circuitos de ida e volta**: o Fire avisa o faturador (②), o faturador resolve com a autoridade (③) e **responde ao Fire** pelo callback (④) — só então o Fire emite `order.invoiced` / `order.reversed` (⑤). O mesmo com a cozinha: o Fire despacha o pedido ao KDS (⑥), o KDS **reporta o avanço ao Fire** (⑦) e o Fire emite `order.status-updated` (⑧). Nada fica sabendo de nada "por conta própria": tudo passa pelo Fire e sai do Fire.
+Repare nos **dois circuitos de ida e volta**: o Fire avisa o faturador (②), o faturador resolve com a autoridade (③) e **responde ao Fire** pelo callback (④) — só então o Fire emite `order.invoiced` / `order.reversed` (⑤). O mesmo com a cozinha: o Fire despacha o pedido ao KDS (⑥), o KDS **reporta o avanço ao Fire** (⑦) e o Fire emite `order.status_updated` (⑧). Nada fica sabendo "por conta própria": tudo passa pelo Fire e sai do Fire — incluindo o `store.business_day_closed` (⑨) no fechamento do dia.
 
-<Steps>
-  <Step title="pedido — entra por qualquer canal">
-    Um pedido é recebido de POS, kiosk, app ou agregador. O Fire o normaliza e **assume o controle de todo o ciclo de vida** — daqui em diante, todos os marcos saem do Fire.
-  </Step>
-  <Step title="order.completed — outbound">
-    O pedido está pago e completado. É o sinal para o sistema de faturamento iniciar a emissão do documento eletrônico. [Referência →](/pt/events/order-completed)
-  </Step>
-  <Step title="order.cancelled — outbound">
-    O pedido foi cancelado. Os sistemas downstream anulam qualquer processo pendente. [Referência →](/pt/events/order-cancelled)
-  </Step>
-  <Step title="POST /webhooks/fiscal/callback — inbound">
-    O provedor fiscal devolve o resultado da autoridade (NFC-e, SRI, DIAN…). O Fire **valida que o callback referencia um evento que o Fire emitiu para esse pedido**, responde `202` e anexa o documento ao pedido. [Referência →](/pt/api-reference/fiscal-callback)
-  </Step>
-  <Step title="order.invoiced — outbound">
-    O Fire confirma que o pedido tem a nota autorizada anexada. Downstream pode exibir ou arquivar o comprovante. [Referência →](/pt/events/order-invoiced)
-  </Step>
-  <Step title="order.reversed — outbound">
-    O Fire confirma o comprovante de cancelamento autorizado. O estorno fiscal está completo. [Referência →](/pt/events/order-reversed)
-  </Step>
-  <Step title="order.status-updated — outbound (em paralelo)">
-    A cozinha avança o pedido (`preparing` → `ready` → `dispatched`). O KDS reporta ao Fire por webhook de entrada e o Fire emite o avanço validado. [Referência →](/pt/events/order-status-updated)
-  </Step>
-  <Step title="store.day-closed — agendado">
-    Emitido no fechamento do dia de negócio. Alimenta integrações com ERP e Back of House — estoque, custo de vendas, contabilidade e conciliação de caixa. [Referência →](/pt/events/store-day-closed)
-  </Step>
-</Steps>
+### Uma ação, um evento
+
+Cada ação de negócio é seu **próprio** evento com seu **próprio** `event.id` — `order.invoiced` para uma autorização fiscal, `order.reversed` para um cancelamento, cada `order.status_updated` para uma transição de cozinha. Eles nunca são colapsados: autorizar um pedido e depois cancelá-lo são dois eventos distintos com dois ids distintos.
+
+Isso define como o Fire faz o match dos **reportes inbound** que disparam essas ações:
+
+- **Um reporte referencia o evento *daquela* ação.** Ao reportar um cancelamento ao Fire, ecoe o `event.id` do evento de cancelamento — não o da autorização. Cada `(orderId, eventId)` é ingerido exatamente uma vez.
+- **Reenviar o mesmo reporte é seguro.** O mesmo `(orderId, eventId)` com o mesmo tipo é um replay idempotente — o Fire retorna o registro existente e não processa nada duas vezes (`202`, `duplicate: true`). Você pode regenerar seu próprio id de provedor livremente.
+- **Você não pode pendurar uma ação no evento de outra.** Reportar um cancelamento reusando o `eventId` da autorização é rejeitado com **`409`** — aceitá-lo diria que o cancelamento teve sucesso enquanto o Fire nunca cancelou. Cada ação deve referenciar seu próprio evento emitido pelo Fire.
+
+<Note>
+  **Uma exceção — a jornada da cozinha.** O KDS reporta `preparing` → `ready` → `dispatched` contra **um** `eventId` (o do dispatch), distinguidos por `eventType` — então o mesmo `eventId` com um type diferente é um **passo novo**, não um conflito. A regra acima (um `eventId` por ação) vale para o fiscal (uma ação = um evento); a jornada do KDS compartilha um evento de dispatch entre seus passos. Em ambos os casos, um reporte deve referenciar um evento emitido pelo Fire, e a mesma `(orderId, eventId, eventType)` é ingerida uma vez.
+</Note>
+
+Veja o [callback fiscal](/pt/api-reference/fiscal-callback#idempotência-e-cenários) e o [endpoint KDS](/pt/api-reference/kds-order-status#idempotência-e-a-jornada) para as matrizes completas de comportamento inbound.
 
 ## Como funciona
 
@@ -111,7 +145,7 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
       Identificador único desta entrega (o ID de execução do flow). **Use como sua chave de idempotência** — o Fire pode entregar o mesmo evento mais de uma vez em retentativas.
     </ResponseField>
     <ResponseField name="type" type="string">
-      Tipo de evento. Um de: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status-updated`, `store.day-closed`.
+      Tipo de evento. Um de: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
       Timestamp ISO 8601 UTC do momento em que o evento se materializou dentro do Fire (não o momento em que chegou ao seu endpoint).
@@ -131,7 +165,7 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 | [`order.cancelled`](/pt/events/order-cancelled) | Snapshot V4 + bloco `cancellation` de auditoria |
 | [`order.invoiced`](/pt/events/order-invoiced) | Snapshot V4 com `order.fiscal` (chave, protocolo, número…) + `storeFiscalConfig` |
 | [`order.reversed`](/pt/events/order-reversed) | Snapshot V4 + `xmlCancelamento` + `sefazCancellation` |
-| [`order.status-updated`](/pt/events/order-status-updated) | Snapshot V4 + bloco `kitchen` (status, previousStatus, history do percurso) |
+| [`order.status_updated`](/pt/events/order-status-updated) | Snapshot V4 + bloco `kitchen` (status, previousStatus, history do percurso) |
 
 ### `_meta`
 
@@ -205,7 +239,7 @@ app.post("/fire/events", express.json(), async (req, res) => {
     case "order.cancelled":     return onOrderCancelled(data);
     case "order.invoiced":       return onOrderInvoiced(data);
     case "order.reversed":       return onOrderReversed(data);
-    case "order.status-updated": return onKitchenAdvance(data);
+    case "order.status_updated": return onKitchenAdvance(data);
     default: console.warn("Tipo de evento Fire desconhecido", event.type);
   }
 });

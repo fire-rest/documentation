@@ -1,5 +1,5 @@
 ---
-title: "order.status-updated"
+title: "order.status_updated"
 description: "El estado de cocina de una orden avanzó — el KDS reportó preparing, ready o dispatched."
 ---
 
@@ -7,13 +7,13 @@ description: "El estado de cocina de una orden avanzó — el KDS reportó prepa
   Evento nuevo (junio 2026). Nace directamente en **v1** — no existe forma v0.
 </Note>
 
-`order.status-updated` dispara cuando el **KDS** (Kitchen Display System) reporta que una orden avanzó de estado en cocina: empezó a prepararse (`preparing`), está lista (`ready`) o fue despachada (`dispatched`).
+`order.status_updated` dispara cuando el **KDS** (Kitchen Display System) reporta que una orden avanzó de estado en cocina: empezó a prepararse (`preparing`), está lista (`ready`) o fue despachada (`dispatched`).
 
 Fire recibe el reporte del KDS por el [webhook entrante de estados](/es/api-reference/kds-order-status), valida que referencie un evento emitido por Fire para esa orden, aplica un **gate anti-regresión** (un estado nunca retrocede: `dispatched` no vuelve a `ready`) y solo entonces emite este evento. Por eso recibes **un evento por avance real**, sin duplicados ni retrocesos.
 
 ## Condición de disparo
 
-Fire emite `order.status-updated` cuando **todo** lo siguiente es verdadero:
+Fire emite `order.status_updated` cuando **todo** lo siguiente es verdadero:
 
 - El KDS reportó un estado de cocina para una orden existente
 - El estado **avanza** el recorrido (gate anti-regresión: `preparing` → `ready` → `dispatched`)
@@ -29,41 +29,67 @@ Fire emite `order.status-updated` cuando **todo** lo siguiente es verdadero:
 
 ## Qué hay en `data`
 
-El mismo snapshot V4 de [`order.completed`](/es/events/order-completed) más un bloque top-level **`kitchen`** con el avance que disparó el evento y el recorrido completo hasta ahora:
+Es un **payload liviano (thin)** — a diferencia de `order.completed`, **no** arrastra la orden completa. Lleva lo necesario para actuar sobre un cambio de estado: la **identidad** de la orden, refs mínimas de **canal / tienda**, el **tipo de fulfillment**, y el bloque **`kitchen`** (el avance + el recorrido). A propósito omite `orderLines`, `payments`, `taxes`, `client`, `device` y la dirección de delivery — eso ya lo recibiste en [`order.completed`](/es/events/order-completed); matcheá por `orderId` / `externalOrderId` y aplicá el cambio.
 
 ```json
 {
   "event": {
     "id": "7f3c2a1b-9d4e-4f6a-8b2c-1e5d3a7f9c0b",
-    "type": "order.status-updated",
+    "type": "order.status_updated",
     "createdAt": "2026-06-10T18:24:31.000Z"
   },
   "data": {
     "orderId": "443bb714-fb69-4538-9ecb-de0acad7b88f",
     "orderCode": "OC-br-001",
+    "externalOrderId": "f3bf9fa1-baa8-4050-9e37-4e6d905ee308",
+    "businessDayDate": "2026-05-25",
     "status": "COMPLETED",
-    "store": { /* igual que order.completed */ },
+    "channel": { "code": "99", "uid": "6bac8d41-..." },
+    "store": {
+      "code": "BR-SP-001",
+      "name": "Lab Store BR",
+      "account": { "uid": "100", "name": "Sandbox" },
+      "vendor":  { "uid": "100.2.1", "name": "Deli Burger BR" }
+    },
+    "fulfillment": { "service": { "code": "DELIVERY" } },
     "kitchen": {
       "status": "ready",
       "previousStatus": "preparing",
+      "rank": 2,
       "occurredAt": "2026-06-10T18:24:29.000Z",
       "stationName": "Cocina caliente",
       "providerEventId": "kds-evt-8842",
       "kdsEventLogId": "1a2b3c4d-...",
       "source": "kds",
       "history": [
-        { "status": "preparing", "occurredAt": "2026-06-10T18:12:02.000Z", "stationName": "Cocina caliente" },
-        { "status": "ready",     "occurredAt": "2026-06-10T18:24:29.000Z", "stationName": "Cocina caliente" }
+        { "status": "preparing", "rank": 1, "occurredAt": "2026-06-10T18:12:02.000Z", "stationName": "Cocina caliente" },
+        { "status": "ready",     "rank": 2, "occurredAt": "2026-06-10T18:24:29.000Z", "stationName": "Cocina caliente" }
       ]
     }
   }
 }
 ```
 
+### Identidad y contexto
+
+<ResponseField name="orderId" type="string">UUID de la orden en Fire — matcheá contra el `order.completed` que recibiste.</ResponseField>
+<ResponseField name="orderCode" type="string">Código legible de la orden.</ResponseField>
+<ResponseField name="externalOrderId" type="string">El id de la orden **en el canal/agregador** — usalo para matchear de su lado.</ResponseField>
+<ResponseField name="status" type="string">Estado de negocio de la orden (`COMPLETED` / `CANCELLED`). Contexto — el recorrido de cocina es paralelo.</ResponseField>
+<ResponseField name="channel" type="object">
+  `code` (canónico, siempre presente — ej. `99`) y `uid`. El nombre legible del canal sale de tu catálogo de channels, no de este evento.
+</ResponseField>
+<ResponseField name="store" type="object">
+  Ref mínima de tienda: `code`, `name`, más `account { uid, name }` y `vendor { uid, name }`.
+</ResponseField>
+<ResponseField name="fulfillment" type="object">
+  `service.code` — `DELIVERY` o `PICKUP`. Le da sentido al status (un `ready` para delivery vs pickup).
+</ResponseField>
+
 ### El bloque `kitchen`
 
 <ResponseField name="kitchen" type="object">
-  Presente **solo** en `order.status-updated`. Distinto del bloque `kds` (datos estáticos de la orden capturados al inyectarse: buzzer, preferencias de factura).
+  El avance que disparó el evento + el recorrido completo. Distinto del bloque `kds` (datos estáticos de la orden capturados al inyectarse).
 
   <Expandable title="kitchen">
     <ResponseField name="status" type="string">
@@ -71,6 +97,9 @@ El mismo snapshot V4 de [`order.completed`](/es/events/order-completed) más un 
     </ResponseField>
     <ResponseField name="previousStatus" type="string | null">
       Estado anterior. `null` en el primer avance.
+    </ResponseField>
+    <ResponseField name="rank" type="number">
+      Secuencia del recorrido: `preparing`=1 < `ready`=2 < `dispatched`=3. **Los webhooks no llegan ordenados** — usá esto para detectar eventos viejos/desordenados (ignorá un `rank` menor al último que aplicaste).
     </ResponseField>
     <ResponseField name="occurredAt" type="string">
       ISO 8601 — cuándo ocurrió en el KDS (reloj del cliente).
@@ -81,11 +110,14 @@ El mismo snapshot V4 de [`order.completed`](/es/events/order-completed) más un 
     <ResponseField name="providerEventId" type="string">
       Llave de dedup del reporte entrante del KDS.
     </ResponseField>
+    <ResponseField name="kdsEventLogId" type="string">
+      El id del recibo de Fire para el evento KDS entrante (cross-audit).
+    </ResponseField>
     <ResponseField name="source" type="string">
       Quién reportó. Solo `kds` hoy.
     </ResponseField>
     <ResponseField name="history" type="array">
-      Recorrido completo hasta ahora — una entrada por hito, monotónico. Te permite ver todo el camino en un solo evento sin reconstruirlo de entregas anteriores.
+      Recorrido completo hasta ahora — una entrada por hito (`status`, `rank`, `occurredAt`, `stationName`), ordenado por rank. Te permite reconstruir todo el camino desde un solo evento y reconciliar si llegan desordenados.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -100,4 +132,4 @@ El mismo snapshot V4 de [`order.completed`](/es/events/order-completed) más un 
 
 - **No cambia el estado de la orden.** `data.status` sigue siendo `"COMPLETED"` — el recorrido de cocina es paralelo al ciclo de pago/facturación.
 - **No retrocede.** Si el KDS reporta `ready` después de `dispatched`, Fire lo descarta (gate anti-regresión) y no emite nada.
-- **No reemplaza a `order.completed`.** Suscríbete a ambos: `order.completed` para el hecho de negocio, `order.status-updated` para el progreso físico.
+- **No reemplaza a `order.completed`.** Suscríbete a ambos: `order.completed` para el hecho de negocio, `order.status_updated` para el progreso físico.
