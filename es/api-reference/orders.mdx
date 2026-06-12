@@ -326,9 +326,8 @@ authMethod: "bearer"
       </Expandable>
     </ParamField>
     <ParamField body="discounts" type="object[]">
-      Filas de descuento a nivel de orden—una entrada por promo o cupón, con los **mismos campos de tramo** que `totals[]` y `shippingCost[]`. `discountsValue` es el importe descontado. Consulta [Envío y descuentos](#envío-y-descuentos).
+      Filas de descuento a nivel de orden para promos o cupones que **absorbe el local** (el costo corre por cuenta del restaurante). Cada entrada usa los **mismos campos de tramo** que `totals[]` y `shippingCost[]`. `discountsValue` es el importe descontado. **Deja este array vacío para descuentos del agregador** — esos se modelan como una entrada en `paymentMethods[]`. Consulta [Descuentos del agregador](#descuentos-del-agregador).
       <Expandable title="discounts[n]">
-        <ParamField body="code" type="string">Identificador del tipo de descuento. Ejemplos: `FIXED` (importe fijo), `PERCENTAGE` (porcentaje), `KEETA_DISCOUNT` (promoción específica de plataforma). Se acepta cualquier string.</ParamField>
         <ParamField body="currencyCode" type="string">Código de moneda ISO 4217.</ParamField>
         <ParamField body="subtotalWithoutTaxes" type="string">Base imponible antes del descuento.</ParamField>
         <ParamField body="discountPercentage" type="string">Porcentaje de descuento en esta línea.</ParamField>
@@ -354,8 +353,8 @@ authMethod: "bearer"
       <Expandable title="paymentMethods[n]">
         <ParamField body="processor" type="string">Nombre del procesador de pagos (p. ej. `Kushki`, `Efectivo`).</ParamField>
         <ParamField body="currencyCode" type="string">Código de moneda.</ParamField>
-        <ParamField body="paymentMethodCode" type="string">Código del método de pago.</ParamField>
-        <ParamField body="transactionType" type="string">Tipo de transacción (p. ej. `credit`).</ParamField>
+        <ParamField body="paymentMethodCode" type="string">Código del método de pago. Usa `AGGREGATOR_DISCOUNT` cuando el agregador cubre un descuento promocional y reembolsa al local — siempre va acompañado de `transactionType: "BENEFIT"`. Consulta [Descuentos del agregador](#descuentos-del-agregador).</ParamField>
+        <ParamField body="transactionType" type="string">Tipo de transacción. Valores habituales: `ONLINE`, `CREDIT`, `CASH`. Usa `BENEFIT` cuando `paymentMethodCode` es `AGGREGATOR_DISCOUNT`.</ParamField>
         <ParamField body="transactionId" type="string">Identificador de la transacción.</ParamField>
         <ParamField body="transactionStatus" type="string">Estado de la transacción (p. ej. `APPROVED`).</ParamField>
         <ParamField body="exactPayment" type="boolean">Indica si se entregó el monto exacto.</ParamField>
@@ -423,7 +422,7 @@ Costos de envío como una o más filas con tramo de precio. En los ejemplos, el 
 
 ### `payments.discounts[]`
 
-Descuentos a nivel de orden (promos, cupones) como filas de tramo de precio. Úsalo cuando el descuento **no** esté ya reflejado en el `discountsValue` de cada producto. Puedes combinar descuentos de producto y `payments.discounts[]`; concilia con `paymentMethods[].totalBill`.
+Descuentos a nivel de orden (promos, cupones) como filas de tramo de precio. Úsalo cuando el descuento **no** esté ya reflejado en el `discountsValue` de cada producto y el costo lo **asume el local**. Puedes combinar descuentos de producto y `payments.discounts[]`; concilia con `paymentMethods[].totalBill`.
 
 ### `payments.totals[]`
 
@@ -432,6 +431,42 @@ Resumen de la parte de **productos** de la orden. Al conciliar: **productos (tot
 <Note>
   Fire no rechaza la petición si `paymentMethods[].totalBill` difiere levemente de la suma de tramos; aun así envía valores coherentes desde tu sistema origen.
 </Note>
+
+## Descuentos del agregador
+
+Cuando la plataforma del agregador (iFood, Rappi, UberEats, etc.) aplica un descuento promocional al cliente, el **agregador reembolsa al local** ese monto — el local siempre recibe el precio completo. Por eso el descuento no resta de los ingresos del local y **no debe aparecer en `payments.discounts[]`**.
+
+Modélalo como una entrada adicional en `payments.paymentMethods[]`:
+
+| Quién paga | Qué | Cómo modelarlo |
+|---|---|---|
+| Cliente | Productos + envío + cargos extra − descuento del agregador | `paymentMethods[n]` con el código de pago real (`CREDIT`, `CASH`, etc.) |
+| Agregador | Monto del descuento (reembolso al local) | `paymentMethods[n]` con `paymentMethodCode: "AGGREGATOR_DISCOUNT"` |
+| **Local recibe** | **Productos + envío + cargos extra completos** | — |
+
+### Campos requeridos en la entrada `AGGREGATOR_DISCOUNT`
+
+| Campo | Valor |
+|---|---|
+| `paymentMethodCode` | `"AGGREGATOR_DISCOUNT"` — el mismo código para todos los agregadores |
+| `processor` | Nombre del agregador: `"IFOOD"`, `"RAPPI"`, `"UBEREATS"`, … |
+| `transactionType` | `"BENEFIT"` |
+| `transactionStatus` | `"APPROVED"` |
+| `card` | `null` |
+| `totalBill` | Monto del descuento |
+
+### Regla de balance
+
+La suma de **todos** los `paymentMethods[].totalBill` — incluida la entrada `AGGREGATOR_DISCOUNT` — debe ser igual al total bruto de la orden:
+
+```
+SUM(paymentMethods[].totalBill)
+  = SUM(order.products[].price.totalPrice.total)
+  + SUM(payments.extraCharges[].total)
+  + SUM(payments.shippingCost[].total)
+```
+
+`payments.discounts[]` queda **vacío**.
 
 <RequestExample>
 ```json Entrega simple (sin descuentos)
@@ -711,7 +746,6 @@ Resumen de la parte de **productos** de la orden. Al conciliar: **productos (tot
     ],
     "discounts": [
       {
-        "code": "KEETA_DISCOUNT",
         "currencyCode": "BRL",
         "subtotalWithoutTaxes": "34.30",
         "discountPercentage": "0.0000",
@@ -733,6 +767,122 @@ Resumen de la parte de **productos** de la orden. Al conciliar: **productos (tot
   }
 }
 ```
+
+```json Descuento del agregador (iFood reembolsa BRL 1.00)
+{
+  "orderId": "AGG-DISC-IFOOD-001",
+  "source": "Aggregator",
+  "channel": { "uid": "CH-IFOOD-001", "code": "Aggregator", "metadata": {} },
+  "service": { "uid": "3", "code": "DELIVERY", "metadata": {} },
+  "selectedShippingMethod": "delivery",
+  "client": { "name": "João", "lastName": "Silva", "phone": "+5511987654321" },
+  "store": { "id": 30, "name": "Lab Brasil", "code": "K000", "vendorId": 8 },
+  "order": {
+    "products": [
+      {
+        "productId": "PROD-TESTE-001",
+        "product": "PEDIDO DE TESTE Suc",
+        "type": "PRODUCT",
+        "quantity": 2,
+        "price": {
+          "unitPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "14.90",
+            "discountPercentage": "0.0000",
+            "discountsValue": "0.0000",
+            "subtotalIncludeDiscounts": "14.90",
+            "taxesPercentage": "0.0000",
+            "taxValue": "0.0000",
+            "total": "14.90"
+          },
+          "totalPrice": {
+            "currencyCode": "BRL",
+            "subtotalWithoutTaxes": "29.80",
+            "discountPercentage": "0.0000",
+            "discountsValue": "0.0000",
+            "subtotalIncludeDiscounts": "29.80",
+            "taxesPercentage": "0.0000",
+            "taxValue": "0.0000",
+            "total": "29.80"
+          }
+        }
+      }
+    ]
+  },
+  "shippingMethod": {
+    "delivery": { "city": "São Paulo", "mainStreet": "Av. Paulista 1000", "zipCode": "01310-100" }
+  },
+  "payments": {
+    "totals": [
+      {
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "29.80",
+        "discountPercentage": "0.0000",
+        "discountsValue": "0.0000",
+        "subtotalIncludeDiscounts": "29.80",
+        "taxesPercentage": "0.0000",
+        "taxValue": "0.0000",
+        "total": "29.80"
+      }
+    ],
+    "shippingCost": [
+      {
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "8.90",
+        "discountPercentage": "0.0000",
+        "discountsValue": "0.0000",
+        "subtotalIncludeDiscounts": "8.90",
+        "taxesPercentage": "0.0000",
+        "taxValue": "0.0000",
+        "total": "8.90"
+      }
+    ],
+    "extraCharges": [
+      {
+        "type": "PACKAGING",
+        "quantity": 1,
+        "description": "Taxa de serviço",
+        "currencyCode": "BRL",
+        "subtotalWithoutTaxes": "0.99",
+        "taxValue": "0.0000",
+        "total": "0.99"
+      }
+    ],
+    "discounts": [],
+    "paymentMethods": [
+      {
+        "processor": "IFOOD",
+        "currencyCode": "BRL",
+        "paymentMethodCode": "CREDIT",
+        "transactionType": "ONLINE",
+        "transactionStatus": "APPROVED",
+        "exactPayment": true,
+        "totalBill": "38.69",
+        "card": {
+          "brand": "AMEX",
+          "bin": "",
+          "mask": "",
+          "lastFourDigits": "",
+          "holder": ""
+        },
+        "acquirer": { "code": "", "name": "" }
+      },
+      {
+        "processor": "IFOOD",
+        "currencyCode": "BRL",
+        "paymentMethodCode": "AGGREGATOR_DISCOUNT",
+        "transactionType": "BENEFIT",
+        "transactionId": "0ec06303-28f8-4d1f-aa3d-8b88aadb9814",
+        "transactionStatus": "APPROVED",
+        "exactPayment": true,
+        "totalBill": "1.00",
+        "card": null,
+        "acquirer": { "code": "", "name": "" }
+      }
+    ]
+  }
+}
+```
 </RequestExample>
 
 ## Conciliación de los ejemplos
@@ -742,12 +892,14 @@ Resumen de la parte de **productos** de la orden. Al conciliar: **productos (tot
 | Entrega simple | 8.99 | 1.73 | — | **10.72** |
 | Descuento en línea + envío | 15.12 | 3.92 | — | **19.04** |
 | Varios productos + promo | 30.80 | 3.50 | 2.00 | **32.30** |
+| Descuento del agregador | 29.80 | 8.90 | — | **39.69** (CREDIT 38.69 + AGGREGATOR_DISCOUNT 1.00) |
 
 Notas de cálculo:
 
 - **Entrega simple:** 8.99 + 1.73 = **10.72**.
 - **Descuento en línea:** 10% sobre 15.00 → IVA sobre 13.50 → producto **15.12**; envío 3.50 + IVA 12% = **3.92**; **15.12 + 3.92 = 19.04**.
 - **Varios productos + promo:** hamburguesas **25.80** + bebida **5.00** = **30.80**; + envío **3.50** = 34.30; − promo **2.00** = **32.30** pagado.
+- **Descuento del agregador:** productos **29.80** + embalaje **0.99** + envío **8.90** = **39.69** bruto; el cliente paga **38.69** (CREDIT) + el agregador reembolsa **1.00** (AGGREGATOR_DISCOUNT) = **39.69** ✓. `payments.discounts` queda vacío.
 
 <ResponseExample>
 ```json 200
