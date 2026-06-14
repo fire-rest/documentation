@@ -1,0 +1,293 @@
+---
+title: "Aggregator order status"
+api: "POST https://app.fire.rest/api/v1/webhooks/aggregators/order-status"
+description: "Inbound endpoint your delivery aggregator (Rappi / Uber / Didi / iFood …) POSTs to as it moves an order through its delivery lifecycle. Fire mirrors the status onto the order and logs the event. Status is passthrough — the aggregator's own labels, stored verbatim."
+authMethod: "bearer"
+---
+
+This endpoint is **inbound** — your delivery aggregator (Rappi, Uber, Didi, iFood, PedidosYa, Glovo…) POSTs to it whenever it advances the order on its side: a courier was assigned, the order was picked up, it is on route, it was delivered, and so on. Fire authenticates the request, resolves the order, mirrors the latest status onto `orders.aggregator`, and records the event in its aggregator event log for observability.
+
+<Note>
+  **This endpoint is asynchronous.** Fire authenticates, resolves the order (tenant + channel guards), deduplicates, and **enqueues** the event — then returns **`202 Accepted`** with a `webhookEventId` (typically under 100&nbsp;ms). The order mirror is updated a moment later by a background worker (usually within ~2&nbsp;seconds). To check the outcome, poll [`GET /v1/webhooks/events/{webhookEventId}`](#checking-the-outcome). Client-fixable problems (bad payload, order not found, wrong tenant or channel, conflicting ids) are rejected **synchronously** with `4xx` **before** the `202`.
+</Note>
+
+<Note>
+  **Status is passthrough.** Aggregators don't share a status vocabulary, so Fire does **not** impose an enum: `status` is stored **verbatim** as the event type (`courier_assigned`, `on_route`, `entregue`, whatever your channel uses). The order's **current** status is the one with the **latest `occurredAt`** — not a fixed lifecycle order. There is **no anti-regression gate**: a later timestamp wins, period. Friendly, translated labels are a display concern resolved from the channel catalog, never enforced here.
+</Note>
+
+<Note>
+  **No Fire-emitted `eventId` to echo.** Unlike the [fiscal callback](/en/api-reference/fiscal-callback) and [KDS statuses](/en/api-reference/kds-order-status) — which echo an `event.id` Fire emitted — an aggregator status is a **spontaneous external event**. Fire is **not** the source of truth here, so there is no source-of-truth check on an `eventId`. Instead you tell Fire **which order** the status belongs to, via [order resolution](#order-resolution) below. Idempotency is keyed on your `providerEventId` (see [Idempotency](#idempotency--the-journey)).
+</Note>
+
+## Order resolution
+
+You must tell Fire which order this status belongs to. There are **two paths**, and you may send **either or both** — at least one is required:
+
+| Field | Resolves by | When to use |
+|---|---|---|
+| `orderId` | Our `orders.id` (UUID) | You stored Fire's order id (e.g. echoed from an outbound event or the injection response) |
+| `externalOrderId` | The external (XMART/aggregator) order id, matched against the order's `metadata.order_id` | You only know your own order reference |
+
+Both are **vendor-scoped**: the resolved order must belong to the account + vendor bound to your API key, and its channel must match `channelCode`.
+
+<Warning>
+  **If you send both ids, they must point to the same order.** Fire resolves each independently; if `orderId` and `externalOrderId` resolve to **different** orders, the request is rejected with **`409 Conflict`** — Fire will not guess which one you meant. Send one, or send both pointing at the same order.
+</Warning>
+
+## Authentication
+
+This endpoint requires a **vendor-scoped API key with the `webhooks:aggregator` scope** (account + vendor binding). Fire enforces that the resolved order belongs to that vendor. Keys without the scope, or without a vendor binding, are rejected with `403 Forbidden`.
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire vendor-scoped API key with scope `webhooks:aggregator`. Generate one from **Developers → API Management** for the account/vendor whose orders this key may report on.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  Optional `Bearer <token>` — accepted as a legacy alternative to `x-api-key`. Send one or the other.
+</ParamField>
+
+## Request body
+
+<ParamField body="channelCode" type="string" required>
+  The aggregator/channel code — it **must equal the order's `metadata.channel.code`** (`channels.code`, e.g. `RAPPI`, `UBER`, or the numeric channel id like `99`). If it doesn't match the resolved order's channel, Fire responds `403`.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  The raw delivery status, **passthrough** — stored verbatim as the event type. Any non-empty string is accepted (`accepted`, `courier_assigned`, `picked_up`, `on_route`, `delivered`, `cancelled`, or your channel's own labels). No enum is enforced.
+</ParamField>
+
+<ParamField body="providerEventId" type="string" required>
+  Your aggregator's own id for this delivery — the **idempotency key** (together with `channelCode`). Fire maps `(channelCode, providerEventId)` to a stable internal event id, so resending the same pair with the same `status` is a safe replay. Use your native event id if available; otherwise a UUID.
+</ParamField>
+
+<ParamField body="occurredAt" type="string" required>
+  ISO 8601 UTC timestamp of when the status changed on the aggregator side — not when it was sent. **This is what orders the journey**: the status with the latest `occurredAt` is the order's current status.
+</ParamField>
+
+<ParamField body="orderId" type="string">
+  UUID of the order in Fire. **Required if `externalOrderId` is absent.** See [Order resolution](#order-resolution).
+</ParamField>
+
+<ParamField body="externalOrderId" type="string">
+  The external (XMART/aggregator) order id, matched against the order's `metadata.order_id`. **Required if `orderId` is absent.** See [Order resolution](#order-resolution).
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Optional free-form bag of extra fields (courier name, tracking url, etc.). Stored as-is, not validated.
+</ParamField>
+
+### Examples
+
+The reports of the same delivery share a `channelCode` and resolve to the same order; each carries its own `status`, `providerEventId`, and `occurredAt`:
+
+```json courier_assigned (by Fire orderId)
+{
+  "channelCode": "RAPPI",
+  "status": "courier_assigned",
+  "providerEventId": "evt-7af3-0001",
+  "occurredAt": "2026-06-14T18:46:00.000Z",
+  "orderId": "7a3a7d6b-1234-4abc-9def-0123456789ab"
+}
+```
+
+```json on_route (by external order id)
+{
+  "channelCode": "RAPPI",
+  "status": "on_route",
+  "providerEventId": "evt-7af3-0002",
+  "occurredAt": "2026-06-14T18:52:00.000Z",
+  "externalOrderId": "RP-2026-558831"
+}
+```
+
+```json delivered (both ids — must point to the same order)
+{
+  "channelCode": "RAPPI",
+  "status": "delivered",
+  "providerEventId": "evt-7af3-0003",
+  "occurredAt": "2026-06-14T19:07:00.000Z",
+  "orderId": "7a3a7d6b-1234-4abc-9def-0123456789ab",
+  "externalOrderId": "RP-2026-558831",
+  "metadata": { "courier": "Ana P.", "trackingUrl": "https://rappi.example/t/abc" }
+}
+```
+
+## Response
+
+On success the endpoint returns **`202 Accepted`** — the event was authenticated, resolved, deduplicated, and **enqueued**. A `202` does **not** mean the order mirror was updated yet; that happens asynchronously. Use the [status endpoint](#checking-the-outcome) to confirm.
+
+The body carries **two distinct ids**: `eventId` is Fire's stable internal id for this `(channelCode, providerEventId)` pair, `webhookEventId` is Fire's id for the queued record. Same shape as the [fiscal callback](/en/api-reference/fiscal-callback#response).
+
+<ResponseField name="received" type="boolean">
+  Always `true` when the request was accepted and enqueued.
+</ResponseField>
+
+<ResponseField name="duplicate" type="boolean">
+  `true` when this exact status report was already ingested (same order, same `(channelCode, providerEventId)`, same `status`) — the existing record is returned and nothing is re-enqueued. `false` for a fresh report (including a different `status` of the same delivery — that's a new step, not a duplicate).
+</ResponseField>
+
+<ResponseField name="eventId" type="string">
+  Fire's stable internal id derived from `(channelCode, providerEventId)`.
+</ResponseField>
+
+<ResponseField name="webhookEventId" type="string">
+  Fire's id for the queued record. Pass it to `GET /v1/webhooks/events/{webhookEventId}` to poll the outcome. On a duplicate it is the **same** id returned the first time.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Current queue status — `queued` → `processing` → `processed` (and `retry` / `failed` / `dead` / `ignored`).
+</ResponseField>
+
+<ResponseField name="firstReceivedAt" type="string">
+  ISO 8601 UTC timestamp of when Fire **first** received this report. Stable across retries.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable summary.
+</ResponseField>
+
+<ResponseExample>
+```json 202 — accepted (new step, queued)
+{
+  "received": true,
+  "duplicate": false,
+  "eventId": "b1f2c3d4-5e6f-5a7b-8c9d-0e1f2a3b4c5d",
+  "webhookEventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "firstReceivedAt": "2026-06-14T18:46:00.512Z",
+  "message": "Event accepted and queued for processing."
+}
+```
+
+```json 202 — duplicate (same order + channelCode + providerEventId + status)
+{
+  "received": true,
+  "duplicate": true,
+  "eventId": "b1f2c3d4-5e6f-5a7b-8c9d-0e1f2a3b4c5d",
+  "webhookEventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "processed",
+  "firstReceivedAt": "2026-06-14T18:46:00.512Z",
+  "message": "Event already received; no action needed."
+}
+```
+
+```json 400 — validation error (e.g. neither orderId nor externalOrderId)
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "At least one of orderId or externalOrderId is required"
+}
+```
+
+```json 401 — missing or invalid API key
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
+}
+```
+
+```json 403 — missing scope, wrong tenant, or channel mismatch
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "channelCode RAPPI does not match the order's channel"
+}
+```
+
+```json 404 — order not found
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "No order matched the provided orderId / externalOrderId for this vendor."
+}
+```
+
+```json 409 — orderId and externalOrderId resolve to different orders
+{
+  "success": false,
+  "error": "CONFLICT",
+  "message": "orderId and externalOrderId resolve to different orders. Send one, or send both pointing at the same order."
+}
+```
+
+```json 503 — auth store temporarily unreachable (retry)
+{
+  "success": false,
+  "error": "SERVICE_UNAVAILABLE",
+  "message": "API key verification is temporarily unavailable (auth store unreachable). Retry the request."
+}
+```
+</ResponseExample>
+
+## Checking the outcome
+
+Because processing is asynchronous, the `202` only confirms the event was **queued**. To see whether the order mirror was updated, poll the companion status endpoint with the `webhookEventId` returned by the `202`:
+
+```
+GET https://app.fire.rest/api/v1/webhooks/events/{webhookEventId}
+x-api-key: <your webhooks:aggregator key>
+```
+
+<ResponseField name="status" type="string">
+  Queue lifecycle: `queued` → `processing` → `processed` (done) · `failed` / `dead` (gave up after retries) · `retry` (waiting for the next attempt) · `ignored` (handled, no action needed — e.g. a duplicate).
+</ResponseField>
+<ResponseField name="attempts" type="number">Processing attempts so far.</ResponseField>
+<ResponseField name="result" type="object | null">On success, the worker outcome — e.g. `{ "kind": "merged", "current": "delivered" }`.</ResponseField>
+<ResponseField name="error" type="object | null">`{ "message": "…" }` when the last attempt failed; `null` otherwise.</ResponseField>
+
+A `404` is returned for unknown ids — or ids that belong to another tenant — with no existence leak. Authenticate with the same `webhooks:aggregator` key you used for the event.
+
+## Idempotency & the journey
+
+Fire deduplicates on the order plus **`(channelCode, providerEventId)` and the `status`** — *not* on a Fire-emitted `eventId`. This is what makes the journey work while keeping retries clean:
+
+| Scenario | Result |
+|---|---|
+| `courier_assigned`, then `on_route`, then `delivered` — different `status` (and `providerEventId`), same order | each is a **new step** → `202` `duplicate:false` |
+| The **same** report resent — same order, same `(channelCode, providerEventId)`, same `status` | `202` `duplicate:true` — existing record returned, not re-processed |
+| Neither `orderId` nor `externalOrderId` sent | `400` |
+| Order not found for this vendor | `404` |
+| `orderId` and `externalOrderId` resolve to different orders | `409` |
+| `channelCode` ≠ the order's channel, or key not for this vendor | `403` |
+| Auth store momentarily unreachable | `503` — transient, **retry** |
+
+<Note>
+  **A different `status` is never a duplicate.** Because aggregators legitimately report many statuses for one delivery, two reports with the same `(channelCode, providerEventId)` but a **different `status`** are two distinct steps — Fire stores both. Keep `providerEventId` unique per status report to avoid accidentally replaying a step.
+</Note>
+
+## The order mirror
+
+Once processed, the latest status is mirrored onto the order's `aggregator` block, with the full journey kept in `history` (ordered by `occurredAt`). The **current** `status` is the entry with the latest `occurredAt`:
+
+```json orders.aggregator
+{
+  "channelCode": "RAPPI",
+  "status": "delivered",
+  "occurredAt": "2026-06-14T19:07:00.000Z",
+  "history": [
+    { "status": "courier_assigned", "occurredAt": "2026-06-14T18:46:00.000Z" },
+    { "status": "on_route",         "occurredAt": "2026-06-14T18:52:00.000Z" },
+    { "status": "delivered",        "occurredAt": "2026-06-14T19:07:00.000Z" }
+  ]
+}
+```
+
+The raw status is stored as-is; any friendly, translated label is resolved at display time from the channel's status catalog — the stored value never changes.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Inject order" icon="paper-plane" href="/en/api-reference/orders">
+    The order injection endpoint that creates the order this status references.
+  </Card>
+  <Card title="KDS order status" icon="kitchen-set" href="/en/api-reference/kds-order-status">
+    The sibling inbound webhook for kitchen state — same async + queue model, but Fire-emitted `eventId` and anti-regression.
+  </Card>
+  <Card title="Fiscal callback" icon="receipt" href="/en/api-reference/fiscal-callback">
+    The fiscal inbound webhook — same async + idempotency envelope.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/en/authentication">
+    How API keys, scopes, and vendor binding work.
+  </Card>
+</CardGroup>
