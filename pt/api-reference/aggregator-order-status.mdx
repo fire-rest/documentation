@@ -1,0 +1,293 @@
+---
+title: "Status do pedido do agregador"
+api: "POST https://app.fire.rest/api/v1/webhooks/aggregators/order-status"
+description: "Endpoint de entrada para o qual seu agregador de delivery (Rappi / Uber / Didi / iFood …) faz POST conforme move um pedido pelo seu ciclo de vida de entrega. O Fire espelha o status no pedido e registra o evento. O status é passthrough — os rótulos do próprio agregador, armazenados literalmente."
+authMethod: "bearer"
+---
+
+Este endpoint é **de entrada** — seu agregador de delivery (Rappi, Uber, Didi, iFood, PedidosYa, Glovo…) faz POST nele sempre que avança o pedido do seu lado: um entregador foi designado, o pedido foi retirado, está a caminho, foi entregue, e assim por diante. O Fire autentica a requisição, correlaciona o pedido, espelha o status mais recente em `orders.aggregator` e registra o evento no seu log de eventos de agregador para observabilidade.
+
+<Note>
+  **Este endpoint é assíncrono.** O Fire autentica, correlaciona o pedido (guards de tenant + canal), deduplica e **enfileira** o evento — então responde **`202 Accepted`** com um `webhookEventId` (tipicamente em menos de 100&nbsp;ms). O espelho do pedido é atualizado um instante depois por um worker em segundo plano (normalmente em ~2&nbsp;segundos). Para verificar o resultado, consulte [`GET /v1/webhooks/events/{webhookEventId}`](#verificar-o-resultado). Problemas corrigíveis pelo cliente (payload inválido, pedido não encontrado, tenant ou canal errado, ids conflitantes) são rejeitados **sincronamente** com `4xx` **antes** do `202`.
+</Note>
+
+<Note>
+  **O status é passthrough.** Os agregadores não compartilham um vocabulário de status, então o Fire **não** impõe um enum: `status` é armazenado **literalmente** como o tipo de evento (`courier_assigned`, `on_route`, `entregue`, o que quer que seu canal use). O status **atual** do pedido é o que tem o **`occurredAt` mais recente** — não uma ordem fixa de ciclo de vida. **Não há guard anti-regressão**: um timestamp mais recente vence, ponto. Rótulos amigáveis e traduzidos são uma questão de exibição resolvida a partir do catálogo do canal, nunca imposta aqui.
+</Note>
+
+<Note>
+  **Não há `eventId` emitido pelo Fire para ecoar.** Diferente do [callback fiscal](/pt/api-reference/fiscal-callback) e dos [status KDS](/pt/api-reference/kds-order-status) — que ecoam um `event.id` que o Fire emitiu — um status de agregador é um **evento externo espontâneo**. O Fire **não** é a fonte da verdade aqui, então não há verificação de fonte da verdade sobre um `eventId`. Em vez disso, você diz ao Fire **a qual pedido** o status pertence, via [resolução do pedido](#resolução-do-pedido) abaixo. A idempotência é chaveada no seu `providerEventId` (veja [Idempotência e a jornada](#idempotência-e-a-jornada)).
+</Note>
+
+## Resolução do pedido
+
+Você precisa dizer ao Fire a qual pedido este status pertence. Há **dois caminhos**, e você pode enviar **um ou ambos** — ao menos um é obrigatório:
+
+| Campo | Resolve por | Quando usar |
+|---|---|---|
+| `orderId` | Nosso `orders.id` (UUID) | Você guardou o id do pedido do Fire (ex. ecoado de um evento outbound ou da resposta de injeção) |
+| `externalOrderId` | O id externo (XMART/agregador) do pedido, casado contra o `metadata.order_id` do pedido | Você só conhece a sua própria referência do pedido |
+
+Ambos são **vendor-scoped**: o pedido resolvido deve pertencer à conta + vendor vinculados à sua API key, e seu canal deve coincidir com `channelCode`.
+
+<Warning>
+  **Se você enviar os dois ids, eles devem apontar para o mesmo pedido.** O Fire resolve cada um independentemente; se `orderId` e `externalOrderId` resolverem para pedidos **diferentes**, a requisição é rejeitada com **`409 Conflict`** — o Fire não vai adivinhar qual você quis dizer. Envie um, ou envie ambos apontando para o mesmo pedido.
+</Warning>
+
+## Autenticação
+
+Este endpoint requer uma **API key vendor-scoped com o escopo `webhooks:aggregator`** (binding de conta + vendor). O Fire valida que o pedido resolvido pertença a esse vendor. Keys sem o escopo, ou sem binding de vendor, são rejeitadas com `403 Forbidden`.
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key vendor-scoped do Fire com escopo `webhooks:aggregator`. Gere uma em **Developers → Gestão de API** para a conta/vendor cujos pedidos esta key pode reportar.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>` opcional — aceito como alternativa legada ao `x-api-key`. Envie um ou outro.
+</ParamField>
+
+## Corpo da requisição
+
+<ParamField body="channelCode" type="string" required>
+  O código do agregador/canal — ele **deve ser igual ao `metadata.channel.code` do pedido** (`channels.code`, ex. `RAPPI`, `UBER`, ou o id numérico do canal como `99`). Se não coincidir com o canal do pedido resolvido, o Fire responde `403`.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  O status de entrega cru, **passthrough** — armazenado literalmente como o tipo de evento. Qualquer string não vazia é aceita (`accepted`, `courier_assigned`, `picked_up`, `on_route`, `delivered`, `cancelled`, ou os rótulos do seu próprio canal). Nenhum enum é imposto.
+</ParamField>
+
+<ParamField body="providerEventId" type="string" required>
+  O id próprio do seu agregador para esta entrega — a **chave de idempotência** (junto com `channelCode`). O Fire mapeia `(channelCode, providerEventId)` para um id de evento interno estável, então reenviar o mesmo par com o mesmo `status` é um replay seguro. Use seu id de evento nativo se tiver; senão, um UUID.
+</ParamField>
+
+<ParamField body="occurredAt" type="string" required>
+  Timestamp ISO 8601 UTC de quando o status mudou do lado do agregador — não quando foi enviado. **É isto que ordena a jornada**: o status com o `occurredAt` mais recente é o status atual do pedido.
+</ParamField>
+
+<ParamField body="orderId" type="string">
+  UUID do pedido no Fire. **Obrigatório se `externalOrderId` estiver ausente.** Veja [Resolução do pedido](#resolução-do-pedido).
+</ParamField>
+
+<ParamField body="externalOrderId" type="string">
+  O id externo (XMART/agregador) do pedido, casado contra o `metadata.order_id` do pedido. **Obrigatório se `orderId` estiver ausente.** Veja [Resolução do pedido](#resolução-do-pedido).
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Saco livre opcional de campos extras (nome do entregador, url de rastreamento, etc.). Armazenado como está, sem validação.
+</ParamField>
+
+### Exemplos
+
+Os reportes da mesma entrega compartilham um `channelCode` e resolvem para o mesmo pedido; cada um carrega seu próprio `status`, `providerEventId` e `occurredAt`:
+
+```json courier_assigned (pelo orderId do Fire)
+{
+  "channelCode": "RAPPI",
+  "status": "courier_assigned",
+  "providerEventId": "evt-7af3-0001",
+  "occurredAt": "2026-06-14T18:46:00.000Z",
+  "orderId": "7a3a7d6b-1234-4abc-9def-0123456789ab"
+}
+```
+
+```json on_route (pelo id externo do pedido)
+{
+  "channelCode": "RAPPI",
+  "status": "on_route",
+  "providerEventId": "evt-7af3-0002",
+  "occurredAt": "2026-06-14T18:52:00.000Z",
+  "externalOrderId": "RP-2026-558831"
+}
+```
+
+```json delivered (ambos os ids — devem apontar para o mesmo pedido)
+{
+  "channelCode": "RAPPI",
+  "status": "delivered",
+  "providerEventId": "evt-7af3-0003",
+  "occurredAt": "2026-06-14T19:07:00.000Z",
+  "orderId": "7a3a7d6b-1234-4abc-9def-0123456789ab",
+  "externalOrderId": "RP-2026-558831",
+  "metadata": { "courier": "Ana P.", "trackingUrl": "https://rappi.example/t/abc" }
+}
+```
+
+## Resposta
+
+Em caso de sucesso o endpoint responde **`202 Accepted`** — o evento foi autenticado, correlacionado, deduplicado e **enfileirado**. Um `202` **não** significa que o espelho do pedido já foi atualizado; isso acontece de forma assíncrona. Use o [endpoint de status](#verificar-o-resultado) para confirmar.
+
+O body traz **dois ids distintos**: `eventId` é o id interno estável do Fire para este par `(channelCode, providerEventId)`, `webhookEventId` é o id do Fire para o registro enfileirado. Mesma forma que o [callback fiscal](/pt/api-reference/fiscal-callback#resposta).
+
+<ResponseField name="received" type="boolean">
+  Sempre `true` quando a requisição foi aceita e enfileirada.
+</ResponseField>
+
+<ResponseField name="duplicate" type="boolean">
+  `true` quando este reporte de status exato já foi ingerido (mesmo pedido, mesmo `(channelCode, providerEventId)`, mesmo `status`) — o registro existente é retornado e nada é re-enfileirado. `false` para um reporte novo (incluindo um `status` diferente da mesma entrega — isso é um passo novo, não uma duplicata).
+</ResponseField>
+
+<ResponseField name="eventId" type="string">
+  O id interno estável do Fire derivado de `(channelCode, providerEventId)`.
+</ResponseField>
+
+<ResponseField name="webhookEventId" type="string">
+  O id do Fire para o registro enfileirado. Passe-o para `GET /v1/webhooks/events/{webhookEventId}` para consultar o resultado. Em uma duplicata é o **mesmo** id retornado na primeira vez.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Status atual na fila — `queued` → `processing` → `processed` (e `retry` / `failed` / `dead` / `ignored`).
+</ResponseField>
+
+<ResponseField name="firstReceivedAt" type="string">
+  Timestamp ISO 8601 UTC de quando o Fire recebeu **pela primeira vez** este reporte. Estável entre retentativas.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Resumo legível.
+</ResponseField>
+
+<ResponseExample>
+```json 202 — aceito (passo novo, enfileirado)
+{
+  "received": true,
+  "duplicate": false,
+  "eventId": "b1f2c3d4-5e6f-5a7b-8c9d-0e1f2a3b4c5d",
+  "webhookEventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "queued",
+  "firstReceivedAt": "2026-06-14T18:46:00.512Z",
+  "message": "Event accepted and queued for processing."
+}
+```
+
+```json 202 — duplicado (mesmo order + channelCode + providerEventId + status)
+{
+  "received": true,
+  "duplicate": true,
+  "eventId": "b1f2c3d4-5e6f-5a7b-8c9d-0e1f2a3b4c5d",
+  "webhookEventId": "9e6c8af8-af80-4967-9422-c096ab43c0e7",
+  "status": "processed",
+  "firstReceivedAt": "2026-06-14T18:46:00.512Z",
+  "message": "Event already received; no action needed."
+}
+```
+
+```json 400 — erro de validação (ex. nem orderId nem externalOrderId)
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "At least one of orderId or externalOrderId is required"
+}
+```
+
+```json 401 — API key ausente ou inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
+}
+```
+
+```json 403 — falta escopo, tenant errado ou canal incompatível
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "channelCode RAPPI does not match the order's channel"
+}
+```
+
+```json 404 — pedido não encontrado
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "No order matched the provided orderId / externalOrderId for this vendor."
+}
+```
+
+```json 409 — orderId e externalOrderId resolvem para pedidos diferentes
+{
+  "success": false,
+  "error": "CONFLICT",
+  "message": "orderId and externalOrderId resolve to different orders. Send one, or send both pointing at the same order."
+}
+```
+
+```json 503 — auth store temporariamente inacessível (retente)
+{
+  "success": false,
+  "error": "SERVICE_UNAVAILABLE",
+  "message": "API key verification is temporarily unavailable (auth store unreachable). Retry the request."
+}
+```
+</ResponseExample>
+
+## Verificar o resultado
+
+Como o processamento é assíncrono, o `202` apenas confirma que o evento foi **enfileirado**. Para ver se o espelho do pedido foi atualizado, consulte o endpoint de status com o `webhookEventId` retornado pelo `202`:
+
+```
+GET https://app.fire.rest/api/v1/webhooks/events/{webhookEventId}
+x-api-key: <sua key webhooks:aggregator>
+```
+
+<ResponseField name="status" type="string">
+  Ciclo de vida da fila: `queued` → `processing` → `processed` (concluído) · `failed` / `dead` (desistiu após retentativas) · `retry` (aguardando a próxima tentativa) · `ignored` (tratado, sem ação — ex. um duplicado).
+</ResponseField>
+<ResponseField name="attempts" type="number">Tentativas de processamento até agora.</ResponseField>
+<ResponseField name="result" type="object | null">Em caso de sucesso, o resultado do worker — ex. `{ "kind": "merged", "current": "delivered" }`.</ResponseField>
+<ResponseField name="error" type="object | null">`{ "message": "…" }` quando a última tentativa falhou; `null` caso contrário.</ResponseField>
+
+Um `404` é retornado para ids desconhecidos — ou ids de outro tenant — sem vazar existência. Autentique com a mesma key `webhooks:aggregator` que usou para o evento.
+
+## Idempotência e a jornada
+
+O Fire deduplica pelo pedido mais **`(channelCode, providerEventId)` e o `status`** — *não* por um `eventId` emitido pelo Fire. É isso que faz a jornada funcionar mantendo as retentativas limpas:
+
+| Cenário | Resultado |
+|---|---|
+| `courier_assigned`, depois `on_route`, depois `delivered` — `status` diferente (e `providerEventId`), mesmo pedido | cada um é um **passo novo** → `202` `duplicate:false` |
+| O **mesmo** reporte reenviado — mesmo pedido, mesmo `(channelCode, providerEventId)`, mesmo `status` | `202` `duplicate:true` — registro existente retornado, não reprocessado |
+| Nem `orderId` nem `externalOrderId` enviados | `400` |
+| Pedido não encontrado para este vendor | `404` |
+| `orderId` e `externalOrderId` resolvem para pedidos diferentes | `409` |
+| `channelCode` ≠ o canal do pedido, ou key não é deste vendor | `403` |
+| Auth store momentaneamente inacessível | `503` — transitório, **retente** |
+
+<Note>
+  **Um `status` diferente nunca é uma duplicata.** Como os agregadores legitimamente reportam muitos status para uma entrega, dois reportes com o mesmo `(channelCode, providerEventId)` mas um **`status` diferente** são dois passos distintos — o Fire armazena ambos. Mantenha `providerEventId` único por reporte de status para evitar reproduzir um passo acidentalmente.
+</Note>
+
+## O espelho do pedido
+
+Uma vez processado, o status mais recente é espelhado no bloco `aggregator` do pedido, com a jornada completa mantida em `history` (ordenada por `occurredAt`). O `status` **atual** é a entrada com o `occurredAt` mais recente:
+
+```json orders.aggregator
+{
+  "channelCode": "RAPPI",
+  "status": "delivered",
+  "occurredAt": "2026-06-14T19:07:00.000Z",
+  "history": [
+    { "status": "courier_assigned", "occurredAt": "2026-06-14T18:46:00.000Z" },
+    { "status": "on_route",         "occurredAt": "2026-06-14T18:52:00.000Z" },
+    { "status": "delivered",        "occurredAt": "2026-06-14T19:07:00.000Z" }
+  ]
+}
+```
+
+O status cru é armazenado como está; qualquer rótulo amigável e traduzido é resolvido no momento da exibição a partir do catálogo de status do canal — o valor armazenado nunca muda.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Injetar pedido" icon="paper-plane" href="/pt/api-reference/orders">
+    O endpoint de injeção que cria o pedido que este status referencia.
+  </Card>
+  <Card title="Status do pedido KDS" icon="kitchen-set" href="/pt/api-reference/kds-order-status">
+    O webhook de entrada irmão para o estado da cozinha — mesmo modelo async + fila, mas com `eventId` emitido pelo Fire e anti-regressão.
+  </Card>
+  <Card title="Callback fiscal" icon="receipt" href="/pt/api-reference/fiscal-callback">
+    O webhook fiscal de entrada — mesmo envelope async + idempotência.
+  </Card>
+  <Card title="Autenticação" icon="lock" href="/pt/authentication">
+    Como funcionam as API keys, escopos e o binding de vendor.
+  </Card>
+</CardGroup>
