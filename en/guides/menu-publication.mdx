@@ -1,88 +1,112 @@
 ---
 title: "Menu publication"
-description: "Handle menu events from Fire: updates and bulk syncs."
+description: "How to handle the menu.updated event from Fire: when it fires, what it contains, and how to process it."
 ---
 
-A menu in Fire is a full catalog definition for a specific store and channel combination — categories, products, modifier groups, and schedules. Fire emits two types of menu events:
+A menu in Fire is a full catalog definition for a specific store and channel combination — categories, products, modifier groups, and schedules. Every time a menu changes, Fire emits a `menu.updated` event with the complete catalog ready to be forwarded downstream.
 
-| Event | When |
-|---|---|
-| [`menu.updated`](/en/webhook-reference/menu-updated) | A single menu changed — also signals removal via empty payload |
-| [`menus.sync`](/en/webhook-reference/menus-sync) | Bulk sync — onboarding or changes affecting many stores |
+The payload is self-contained. You don't need to call additional endpoints to get the menu data — everything is included.
 
-## menu.updated
+## Processing
 
-Emitted whenever a single menu changes. The payload is a complete menu definition — categories, products, modifier groups, and scheduled activities — ready to be forwarded downstream.
+<Steps>
+  <Step title="Verify the signature">
+    Extract the `X-Fire-Signature` header and validate it against the raw request body using your integration's signing secret. The secret is generated when you register the endpoint in the Fire dashboard under **Aggregator integrations**. See [Authentication](/en/authentication) for the full verification process.
+  </Step>
+  <Step title="Acknowledge immediately">
+    Return `200 OK` before doing any processing. Fire will retry if it doesn't receive a response in time.
+  </Step>
+  <Step title="Identify the menu">
+    Use `data.menu.list.storeId` and `data.menu.list.channelId` to determine which store and channel this menu belongs to.
+  </Step>
+  <Step title="Replace the full menu">
+    Apply `data.menu` as a complete replacement in your downstream system. This is not a diff — overwrite the previous state entirely.
+  </Step>
+</Steps>
 
-```
-Fire emits menu.updated → Your system receives event → Your system updates downstream
-```
+<Warning>
+  The payload is a **complete menu**, not a diff. Replace the entire menu in the downstream system every time you receive this event.
+</Warning>
+
+## Payload
 
 ```json
 {
-  "event": "menu.updated",
-  "id": "evt_def456",
-  "created_at": "2025-01-15T14:31:00Z",
+  "event": {
+    "id": "evt_def456",
+    "type": "menu.updated",
+    "executionId": "exec_abc123",
+    "createdAt": "2025-01-15T14:31:00.000Z"
+  },
   "data": {
     "account": "1",
-    "country": "EC",
+    "country": "BR",
+    "groupId": "a3f7c2d1-84be-4e10-9b3a-2c5d6e7f8091",
     "menu": {
-      "list": { ... },
+      "list": {
+        "listId": "805-iFood-delivery",
+        "listName": "iFood - Store 805",
+        "storeId": "805",
+        "channelId": "0E049503-85CF-E511-80C6-000D3A3261F3",
+        "channelReferenceName": "iFood",
+        "schedules": [ ... ]
+      },
       "categories": [ ... ],
       "products": [ ... ],
-      "modifierGroups": [ ... ],
-      "scheduledActivities": [ ... ]
+      "modifierGroups": [ ... ]
     }
   }
 }
 ```
 
-The `data` object is self-contained and ready to be forwarded downstream. See [`menu.updated`](/en/webhook-reference/menu-updated) for the full schema.
+See [`menu.updated`](/en/webhook-reference/menu-updated) for the full schema with all fields and types.
 
-<Steps>
-  <Step title="Verify the signature">
-    Validate `X-Fire-Signature`. See [Authentication](/en/authentication).
-  </Step>
-  <Step title="Acknowledge immediately">
-    Return `200 OK` before doing any work.
-  </Step>
-  <Step title="Update downstream">
-    Pass `data.menu` to your downstream system, identified by `menu.list.storeId` and `menu.list.channelId`.
-  </Step>
-</Steps>
+## Menu structure
 
-<Warning>
-  The payload is a **complete menu** — not a diff. Replace the entire menu on the downstream system.
-</Warning>
+### `data.menu.list`
 
-### Removing a menu externally
+Identifies which store and channel the menu belongs to. Use `storeId` and `channelId` as the key to upsert in your downstream system.
 
-Fire does not have an explicit menu deletion event. When a menu needs to be removed from a downstream system, Fire sends a `menu.updated` event with `menu.categories`, `menu.products`, `menu.modifierGroups`, and `menu.scheduledActivities` as empty arrays. Treat an empty menu as a signal to deactivate or remove it externally.
+The `schedules` field on `list` defines the time windows when the menu is active. Always present; `null` if no schedule is defined.
 
-## menus.sync
+### `data.menu.categories`
 
-Emitted when Fire needs to propagate menus for multiple stores at once. Fire splits large syncs automatically and emits multiple events sequentially. Each event carries one menu in `data.menu`, with the same structure as [`menu.updated`](/en/webhook-reference/menu-updated).
+List of visible categories. Each category includes `productListing` — an array with the `productId` of its products and their display positions.
 
-```
-Fire emits menus.sync (batch 1 of N) → Your system processes batch → repeat until batchIndex = batchTotal
-```
+Categories can also have their own `schedules` that restrict their visibility to certain hours, independently of the menu schedule.
 
-```json
-{
-  "event": "menus.sync",
-  "id": "evt_def458",
-  "created_at": "2025-01-15T15:15:00Z",
-  "data": {
-    "account": "1",
-    "country": "EC",
-    "batchIndex": 1,
-    "batchTotal": 4,
-    "menu": { ... }
-  }
-}
-```
+### `data.menu.products`
 
-Process each event independently. Apply `data.menu` to the downstream system identified by `menu.list.storeId` and `menu.list.channelId`. Each event is retried independently on failure. See [`menus.sync`](/en/webhook-reference/menus-sync) for the full schema.
+A flat list of all items in the menu — both top-level products and options used in modifier groups. The `type` field indicates each item's role:
+
+| Type | Description |
+|---|---|
+| `PRODUCT` | Sellable top-level item |
+| `MODIFIER` | Modifier option (e.g. size, extra ingredient) |
+| `COMPLEMENT` | Complement included in a selection |
+| `COMBO` | Product whose price depends on the customer's selections |
+
+For `COMBO` products, `priceInfo.price` is always `0`. Use `priceInfo.referencePrice` as the header price. Modifier groups on a combo may include per-option price `overrides`.
+
+See the [Products structure](/en/guides/combo-products) guide for full handling of COMBOs and modifier overrides.
+
+### `data.menu.modifierGroups`
+
+Defines option groups and their selection rules. Each group references its options via `productId`, which must exist in `products`.
+
+| Field | Description |
+|---|---|
+| `minOptions` | Minimum selections required (`0` = optional group) |
+| `maxOptions` | Maximum selections allowed |
+| `type` | `RADIO` (single choice) or `CHECKBOX` (multiple) |
+
+## groupId
+
+Events emitted in the same publication run share the same `groupId`. You can use it to correlate related events, but it is not required for processing — each event is independent and self-contained.
+
+## Removing a menu
+
+Fire does not emit a separate delete event. To signal the removal of a menu, Fire sends a `menu.updated` with `categories`, `products`, and `modifierGroups` as empty arrays. Treat an empty menu as a signal to deactivate or remove it in your downstream system.
 
 ## Idempotency
 

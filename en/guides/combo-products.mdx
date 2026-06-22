@@ -1,0 +1,159 @@
+---
+title: "Products structure"
+description: "How to read and display COMBO products from menu events, including modifier overrides and delta pricing."
+---
+
+In Fire, a **COMBO** is a product whose price is not fixed in the catalog — it depends on which options the customer selects across its required modifier groups. When you receive a COMBO in a `menu.updated` event, `priceInfo.price` is always `0`. This is intentional. Fire pre-computes the minimum reachable price and stores it in `priceInfo.referencePrice`.
+
+## Identifying a COMBO in the payload
+
+Look for `"type": "COMBO"` in `data.menu.products`:
+
+```json
+{
+  "productId": "combo_001",
+  "name": "Box da Torcida",
+  "type": "COMBO",
+  "priceInfo": {
+    "price": 0,
+    "referencePrice": 9990
+  },
+  "productModifiers": [
+    {
+      "modifierId": "mod_box",
+      "position": 1,
+      "overrides": [
+        {
+          "productId": "prod_tiras_6",
+          "priceInfo": {
+            "price": 3800,
+            "referencePrice": 3800
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+<Warning>
+  Never display `priceInfo.price` for a COMBO — it is always `0`. Use `priceInfo.referencePrice` as the header price.
+</Warning>
+
+## Modifier overrides
+
+A product can appear in many combos and many menus. In the global `products[]` list it has a single base price. But when that product acts as a modifier option inside a specific combo, its price within that combo may differ — for example, a medium fries that sells for R$ 8.00 individually might cost R$ 6.40 when bundled in a particular combo.
+
+That is what `productModifiers[n].overrides` is for: it lets each combo declare a different price for any of its modifier options without changing the product's base catalog price.
+
+### Structure
+
+Each entry in `overrides` targets one modifier option by its `productId`:
+
+```json
+"productModifiers": [
+  {
+    "modifierId": "mod_fries",
+    "position": 2,
+    "overrides": [
+      {
+        "productId": "prod_fries_medium",
+        "priceInfo": {
+          "price": 640,
+          "referencePrice": 640
+        }
+      },
+      {
+        "productId": "prod_fries_large",
+        "priceInfo": {
+          "price": 830,
+          "referencePrice": 830
+        }
+      }
+    ]
+  }
+]
+```
+
+In this example, `prod_fries_medium` has a base price of R$ 8.00 in `products[]`, but the override sets it to R$ 6.40 for this combo. `prod_fries_large` is similarly overridden to R$ 8.30.
+
+### Resolving the effective price
+
+When processing a modifier option, always check `overrides` first:
+
+```
+effective_price = override.priceInfo.price         // if an override exists for this productId
+               ?? option_product.priceInfo.price   // otherwise: option's own price in products[]
+```
+
+Use the effective price — not the base catalog price — for every calculation: the reference price, the delta display, and the cart total.
+
+## Reference price
+
+`priceInfo.referencePrice` is pre-computed by Fire as the minimum the customer can pay for the combo:
+
+```
+for each required modifier group (minOptions ≥ 1):
+  baseline = cheapest effective price among the group's options
+  subtotal  = baseline × minOptions
+
+referencePrice = sum of all subtotals
+```
+
+Display this value as the combo's header price or as "from BRL 99.90" on product cards. Never rely on `priceInfo.price` for display.
+
+### Worked example — Box da Torcida
+
+| Modifier group | minOptions | Cheapest option (effective) | Subtotal |
+|---|---|---|---|
+| Choose your box | 1 | R$ 31.00 — 12 Coxinhas | R$ 31.00 |
+| Choose your fries | 2 | R$ 6.40 — Medium fries | R$ 12.80 |
+| Choose your sauce | 2 | R$ 5.70 — any sauce | R$ 11.40 |
+| Choose your drink | 3 | R$ 14.90 — 400 ml | R$ 44.70 |
+| **Reference total** | | | **R$ 99.90** |
+
+## Customer-facing display logic
+
+Show prices relative to the cheapest option in the group — not the absolute catalog price. This way customers see what a premium option costs **on top of** the base selection.
+
+```
+baseline = min effective_price across all options in the group
+delta    = max(0, effective_price − baseline)
+```
+
+| delta | Display |
+|---|---|
+| `0` | "Included" or no label — this is the base option |
+| `> 0` | **+R$ X.XX** |
+
+Apply this logic only to **required groups** (`minOptions ≥ 1`). For optional groups (`minOptions = 0`), show the full add-on price for each option.
+
+### Example — Choose your box (required, pick 1)
+
+| Option | Effective price | Baseline | Displayed |
+|---|---|---|---|
+| 12 Coxinhas | R$ 31.00 | R$ 31.00 | Included |
+| 8 Tiras | R$ 38.00 | R$ 31.00 | +R$ 7.00 |
+| 6 Tiras | R$ 41.00 | R$ 31.00 | +R$ 10.00 |
+
+The override for `prod_tiras_6` (R$ 38.00) is used instead of its base catalog price.
+
+### Example — Choose your sauce (required, all same price)
+
+| Option | Effective price | Baseline | Displayed |
+|---|---|---|---|
+| Honey mustard | R$ 5.70 | R$ 5.70 | Included |
+| BBQ | R$ 5.70 | R$ 5.70 | Included |
+| Ketchup | R$ 5.70 | R$ 5.70 | Included |
+
+No delta is shown when all options cost the same.
+
+## Cart total
+
+The total displayed on the "Add to order" button updates live as the customer makes selections:
+
+```
+cart_total = (referencePrice + sum of selected deltas) × quantity
+```
+
+Before any premium option is selected, display `referencePrice`.
