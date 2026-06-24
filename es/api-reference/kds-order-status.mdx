@@ -1,11 +1,11 @@
 ---
 title: "Estado de orden KDS"
 api: "POST https://app.fire.rest/api/v1/webhooks/kds/order-status"
-description: "Endpoint entrante al que tu KDS hace POST cuando una orden de cocina cambia de estado (preparando, lista, despachada). Fire registra el evento, lo deduplica y aplica anti-regresión para que el estado de la orden nunca retroceda."
+description: "Endpoint entrante al que tu KDS hace POST cuando una orden de cocina cambia de estado (preparando, lista, despachada, cancelada). Fire registra el evento, lo deduplica y aplica anti-regresión para que el estado de la orden nunca retroceda."
 authMethod: "bearer"
 ---
 
-Este endpoint es **entrante** — tu Sistema de Pantallas de Cocina (KDS) le hace POST cada vez que una orden avanza en la cocina: la cocina empezó a **prepararla**, quedó **lista** para entrega, o fue **despachada** (entregada / retirada). Fire autentica la solicitud, la correlaciona con la orden, aplica idempotencia y una compuerta anti-regresión, y registra el evento en su log de eventos KDS para observabilidad.
+Este endpoint es **entrante** — tu Sistema de Pantallas de Cocina (KDS) le hace POST cada vez que una orden avanza en la cocina: la cocina empezó a **prepararla**, quedó **lista** para entrega, fue **despachada** (entregada / retirada), o fue **cancelada**. Fire autentica la solicitud, la correlaciona con la orden, aplica idempotencia y una compuerta anti-regresión, y registra el evento en su log de eventos KDS para observabilidad.
 
 <Note>
   **Este endpoint es asíncrono.** Fire autentica, corre el guard de source-of-truth + tenancy, deduplica y **encola** el evento — luego responde **`202 Accepted`** con un `webhookEventId` (típicamente en menos de 100&nbsp;ms). El evento se registra un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para verificar el resultado, consultá [`GET /v1/webhooks/events/{webhookEventId}`](#verificar-el-resultado). Los problemas corregibles por el cliente (payload inválido, `eventId` equivocado, tenant equivocado) se rechazan **síncronamente** con `4xx` **antes** del `202`.
@@ -17,15 +17,20 @@ Este endpoint es **entrante** — tu Sistema de Pantallas de Cocina (KDS) le hac
 
 ## Tipos de evento
 
-El ciclo de vida del KDS tiene un orden estricto — una orden se **prepara** antes de estar **lista**, y está **lista** antes de ser **despachada**:
+El ciclo de vida del KDS tiene un orden estricto:
 
 | `eventType` | Significado | Rank |
 |---|---|---|
 | `order.preparing` | La cocina comenzó a preparar la orden | 1 |
 | `order.ready` | La orden está preparada y lista para entrega / retiro | 2 |
-| `order.dispatched` | La orden salió de la cocina (entregada o retirada) — terminal | 3 |
+| `order.dispatched` | La orden salió de la cocina (entregada o retirada) | 3 |
+| `order.cancelled` | La orden fue cancelada — **terminal**, ningún evento posterior la retrocede | 4 |
 
 Los valores son **minúscula, con punto** (`order.preparing`, no `ORDER_PREPARING`).
+
+<Note>
+  **`order.cancelled` es el estado terminal.** Envialo cuando tu KDS procesa la cancelación de una orden (iniciada desde Fire). Una vez registrado, cualquier evento posterior (`preparing`, `ready`, `dispatched`) se ignora como no-avanzante — la orden queda en `cancelled` permanentemente.
+</Note>
 
 ## Autenticación
 
@@ -42,7 +47,7 @@ Este endpoint requiere una **API key vendor-scoped con el scope `webhooks:kds`**
 ## Cuerpo de la solicitud
 
 <ParamField body="eventType" type="string" required>
-  El evento de ciclo de vida del KDS. `order.preparing`, `order.ready` u `order.dispatched` (minúscula, con punto).
+  El evento de ciclo de vida del KDS. `order.preparing`, `order.ready`, `order.dispatched` u `order.cancelled` (minúscula, con punto). Ver [Tipos de evento](#tipos-de-evento).
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
@@ -106,6 +111,16 @@ Los tres reportes del mismo dispatch comparten **un `eventId`** (el del dispatch
   "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
   "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "stationName": "Cocina caliente"
+}
+```
+
+```json order.cancelled
+{
+  "eventType": "order.cancelled",
+  "providerEventId": "evt_2026-05-26_000125",
+  "occurredAt": "2026-05-26T18:45:00.000Z",
+  "orderId": "9f1c0e8a-1234-4abc-9def-0123456789ab",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
 }
 ```
 
@@ -237,10 +252,18 @@ Fire deduplica por la tripla **`(orderId, eventId, eventType)`** — *no* por `p
 
 ## Anti-regresión
 
-El estado de la orden nunca debe retroceder. Fire rastrea la **etapa máxima alcanzada** por la orden (`order.dispatched` > `order.ready` > `order.preparing`) y compara cada evento entrante contra ella:
+El estado de la orden nunca debe retroceder. Fire rastrea la **etapa máxima alcanzada** por la orden y compara cada evento entrante contra ella:
+
+| Rank | Estado |
+|------|--------|
+| 1 | `order.preparing` |
+| 2 | `order.ready` |
+| 3 | `order.dispatched` |
+| 4 | `order.cancelled` — **terminal** |
 
 - Un evento que **avanza** la orden (ej. `order.ready` después de `order.preparing`) se registra como el nuevo estado.
-- Un evento que **no avanza** — una regresión (ej. `order.preparing` que llega después de `order.ready`) o una repetición del mismo estado — igual se **registra para observabilidad**, pero marcado como no-avanzante con un motivo, y **no** retrocede la orden.
+- Un evento que **no avanza** — una regresión o una repetición — igual se **registra para observabilidad**, marcado como no-avanzante, y **no** retrocede la orden.
+- `order.cancelled` tiene rank 4: avanza sobre cualquier estado previo. Una vez registrado, es **irreversible** — cualquier evento posterior (incluso `order.dispatched`) se trata como no-avanzante.
 
 Esto hace el endpoint seguro ante entregas fuera de orden o tardías: enviá los eventos en cualquier orden y Fire mantiene la orden en su etapa más avanzada.
 
