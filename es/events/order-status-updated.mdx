@@ -1,30 +1,31 @@
 ---
 title: "order.status_updated"
-description: "El estado de cocina de una orden avanzó — el KDS reportó preparing, ready o dispatched."
+description: "El estado de cocina de una orden cambió — el KDS reportó preparing, ready, dispatched o cancelled."
 ---
 
 <Note>
   Evento nuevo (junio 2026). Nace directamente en **v1** — no existe forma v0.
 </Note>
 
-`order.status_updated` dispara cuando el **KDS** (Kitchen Display System) reporta que una orden avanzó de estado en cocina: empezó a prepararse (`preparing`), está lista (`ready`) o fue despachada (`dispatched`).
+`order.status_updated` dispara cuando el **KDS** (Kitchen Display System) reporta un cambio de estado en cocina: empezó a prepararse (`preparing`), está lista (`ready`), fue despachada (`dispatched`) o fue cancelada en cocina (`cancelled`).
 
-Fire recibe el reporte del KDS por el [webhook entrante de estados](/es/api-reference/kds-order-status), valida que referencie un evento emitido por Fire para esa orden, aplica un **gate anti-regresión** (un estado nunca retrocede: `dispatched` no vuelve a `ready`) y solo entonces emite este evento. Por eso recibes **un evento por avance real**, sin duplicados ni retrocesos.
+Para los tres estados de avance, Fire aplica un **gate anti-regresión** (un estado nunca retrocede: `dispatched` no vuelve a `ready`) y solo emite este evento cuando el estado genuinamente avanza. `cancelled` es la excepción — bypasea el gate y puede llegar desde cualquier estado de cocina. Por eso recibes **un evento por cambio real**, sin duplicados ni retrocesos.
 
 ## Condición de disparo
 
-Fire emite `order.status_updated` cuando **todo** lo siguiente es verdadero:
+Fire emite `order.status_updated` cuando se cumple **cualquiera** de las siguientes condiciones:
 
-- El KDS reportó un estado de cocina para una orden existente
-- El estado **avanza** el recorrido (gate anti-regresión: `preparing` → `ready` → `dispatched`)
-- El reporte pasó la validación de origen (referencia un evento que Fire emitió para esa orden)
+- El KDS reportó un estado de **avance** (`preparing`, `ready` o `dispatched`) que pasa el gate anti-regresión (`preparing` → `ready` → `dispatched`)
+- El KDS reportó `cancelled` para la orden (sin restricción anti-regresión — puede llegar desde cualquier estado de cocina)
+
+En ambos casos, el reporte debe referenciar un evento que Fire emitió para esa orden (validación de origen).
 
 | | |
 |---|---|
 | Cobertura | **Todos los países** |
-| Estados | `preparing` → `ready` → `dispatched` (monotónico) |
+| Estados | `preparing` → `ready` → `dispatched` (monotónico); `cancelled` (desde cualquier estado) |
 | Llave de idempotencia | `event.id` |
-| Dispara más de una vez | Una vez por **avance** de estado (máx. 3 por orden); reintentos comparten `event.id` |
+| Dispara más de una vez | Una vez por cambio de estado (máx. 4 por orden); reintentos comparten `event.id` |
 | Origen del dato | `kitchen.source` — solo `kds` hoy; el campo queda abierto a futuras fuentes |
 
 ## Qué hay en `data`
@@ -93,7 +94,7 @@ Es un **payload liviano (thin)** — a diferencia de `order.completed`, **no** a
 
   <Expandable title="kitchen">
     <ResponseField name="status" type="string">
-      Estado que disparó el evento: `preparing` | `ready` | `dispatched`.
+      Estado que disparó el evento: `preparing` | `ready` | `dispatched` | `cancelled`.
     </ResponseField>
     <ResponseField name="previousStatus" type="string | null">
       Estado anterior. `null` en el primer avance.
@@ -124,12 +125,13 @@ Es un **payload liviano (thin)** — a diferencia de `order.completed`, **no** a
 
 ## Casos de uso típicos
 
-- **Tracking de orden para el cliente** — "tu pedido está listo" en app o pantalla de retiro
-- **Notificar al agregador** — avisar a iFood/Rappi/99food que la orden está lista para el repartidor
+- **Tracking de orden para el cliente** — "tu pedido está listo" o "tu pedido fue cancelado" en app o pantalla de retiro
+- **Notificar al agregador** — avisar a iFood/Rappi/99food que la orden está lista para el repartidor o que fue cancelada en cocina
 - **Métricas de cocina** — tiempos preparing→ready por tienda/estación a partir de `history`
+- **Flujo de cancelación** — disparar limpieza downstream (liberar repartidor, reembolso, alerta a ops) cuando `kitchen.status = "cancelled"`
 
 ## Lo que NO hace
 
-- **No cambia el estado de la orden.** `data.status` sigue siendo `"COMPLETED"` — el recorrido de cocina es paralelo al ciclo de pago/facturación.
-- **No retrocede.** Si el KDS reporta `ready` después de `dispatched`, Fire lo descarta (gate anti-regresión) y no emite nada.
+- **No cambia el estado de la orden** — excepto en la cancelación. Para los estados de avance (`preparing`, `ready`, `dispatched`), `data.status` sigue siendo `"COMPLETED"`. Cuando `kitchen.status = "cancelled"`, `data.status` será `"CANCELLED"`.
+- **No retrocede** para estados de avance. Si el KDS reporta `ready` después de `dispatched`, Fire lo descarta (gate anti-regresión) y no emite nada. `cancelled` está exento de esta regla.
 - **No reemplaza a `order.completed`.** Suscríbete a ambos: `order.completed` para el hecho de negocio, `order.status_updated` para el progreso físico.
