@@ -1,0 +1,121 @@
+---
+title: "Ruteo"
+description: "Cómo la estrategia de ruteo del KDS decide a qué estación va cada línea del pedido: default vs mappings custom, capas de decisión y modos de distribución."
+---
+
+La **estrategia de ruteo** decide, para cada línea del pedido, **a qué estación(es)** va.
+
+<Note>
+  Solo puede haber **una estrategia activa** por tienda. Al activar una nueva, las demás de esa tienda se desactivan automáticamente.
+</Note>
+
+## Default vs mappings custom
+
+<Tabs>
+  <Tab title="Default — assembly-only (producción)">
+    - **Producción requerida = No** en Store settings.
+    - **Una** estación `ASSEMBLY` + **una** pantalla.
+    - Ruteo activo (mappings vacíos); no se usan mappings de ítem porque no hay producción previa.
+  </Tab>
+  <Tab title="Default — estación KITCHEN">
+    - **Una** estación `PRODUCTION` (ej. `KITCHEN`) + **una** pantalla.
+    - Ruteo **sin mappings**; **fallback** = esa estación (o "todas las activas" si solo hay una).
+    - **Producción requerida = Sí**; todo cae en la estación default.
+  </Tab>
+  <Tab title="Custom — varias líneas de producción">
+    - Varias estaciones `PRODUCTION` / `PRE_ASSEMBLY`.
+    - Mappings **item_type → estaciones de cocina** (solo producción).
+    - Opcional: estaciones `ASSEMBLY` / `DISPATCH` + **convergence distribution** para expo/despacho.
+  </Tab>
+</Tabs>
+
+Si no hay mapping para un `item_type`, la línea va a **fallback** (idealmente una estación de producción, no armado).
+
+## Orden de decisión
+
+1. **Ruteo (capa 1):** elige estaciones **de producción** candidatas por `item_type` + fallback.
+2. **Reglas de estación (capa 2):** canal, tipo de servicio (`DINE_IN`, `DELIVERY`…), item types — pueden **rechazar** la línea.
+3. **Distribución (capa 3):** si quedan varias candidatas de producción, elige una según el modo.
+4. **Convergencia (runtime):** cuando producción avanza, el **ticket** aparece en ASSEMBLY/DISPATCH según gates y **convergence distribution**; ahí aplican los filtros de canal/servicio de la estación.
+
+<Tip>
+  Ejemplo de capa 2: el ruteo manda un ítem a `GRILL`, pero la estación tiene **Exclude channels: UBER_EATS** → esa línea no se ve en la parrilla aunque el mapping la incluya.
+</Tip>
+
+## Cómo funciona el ruteo de producción
+
+El ruteo de **líneas** (capas 1–3) solo aplica a estaciones de **producción**:
+
+1. Lee el **`item_type`** de la línea.
+2. Busca un **mapping** (solo estaciones de cocina en el formulario).
+3. Si no hay match → **fallback stations** (tu estación default).
+4. Aplica **reglas** de estación (canal, servicio, ítem).
+5. Si hay varias candidatas → **distribución**.
+
+**Armado y despacho** no participan en estos pasos. Reciben el ticket cuando la producción correspondiente se completó (convergencia), no porque hayas puesto `BURGER` → `ASSEMBLY` en un mapping.
+
+## Modos de distribución (cuando hay 2+ estaciones candidatas)
+
+| Modo | Comportamiento |
+|---|---|
+| **ALL** | Envía a todas las candidatas (broadcast). |
+| **ROUND_ROBIN** | Rota entre las candidatas en orden. |
+| **LEAST_LOADED** | Prioriza la estación con menos tickets activos. |
+| **LEAST_LOADED_ITEMS** | Prioriza la estación con menos ítems en cola. |
+
+Si el mapping tiene **una sola** estación, el modo de distribución no cambia el resultado.
+
+## Ejemplo multi-estación
+
+**Estaciones:**
+
+| Code | Stage | Rol |
+|---|---|---|
+| `GRILL` | PRODUCTION | Hamburguesas — **ruteable por item_type** |
+| `FRY` | PRODUCTION | Papas — **ruteable por item_type** |
+| `ASSEMBLY` | ASSEMBLY | Armado — **ticket completo**, sin mapping de ítems |
+| `DISPATCH` | DISPATCH | Despacho — **ticket completo**; ej. solo regla `DELIVERY` |
+
+**Pantallas:**
+
+| Pantalla | Estaciones asignadas |
+|---|---|
+| "Parrilla" | `GRILL`, `FRY` |
+| "Armado" | `ASSEMBLY` |
+| "Despacho delivery" | `DISPATCH` (rules: fulfillment `DELIVERY`) |
+
+**Estrategia de ruteo — solo producción en mappings:**
+
+| item_type | Estaciones destino | Distribución |
+|---|---|---|
+| `BURGER` | `GRILL` | — |
+| `FRIES` | `FRY`, `GRILL` | `LEAST_LOADED` |
+| *(fallback)* | `GRILL` | Tipos no listados → parrilla (estación default de producción) |
+
+**Convergencia (fuera de mappings):** cuando las líneas en `GRILL`/`FRY` se completan, el ticket aparece en `ASSEMBLY` y luego en `DISPATCH` según la **convergence distribution** y las reglas de canal/servicio de esas estaciones.
+
+<Frame>
+  <img src="/images/manuals/kds/routing/01-routing-mappings.png" alt="Editor de ruteo con mappings de item_type y distribución" />
+</Frame>
+
+## Crear la estrategia
+
+<Steps>
+  <Step title="Abre el formulario de ruteo">
+    **KDS → Routing → Create** (`/kds/admin/routing/new`).
+  </Step>
+  <Step title="Elige tienda y nombre">
+    Por ejemplo, "Default routing".
+  </Step>
+  <Step title="Cocina simple">
+    Una estación `KITCHEN`, fallback = `KITCHEN`, sin mappings, **Active**.
+  </Step>
+  <Step title="Cocina avanzada">
+    Mappings solo a estaciones **producción**; **convergence distribution** si hay estaciones ASSEMBLY/DISPATCH; fallback = estación default de producción.
+  </Step>
+  <Step title="Guarda" />
+</Steps>
+
+En el listado de ruteo puedes ver la tarjeta de **estrategia activa** y un mapa conceptual estación ↔ pantalla.
+
+Siguiente: [Periféricos, impresión y validación](/es/manuals/kds/peripherals-printing).
