@@ -1,0 +1,155 @@
+---
+title: "Periféricos, impresión y validación"
+description: "Configura teclados y dispositivos de entrada del KDS, la impresión listo-para-retiro y la cancelación de órdenes, y valida la tienda con el KDS Map antes de salir a producción."
+---
+
+Esta página cubre la configuración restante — teclados, impresión y cancelación — y cómo validar la tienda antes de abrir la cocina.
+
+## Teclados y dispositivos de entrada
+
+Las teclas físicas (bump, cambiar página, recall) permiten al operador trabajar sin tocar la pantalla.
+
+```text
+Pantalla
+ └── Input device (tipo KDS_KEYBOARD, ligado a la pantalla)
+      └── Keyboard layout (mapeo tecla → acción)
+```
+
+### Acciones disponibles en el backoffice
+
+Al crear o editar un layout, cada tecla puede disparar acciones como:
+
+| Acción | Uso típico |
+|---|---|
+| `BUMP_COLUMN_1` … `BUMP_COLUMN_8` | Completar la columna N en la pantalla. |
+| `NEXT_PAGE` / `PREV_PAGE` | Paginar tickets. |
+| `REFRESH` | Refrescar la cola. |
+| `HOLD_TICKET` / `RECALL_TICKET` | Retener / recuperar un ticket. |
+| `PRINT_PENDING_FISCAL_INVOICES` | Disparar la impresión fiscal pendiente (según la integración del país). |
+
+### Configurar un teclado
+
+<Steps>
+  <Step title="Crea el input device">
+    **KDS → Input devices → Create** (`/kds/admin/devices/new`). Tipo: teclado KDS. Asócialo a la **pantalla** correcta.
+  </Step>
+  <Step title="Crea el keyboard layout">
+    **KDS → Keyboard layouts → Create** (`/kds/admin/keyboard-layouts/new`). Elige la tienda y el dispositivo, y mapea las teclas a las acciones.
+  </Step>
+  <Step title="Guarda" />
+</Steps>
+
+<Frame>
+  <img src="/images/manuals/kds/peripherals-printing/01-keyboard-layout.png" alt="Editor de keyboard layout mapeando teclas a acciones" />
+</Frame>
+
+También puedes crear o duplicar un layout desde **Store → KDS Map** (`/kds/admin/stores/{storeId}/kds-map`). Si una plantilla incluye teclado, al aplicarla se puede crear el dispositivo `{deviceIdentifier}-kbd` y el layout automáticamente.
+
+## Impresión y cancelación
+
+Hay **tres conceptos distintos**. No se configuran todos en el mismo lugar.
+
+### 1. Impresión listo-para-retiro (backoffice)
+
+**Qué hace:** imprime un ticket térmico (fiscal y/o entrega) cuando el operador hace **bump en la estación ASSEMBLY** y el pedido pasa a **listo para retiro**. En una cocina assembly-only, este bump es el que cierra la cocina y mueve el turnero.
+
+El operador elige **bump first** (async, default — el bump termina primero, la impresión corre después con feedback en el snackbar) o **imprimir antes de bump** (sync) en la app fire-kds. Consulta [Acciones en pantalla — Impresión al retirar](/es/manuals/kds/screen-actions#impresion-al-retirar).
+
+**Dónde configurarlo en el backoffice:**
+
+- **Store → Settings** → *Ready-for-pickup printing*, o
+- **Store → KDS Map** → tarjeta de impresión listo-retiro, o
+- Dentro de una **plantilla** / wizard inicial (por pantalla).
+
+| Campo | Descripción |
+|---|---|
+| Pantalla | Qué pantalla KDS dispara la impresión. |
+| Enabled | Activa/desactiva en esa pantalla. |
+| Printer name | El nombre **exacto** de la cola de impresión del sistema operativo del dispositivo. |
+| Copies | Cantidad de copias. |
+
+<Warning>
+  El backoffice permite **solo una pantalla por tienda** en este flujo, para evitar impresiones duplicadas del mismo evento "listo para retiro". Habilitar una segunda pantalla muestra un error o bloquea la selección.
+</Warning>
+
+**Qué se necesita para que funcione:**
+
+1. Pantalla KDS creada y activa en el backoffice.
+2. Impresión listo-retiro habilitada en **esa única pantalla**.
+3. **Printer name** idéntico al nombre de la impresora en el SO del dispositivo donde corre fire-kds (mayúsculas, espacios y tildes incluidos).
+4. Impresora instalada y accesible desde el dispositivo KDS.
+
+<Frame>
+  <img src="/images/manuals/kds/peripherals-printing/02-ready-pickup-printing.png" alt="Configuración de impresión listo-para-retiro" />
+</Frame>
+
+### 2. Cancelación de órdenes (en la app fire-kds)
+
+**Qué hace:** permite al operador cancelar una orden desde el KDS (ícono en el ticket → confirmación).
+
+**Dónde se configura:** en la **app fire-kds**, menú superior → **"Cancelación de órdenes…"** (un modal en el dispositivo). **No** está en el backoffice hoy.
+
+| Nivel | Config | Efecto |
+|---|---|---|
+| Tienda | Interruptor maestro | Si está off, ninguna pantalla puede cancelar. |
+| Pantalla | Opt-in por pantalla | Cada pantalla se habilita por separado. |
+
+**Varias pantallas pueden tener la cancelación habilitada** a la vez (no hay límite de "solo una" como en la impresión listo-retiro). Además requiere que la orden tenga un ID externo XMART para el adapter de cancelación, y un operador con un rol válido en la tienda.
+
+### 3. Impresión fiscal desde el teclado
+
+La acción **`PRINT_PENDING_FISCAL_INVOICES`** se asigna en el **layout de teclado**, no en la sección de impresión listo-retiro. No compite con la regla de "una pantalla" (son flujos distintos) y depende de la integración fiscal del país/tienda en fire-kds.
+
+## Validar la configuración: KDS Map
+
+Después de configurar (por plantilla o manual), abre:
+
+**KDS → All Stores → [tu tienda] → KDS Map** (`/kds/admin/stores/{storeId}/kds-map`).
+
+El mapa muestra:
+
+- Pantallas y estaciones vinculadas.
+- Estaciones sin pantalla (alertas).
+- Dispositivos de entrada y layouts de teclado.
+- Tarjeta de impresión listo-para-retiro.
+- Salud general de la config.
+
+<Frame>
+  <img src="/images/manuals/kds/peripherals-printing/03-kds-map.png" alt="KDS Map de una tienda mostrando pantallas, estaciones y alertas" />
+</Frame>
+
+## Checklist antes de producción
+
+- [ ] Tienda KDS creada y activa.
+- [ ] Estaciones con **codes** únicos y stages coherentes.
+- [ ] Pantallas con el **device identifier** acordado con el hardware.
+- [ ] Cada pantalla tiene estaciones asignadas (sort order correcto).
+- [ ] **Una** estrategia de ruteo **activa**.
+- [ ] **Cocina simple (prod):** estación `ASSEMBLY` + **Producción requerida = No** + una pantalla; probar turnero e impresión bump first.
+- [ ] **Cocina simple (alternativa):** una estación `KITCHEN` + fallback; **Producción requerida = Sí**; sin mappings.
+- [ ] **Cocina multi-línea:** mappings solo a estaciones **producción**; ASSEMBLY/DISPATCH vía convergencia, no en mappings.
+- [ ] (Opcional) Teclado: dispositivo + layout por pantalla que lo use.
+- [ ] (Opcional) Impresión listo-retiro: **una** pantalla, printer name verificado en el SO.
+- [ ] (Opcional) Cancelación: habilitada en fire-kds en la tienda + las pantallas que la necesiten.
+- [ ] KDS Map sin alertas críticas.
+- [ ] Prueba con una orden real o seed: los ítems llegan a la pantalla/estación esperada.
+
+## Rutas de referencia (backoffice)
+
+| Sección | URL base |
+|---|---|
+| Inicio KDS | `/kds/admin` |
+| Tiendas | `/kds/admin/stores` |
+| Configuración inicial de tienda | `/kds/admin/stores/initial-setup/{storeId}` |
+| Plantillas | `/kds/admin/setup-templates` |
+| Estaciones | `/kds/admin/stations` |
+| Pantallas | `/kds/admin/screens` |
+| Ruteo | `/kds/admin/routing` |
+| Dispositivos | `/kds/admin/devices` |
+| Layouts de teclado | `/kds/admin/keyboard-layouts` |
+| Mapa KDS de la tienda | `/kds/admin/stores/{storeId}/kds-map` |
+| Ajustes de tienda | `/kds/admin/stores/{storeId}/settings` |
+
+<Check>
+  Con el KDS Map limpio y el checklist completo, la tienda está lista para abrir fire-kds en la cocina.
+</Check>
