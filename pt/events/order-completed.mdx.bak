@@ -1,0 +1,1017 @@
+---
+title: "order.completed"
+description: "Um pedido injetado foi recebido por completo e está pago. O evento Fire mais comum — carrega o snapshot V4 completo do pedido e a configuração fiscal da loja."
+---
+
+<Tabs>
+  <Tab title="v1 · atual">
+    Você está vendo o contrato **atual (v1)** de `order.completed` — adiciona **descontos** de pedido e de produto (objeto `Discount`), **impostos granulares**, o enum completo de `itemType` (`PRODUCT` / `COMBO` / `MODIFIER` / `PACKAGING`) e `fulfillment.delivery.deliveryConfirmationCode`.
+  </Tab>
+  <Tab title="v0 · descontinuado">
+    <Warning>O contrato **v0** está **deprecado** — mantido apenas como referência histórica. Abra aqui: [order-completed — v0](/pt/events-v0/order-completed).</Warning>
+  </Tab>
+</Tabs>
+
+`order.completed` dispara quando um pedido é injetado com sucesso e está pago. Carrega o **snapshot V4 do pedido** como `trigger.data` — todos os campos que seu flow precisa para agir sobre o pedido sem voltar a chamar o Fire.
+
+## Condição de disparo
+
+O Fire emite `order.completed` exatamente **uma vez** por pedido, na primeira vez em que ambos são verdadeiros no momento de injeção:
+
+- `order.status === "COMPLETED"`
+- `order.paymentStatus === "SUCCEEDED"`
+
+Pedidos que ainda estão `PENDING` de pagamento, ou que falham o pagamento, **nunca** produzem `order.completed`. Cancelamentos após completar produzem um evento separado [`order.cancelled`](/pt/events/order-cancelled) — eles não retraem `order.completed`.
+
+| | |
+|---|---|
+| Cobertura | Global (todos os países, todos os canais) |
+| Chave de idempotência | `event.id` (= `flow_executions.id`) |
+| Dispara mais de uma vez | Não, salvo em retentativas — use `event.id` para deduplicar |
+| Ordem | Não garantida entre pedidos — ordene por `data.createdAt` se precisar |
+| Retentativas | Até 5 tentativas com backoff exponencial |
+
+## O que tem em `trigger.data`
+
+`trigger.data` é o **snapshot V4 do pedido** — o mesmo objeto que está persistido em `flow_queue.trigger_data` e exposto aos templates do seu flow.
+
+As chaves top-level, em ordem:
+
+| Chave | Tipo | Sempre presente |
+|---|---|---|
+| `orderId` | `string` (UUID) | sim |
+| `orderCode` | `string \| null` | sim |
+| `businessDayDate` | `string` (`YYYY-MM-DD`) | sim |
+| `externalOrderId` | `string` | sim |
+| `redeemPoints` | `boolean` | sim |
+| `accumulatePoints` | `boolean` | sim |
+| `discount` | `boolean` | sim |
+| `createdAt` | `string \| null` (ISO 8601 UTC) | sim |
+| `orderComment` | `string` (pode ser `""`) | sim |
+| `paymentStatus` | `string` (sempre `"SUCCEEDED"`) | sim |
+| `status` | `string` (sempre `"COMPLETED"`) | sim |
+| `marketing` | `object \| null` | sim |
+| `store` | `object` | sim |
+| `device` | `object` | sim |
+| `channel` | `object` | sim |
+| `operator` | `object` | sim |
+| `client` | `object \| null` | sim |
+| `payments` | `object` | sim |
+| `kds` | `object` | sim |
+| `metadata` | `object` (frequentemente `{}`) | sim |
+| `orderLines` | `object[]` | sim |
+| `fulfillment` | `object` | sim |
+
+## Exemplo — payload real de produção (BR, sanitizado)
+
+O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sandbox brasileiro, canal `KIOSK`, serviço dine-in). Os campos PII são substituídos por placeholders; o restante dos campos e formatos é verbatim.
+
+```json
+{
+  "orderId": "21ec1f6c-c301-4528-b999-7836c1d21c6c",
+  "orderCode": "OC-br-001",
+  "businessDayDate": "2026-03-31",
+  "externalOrderId": "7805610b-97cf-461f-a2d6-d86f63a80833",
+  "redeemPoints": false,
+  "accumulatePoints": false,
+  "discount": false,
+  "createdAt": "2026-05-06T01:22:59.028Z",
+  "orderComment": "Comentario de prueba orden",
+  "paymentStatus": "SUCCEEDED",
+  "status": "COMPLETED",
+  "marketing": null,
+  "store": {
+    "uid": "a4019cad-bbac-4269-9f8d-f29654e92c45",
+    "code": "BR-SP-001",
+    "name": "Loja Centro - SP",
+    "phone": "1132094347",
+    "address": "Av. Paulista 1578, Bela Vista, São Paulo - SP",
+    "externalId": "a4019cad-bbac-4269-9f8d-f29654e92c45",
+    "vendor": {
+      "uid": "100.2.1",
+      "name": "Sandbox Brand",
+      "description": "Sandbox Brand",
+      "loyaltyPlan": true
+    },
+    "account": {
+      "uid": "100",
+      "name": "Sandbox",
+      "description": "Sandbox"
+    },
+    "locationInfo": {
+      "city":     { "uid": "1", "code": "SAO", "name": "São Paulo" },
+      "country":  { "uid": "6", "code": "BR",  "name": "Brasil" },
+      "location": { "lat": "-23.5952979", "lon": "-46.6866818" },
+      "timezone": "America/Sao_Paulo",
+      "currencyCode": "BRL"
+    },
+    "storeFiscalConfig": {
+      "enabled": true,
+      "company": {
+        "govIdType": "CNPJ",
+        "govIdNumber": "00000000000000",
+        "legalName": "Sandbox LTDA",
+        "tradeName": "Sandbox"
+      },
+      "govIdType": "CNPJ",
+      "govIdNumber": "00000000000000",
+      "secondaryGovIdType": "INSCRICAO_ESTADUAL",
+      "secondaryGovIdNumber": "000000000000",
+      "metadata": {
+        "neverstop":   { "url": "", "enabled": false },
+        "storeCode3S": "50000001",
+        "serialNumber": 1
+      }
+    }
+  },
+  "device": {
+    "uid": "device_kiosk_001",
+    "name": "KIOSK",
+    "platform": "android",
+    "metadata": { "ip": "10.0.0.0" }
+  },
+  "channel": {
+    "uid": "c784d4ba-23c7-4929-b2f0-1a1960d9cdc2",
+    "code": "KIOSK",
+    "metadata": {}
+  },
+  "operator": {
+    "uid": "op_001",
+    "name": "Operator Name",
+    "session": { "uid": "sess_001" }
+  },
+  "client": {
+    "uid": "usr_consumidorfinal_001",
+    "name": "CONSUMIDOR",
+    "lastName": "FINAL",
+    "email": "consumidor@example.com",
+    "phone": "0000000000",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000",
+    "externalId": null,
+    "metadata": {
+      "fiscal": null,
+      "gender": "",
+      "birthdate": ""
+    },
+    "billingInformation": {
+      "email": "",
+      "phone": "0000000000",
+      "address": "",
+      "govIdType": "FINAL_CONSUMER",
+      "externalId": "",
+      "govIdNumber": "00000000000",
+      "businessName": ""
+    }
+  },
+  "payments": {
+    "totals": [
+      {
+        "taxes": [
+          { "base": "229000", "name": "ICMS",   "rate": "0.04",   "amount": "9200",
+            "metadata": { "cst": "90", "cBenef": "SP040100" } },
+          { "base": "229000", "name": "PIS",    "rate": "0.0165", "amount": "3800",
+            "metadata": { "cst": "01" } },
+          { "base": "229000", "name": "COFINS", "rate": "0.076",  "amount": "17400",
+            "metadata": { "cst": "01" } },
+          { "base": "198700", "name": "IBS_UF",  "rate": "0.0006", "amount": "100",
+            "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0.001, "rateEffective": 0.0006 } },
+          { "base": "198700", "name": "IBS_MUN", "rate": "0",      "amount": "0",
+            "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0, "rateEffective": 0 } },
+          { "base": "198700", "name": "CBS",     "rate": "0.0054", "amount": "1100",
+            "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0.009, "rateEffective": 0.0054 } }
+        ],
+        "total": "229000",
+        "subtotal": "197400",
+        "discounts": [
+          { "priority": "1", "type": "FIXED", "value": "20000", "net_price": "229000",
+            "discount_value": "20000", "net_price_after_discount": "209000" }
+        ],
+        "taxes_value": "31600",
+        "currency_code": "BRL",
+        "discount_value": "20000",
+        "subtotal_before_taxes": "197400"
+      }
+    ],
+    "shippingCost": [
+      { "total": "50000", "tax_value": "0", "currency_code": "BRL",
+        "subtotal_without_taxes": "50000", "subtotal_include_discounts": "50000" }
+    ],
+    "extraCharges": [
+      { "total": "15000", "tax_value": "0", "description": "Taxa de serviço", "currency_code": "BRL",
+        "subtotal_without_taxes": "15000", "subtotal_include_discounts": "15000" }
+    ],
+    "discounts": [
+      { "priority": "1", "type": "FIXED", "value": "20000", "net_price": "229000",
+        "discount_value": "20000", "net_price_after_discount": "209000" }
+    ],
+    "paymentMethods": [
+      {
+        "mid": "",
+        "tid": "",
+        "processor": "CREDIT_CARD",
+        "card": {
+          "bin": "MASTERCARD",
+          "mask": "",
+          "brand": "MASTERCARD",
+          "holder": "",
+          "card_country": "",
+          "last_four_digits": "0000"
+        },
+        "acquirer": { "code": "00000000000000", "name": "ACQUIRER NAME" },
+        "voucher": "",
+        "metadata": {},
+        "totalBill": 22.9,
+        "currencyCode": "BRL",
+        "exactPayment": false,
+        "transactionId": "tx_a1b2c3d4",
+        "referenceNumber": null,
+        "transactionDate": {
+          "date": "2026-04-17T15:41:55.000Z",
+          "timeZoneName": "America/Sao_Paulo"
+        },
+        "transactionType": "",
+        "authorizationCode": "000000000000",
+        "paymentMethodCode": "",
+        "transactionStatus": "APPROVED",
+        "customerCashAmount": "0"
+      }
+    ],
+    "metadata": {
+      "fiscal": {
+        "vBC":      "229000",
+        "vNF":      "229000",
+        "vCBS":     "1100",
+        "vIBS":     "100",
+        "vPIS":     "3800",
+        "vDesc":    "0",
+        "vICMS":    "9200",
+        "vProd":    "229000",
+        "vIBSUF":   "100",
+        "vCOFINS":  "17400",
+        "vIBSMun":  "0",
+        "vTotTrib": "31600",
+        "vBCIBSCBS":"198700"
+      }
+    }
+  },
+  "kds": {
+    "metadata": {},
+    "orderCode": "OC-br-001",
+    "buzzerName": "Leonardo",
+    "invoiceEmail": "",
+    "invoicePrint": true
+  },
+  "metadata": {},
+  "orderLines": [
+    {
+      "uid": "b9912637-eb44-4533-a1e5-f5bf2cdd07e8",
+      "hash": "0d86fae2b5bc6198",
+      "itemId": "39d1bd7fcd45c52f0c824364c2c0cfc402bd72b046cfaaec276a0131908dbf20",
+      "itemType": "COMBO",
+      "itemDescription": "Crunch Salad + Batata Pequena + 1 Tira + Refri",
+      "quantity": "1",
+      "selectedCurrency": "BRL",
+      "updatedAt": "2026-05-06T01:22:59.663Z",
+      "price": {
+        "unitPrice": [
+          {
+            "taxes": [],
+            "netPrice": "229000",
+            "grossPrice": "229000",
+            "currencyCode": "BRL",
+            "discounts": [
+              { "priority": "1", "type": "FIXED", "value": "15000", "net_price": "229000",
+                "discount_value": "15000", "net_price_after_discount": "214000" }
+            ],
+            "discountValue": "15000",
+            "taxesValue": "0",
+            "subtotalBeforeTaxes": "229000"
+          }
+        ],
+        "totalPrice": [
+          {
+            "taxes": [
+              { "base": "229000", "name": "ICMS",   "rate": "0.04",   "amount": "9200",
+                "metadata": { "cst": "90", "cBenef": "SP040100" } },
+              { "base": "229000", "name": "PIS",    "rate": "0.0165", "amount": "3800",
+                "metadata": { "cst": "01" } },
+              { "base": "229000", "name": "COFINS", "rate": "0.076",  "amount": "17400",
+                "metadata": { "cst": "01" } },
+              { "base": "198700", "name": "IBS_UF",  "rate": "0.0006", "amount": "100",
+                "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0.001, "rateEffective": 0.0006 } },
+              { "base": "198700", "name": "IBS_MUN", "rate": "0",      "amount": "0",
+                "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0, "rateEffective": 0 } },
+              { "base": "198700", "name": "CBS",     "rate": "0.0054", "amount": "1100",
+                "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0.009, "rateEffective": 0.0054 } }
+            ],
+            "netPrice": "197400",
+            "grossPrice": "229000",
+            "currencyCode": "BRL",
+            "discounts": [
+              { "priority": "1", "type": "FIXED", "value": "15000", "net_price": "229000",
+                "discount_value": "15000", "net_price_after_discount": "214000" }
+            ],
+            "discountValue": "15000",
+            "taxesValue": "31600",
+            "subtotalBeforeTaxes": "197400"
+          }
+        ]
+      },
+      "lineTotals": [
+        {
+          "taxes": [
+            { "base": "229000", "name": "ICMS",   "rate": "0.04",   "amount": "9200",  "metadata": { "cst": "90", "cBenef": "SP040100" } },
+            { "base": "229000", "name": "PIS",    "rate": "0.0165", "amount": "3800",  "metadata": { "cst": "01" } },
+            { "base": "229000", "name": "COFINS", "rate": "0.076",  "amount": "17400", "metadata": { "cst": "01" } },
+            { "base": "198700", "name": "IBS_UF",  "rate": "0.0006", "amount": "100",  "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0.001, "rateEffective": 0.0006 } },
+            { "base": "198700", "name": "IBS_MUN", "rate": "0",      "amount": "0",    "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0, "rateEffective": 0 } },
+            { "base": "198700", "name": "CBS",     "rate": "0.0054", "amount": "1100", "metadata": { "cst": "200", "reducao": 0.4, "cClassTrib": "200047", "rateNominal": 0.009, "rateEffective": 0.0054 } }
+          ],
+          "total": "229000",
+          "subtotal": "197400",
+          "currencyCode": "BRL",
+          "discounts": [
+            { "priority": "1", "type": "FIXED", "value": "15000", "net_price": "229000", "discount_value": "15000", "net_price_after_discount": "214000" }
+          ],
+          "discountValue": "15000",
+          "taxesValue": "31600",
+          "subtotalBeforeTaxes": "197400"
+        }
+      ],
+      "modifierGroups": [
+        {
+          "uid": "e247256ad628b0fd9c45453370e247fef1ad173829cc809c9c6930698d62e56b",
+          "description": "Selecione: Escolha seus sanduíches!",
+          "selectedModifiers": [
+            {
+              "itemId": "0104fdb2010be9ac14750a950f81c026b35a49a3c32b36281f41ef650d278b72",
+              "itemType": "MODIFIER",
+              "itemDescription": "CRUNCH SALAD",
+              "quantity": "1",
+              "selectedCurrency": "BRL",
+              "price": { /* unitPrice / totalPrice arrays — same shape */ },
+              "modifierGroups": [],
+              "metadata": {
+                "redeemed": false,
+                "externalCode": "80229#900002186#91198"
+              }
+            }
+          ]
+        }
+      ],
+      "metadata": {
+        "fiscal": {
+          "ncm": "21069090",
+          "cfop": "5101",
+          "csosn": "500",
+          "vTotTrib": 3.16,
+          "fiscalCategoryCode": "2106.90.90"
+        },
+        "redeemed": false,
+        "externalCode": "80229",
+        "referenceUnitPrice": null,
+        "referenceTotalPrice": null
+      }
+    }
+  ],
+  "fulfillment": {
+    "service": { "uid": "726c4892-48b9-45da-b066-2a8e83d2cb78", "code": "DINE_IN", "metadata": {} },
+    "pickup": {
+      "prepDate": "2026-05-06T01:22:59.028Z",
+      "prepTime": "",
+      "pickupDate": "2026-05-06T01:22:59.028Z",
+      "propertyId": "a4019cad-bbac-4269-9f8d-f29654e92c45",
+      "prepTimeUnit": "minute"
+    },
+    "delivery": {
+      "city": "São Paulo",
+      "country": "Brasil",
+      "zipCode": "",
+      "latitude": "0",
+      "nickName": "HOME",
+      "longitude": "0",
+      "reference": "",
+      "mainStreet": "",
+      "propertyId": 1,
+      "deliveryDate": null,
+      "secondaryStreet": "",
+      "deliveryConfirmationCode": "IFOOD-7H3K9"
+    }
+  }
+}
+```
+
+<Note>
+  Os valores monetários são **strings expressas como unidades menores inteiras × 10000** (ex.: `"229000"` = `22.9000` BRL). Isso evita drift de ponto flutuante através de múltiplas integrações. Parseie com uma biblioteca decimal, nunca com `parseFloat`. A exceção é `paymentMethods[].totalBill`, que a origem às vezes envia como número JSON — trate ambos.
+</Note>
+
+## Referência de campos
+
+### Identificadores top-level
+
+<ResponseField name="orderId" type="string">
+  UUID interno do pedido no Fire. Estável através de entregas; use junto com `event.id` para rastreabilidade.
+</ResponseField>
+
+<ResponseField name="orderCode" type="string | null">
+  Código curto legível mostrado em recibos e telas KDS (ex.: `95K`, `OC-br-001`). `null` quando o canal não atribui um.
+</ResponseField>
+
+<ResponseField name="businessDayDate" type="string">
+  Dia de negócio ao qual este pedido pertence, em `YYYY-MM-DD`. Calculado em hora local da loja, então um pedido feito às 01:00 pode pertencer ao dia de negócio anterior dependendo do corte de fim de dia.
+</ResponseField>
+
+<ResponseField name="externalOrderId" type="string">
+  O ID de pedido tal como provido pelo canal/agregador na injeção. Use para reconciliar com sistemas upstream (POS, dashboards de agregador).
+</ResponseField>
+
+<ResponseField name="createdAt" type="string | null">
+  Timestamp ISO 8601 UTC de quando o pedido foi originalmente feito. Distinto de `event.createdAt`, que é quando a execução do flow começou.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Sempre `"COMPLETED"` para este evento.
+</ResponseField>
+
+<ResponseField name="paymentStatus" type="string">
+  Sempre `"SUCCEEDED"` para este evento.
+</ResponseField>
+
+<ResponseField name="redeemPoints" type="boolean">
+  `true` se pontos de fidelidade foram resgatados neste pedido.
+</ResponseField>
+
+<ResponseField name="accumulatePoints" type="boolean">
+  `true` se o cliente acumulou pontos de fidelidade.
+</ResponseField>
+
+<ResponseField name="discount" type="boolean">
+  `true` se algum desconto foi aplicado.
+</ResponseField>
+
+<ResponseField name="orderComment" type="string">
+  Nota free-text do cliente para o pedido inteiro. Empty string quando não definido.
+</ResponseField>
+
+### `data.store`
+
+<ResponseField name="store" type="object">
+  Snapshot da loja no momento em que o pedido foi completado.
+
+  <Expandable title="store">
+    <ResponseField name="uid" type="string | null">UUID da loja no Fire.</ResponseField>
+    <ResponseField name="externalId" type="string | null">ID da loja no seu sistema externo, quando mapeado.</ResponseField>
+    <ResponseField name="code" type="string | null">Código da loja (ex.: `BR-SP-001`). Use para limitar flows a lojas específicas.</ResponseField>
+    <ResponseField name="name" type="string | null">Nome de exibição da loja.</ResponseField>
+    <ResponseField name="phone" type="string | null">Telefone da loja.</ResponseField>
+    <ResponseField name="address" type="string | null">Endereço da loja.</ResponseField>
+    <ResponseField name="locationInfo" type="object">
+      Contexto geográfico.
+      <Expandable title="locationInfo">
+        <ResponseField name="city"     type="object">`{ uid, code, name }` — identificadores de cidade.</ResponseField>
+        <ResponseField name="country"  type="object">`{ uid, code, name }` — `code` é ISO 3166-1 alpha-2 (`BR`, `EC`, `CO`, …).</ResponseField>
+        <ResponseField name="location" type="object">`{ lat, lon }` como strings de graus decimais.</ResponseField>
+        <ResponseField name="timezone" type="string | null">Fuso IANA (ex.: `America/Sao_Paulo`).</ResponseField>
+        <ResponseField name="currencyCode" type="string | null">Código de moeda ISO 4217 (`BRL`, `USD`, …).</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="vendor"  type="object">`{ uid, name, description, loyaltyPlan }` — metadata da marca.</ResponseField>
+    <ResponseField name="account" type="object">`{ uid, name, description }` — account top-level dono da marca.</ResponseField>
+    <ResponseField name="storeFiscalConfig" type="object | null">
+      Snapshot da configuração fiscal da loja. **Incluído apenas quando a emissão fiscal está habilitada para a loja.** Veja [Dados fiscais](#dados-fiscais) abaixo.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.client`
+
+<ResponseField name="client" type="object | null">
+  Cliente que fez o pedido. `null` para pedidos de canal totalmente anônimos. Para pedidos BR de "consumidor final", `client` é populado com valores placeholder (`govIdType: "FINAL_CONSUMER"`, `govIdNumber: "00000000000"`).
+
+  <Expandable title="client">
+    <ResponseField name="uid" type="string | null">ID do cliente vindo do provedor de autenticação.</ResponseField>
+    <ResponseField name="name" type="string | null">Nome.</ResponseField>
+    <ResponseField name="lastName" type="string | null">Sobrenome.</ResponseField>
+    <ResponseField name="email" type="string | null">Endereço de e-mail.</ResponseField>
+    <ResponseField name="phone" type="string | null">Telefone.</ResponseField>
+    <ResponseField name="govIdType" type="string | null">Tipo de documento do cliente (`CPF`, `CNPJ`, `FINAL_CONSUMER`, …).</ResponseField>
+    <ResponseField name="govIdNumber" type="string | null">Número do documento do cliente.</ResponseField>
+    <ResponseField name="externalId" type="string | null">ID do cliente em sistema externo, quando mapeado.</ResponseField>
+    <ResponseField name="metadata" type="object">
+      <Expandable title="metadata">
+        <ResponseField name="gender" type="string | null">Gênero do cliente quando capturado (frequentemente `""`).</ResponseField>
+        <ResponseField name="birthdate" type="string | null">Data ISO.</ResponseField>
+        <ResponseField name="fiscal" type="object | null">**Apenas Brasil.** Populado quando `client.govIdType === "CNPJ"`. Contém `cep`, `tipoLogradouro`, `logradouro`, `numero`, `bairro`, `codigoCidade`, `descricaoCidade`, `estado`.</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="billingInformation" type="object">Overrides de faturamento. Todos os campos opcionais; podem ser empty strings em vez de `null`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.payments`
+
+<ResponseField name="payments" type="object">
+  Detalhamento de dinheiro.
+
+  <Expandable title="payments">
+    <ResponseField name="totals" type="object[]">
+      Totais a nível de pedido — geralmente uma entrada. **Aviso de casing:** estes objetos são pass-through da origem. Chaves top-level misturam camelCase (`taxes`, `discounts`) e snake_case (`taxes_value`, `currency_code`, `discount_value`, `subtotal_before_taxes`). Construa seu handler para ler ambos.
+
+      Cada entrada tem: `total`, `subtotal`, `taxes[]`, `discounts[]`, `taxes_value`, `currency_code`, `discount_value`, `subtotal_before_taxes`.
+
+      Formato de `taxes[n]`: `{ base, name, rate, amount, metadata }`. Exemplos de `name`: `ICMS`, `PIS`, `COFINS`, `IBS_UF`, `IBS_MUN`, `IBS_FED`. `metadata` carrega códigos fiscais por país (`cst`, `cBenef`, `cClassTrib`, `reducao`, `rateNominal`, `rateEffective`).
+    </ResponseField>
+
+    <ResponseField name="shippingCost" type="object[]">Linhas de custo de envio. Vazio para pedidos na loja.</ResponseField>
+    <ResponseField name="extraCharges" type="object[]">Gorjetas, taxas de embalagem e outros add-ons.</ResponseField>
+    <ResponseField name="discounts" type="object[]">
+      <Tip>Adicionado na **v1**.</Tip> Descontos a nível de pedido. Cada entrada é um objeto **Discount**:
+      <Expandable title="Discount">
+        <ResponseField name="priority" type="string">Ordem de aplicação quando há vários descontos.</ResponseField>
+        <ResponseField name="type" type="string">`FIXED` ou `PERCENTAGE`.</ResponseField>
+        <ResponseField name="value" type="string">Valor do desconto (×10000).</ResponseField>
+        <ResponseField name="net_price" type="string">Líquido antes do desconto (×10000).</ResponseField>
+        <ResponseField name="discount_value" type="string">Valor aplicado (×10000).</ResponseField>
+        <ResponseField name="net_price_after_discount" type="string">Líquido após o desconto (×10000).</ResponseField>
+      </Expandable>
+      O mesmo **Discount** aparece em `payments.totals[].discounts` e em `orderLines[].price.*[].discounts` + `lineTotals[].discounts` (descontos por produto).
+    </ResponseField>
+
+    <ResponseField name="paymentMethods" type="object[]">
+      Métodos usados para pagar. A maioria dos campos é camelCase (`totalBill`, `currencyCode`, `transactionId`, `transactionStatus`, `paymentMethodCode`, …) mas alguns sub-objetos são pass-through com snake_case (`card.last_four_digits`, `card.card_country`).
+
+      Cada entrada: `processor`, `currencyCode`, `paymentMethodCode`, `transactionType`, `transactionId`, `transactionStatus`, `exactPayment`, `totalBill`, `acquirer`, `card`, `transactionDate`, `metadata`, `mid`, `tid`, `voucher`, `referenceNumber`, `authorizationCode`, `customerCashAmount`.
+    </ResponseField>
+
+    <ResponseField name="metadata" type="object">
+      <Expandable title="metadata">
+        <ResponseField name="fiscal" type="object | null">Totais fiscais agregados. Veja [Dados fiscais](#dados-fiscais) abaixo.</ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.fulfillment`
+
+<ResponseField name="fulfillment" type="object">
+  Como o pedido é entregue.
+
+  <Expandable title="fulfillment">
+    <ResponseField name="service" type="object">`{ uid, code, metadata }` — `code` é `DELIVERY`, `TAKEAWAY`, `PICKUP` ou `DINE_IN`.</ResponseField>
+    <ResponseField name="pickup" type="object | null">
+      Populado para `PICKUP`/`TAKEAWAY`/`DINE_IN`. Contém `prepDate`, `pickupDate` (ambos ISO 8601 UTC), `prepTime`, `prepTimeUnit`, `propertyId`.
+    </ResponseField>
+    <ResponseField name="delivery" type="object | null">
+      Populado para `DELIVERY`. Campos de endereço mais `deliveryDate`. **Nota:** o objeto `delivery` pode estar presente (com valores placeholder como `latitude: "0"`) em serviços non-delivery — ramifique em `fulfillment.service.code`, não em `delivery !== null`.
+
+      <ResponseField name="deliveryConfirmationCode" type="string | null"><Tip>Adicionado na **v1**.</Tip> Código de confirmação de entrega/retirada do agregador (ex. iFood / Rappi). Vem de `shippingMethod.delivery.metadata.deliveryConfirmationCode`.</ResponseField>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.kds`
+
+<ResponseField name="kds" type="object">
+  Contexto do kitchen display.
+
+  <Expandable title="kds">
+    <ResponseField name="buzzerName"   type="string">Identificador de buzzer ou pager. Empty string quando não definido.</ResponseField>
+    <ResponseField name="invoiceEmail" type="string">E-mail do cliente para cópia de fatura. Empty string quando não capturado.</ResponseField>
+    <ResponseField name="invoicePrint" type="boolean | null">Se a cozinha deve imprimir a cópia da fatura.</ResponseField>
+    <ResponseField name="orderCode"    type="string">Espelha o `orderCode` top-level.</ResponseField>
+    <ResponseField name="metadata"     type="object">Extras KDS específicos do canal.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.device` e `data.operator`
+
+<ResponseField name="device" type="object">`{ uid, name, platform, metadata.ip }` — dispositivo de origem. Os campos podem ser `null` para canais não físicos.</ResponseField>
+
+<ResponseField name="operator" type="object">`{ uid, name, session.uid }` — staff/caixa que processou o pedido. Todos os campos `null` para canais self-service (quiosque, web).</ResponseField>
+
+### `data.orderLines`
+
+<ResponseField name="orderLines" type="object[]">
+  Produtos pedidos. Totalmente camelCase (transformado pelo builder V4).
+
+  <Expandable title="orderLines[n]">
+    <ResponseField name="uid" type="string">UUID da linha.</ResponseField>
+    <ResponseField name="hash" type="string">Hash estável para esta linha — útil para deduplicar se você fizer fan-out de linhas downstream.</ResponseField>
+    <ResponseField name="itemId" type="string">Identificador do produto.</ResponseField>
+    <ResponseField name="itemType" type="string">
+      Classificação do item — um de `PRODUCT`, `COMBO`, `MODIFIER`, `PACKAGING`. <Tip>Enum completo na **v1**.</Tip> Passthrough; recai para `PRODUCT` se o canal não enviar tipo.
+      <Expandable title="valores de itemType">
+        <ResponseField name="PRODUCT" type="enum">Item vendável por si só — a linha **é** o produto.</ResponseField>
+        <ResponseField name="COMBO" type="enum">Container/bundle; seus componentes com preço ficam em `modifierGroups[].selectedModifiers[]`.</ResponseField>
+        <ResponseField name="MODIFIER" type="enum">Adicional/opção escolhido dentro de um produto/combo.</ResponseField>
+        <ResponseField name="PACKAGING" type="enum">Linha de embalagem (sacola, caixa, copo), itemizada para fins fiscais/estoque.</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="itemDescription" type="string">Nome de exibição.</ResponseField>
+    <ResponseField name="quantity" type="string">String inteira (ex.: `"1"`, `"2"`).</ResponseField>
+    <ResponseField name="selectedCurrency" type="string">ISO 4217 (ex.: `BRL`).</ResponseField>
+    <ResponseField name="updatedAt" type="string">ISO 8601 UTC.</ResponseField>
+    <ResponseField name="price" type="object">
+      `{ unitPrice: PriceEntry[], totalPrice: PriceEntry[] }`. Ambos são **arrays** para suportar totais multi-moeda (hoje geralmente uma entrada).
+
+      Chaves de `PriceEntry`: `currencyCode`, `grossPrice`, `netPrice`, `subtotalBeforeTaxes`, `discountValue`, `discounts[]`, `taxesValue`, `taxes[]`. As entradas de tax têm `{ base, name, rate, amount, metadata }`.
+    </ResponseField>
+    <ResponseField name="lineTotals" type="object[]">Mesmo formato que `price.totalPrice[]`.</ResponseField>
+    <ResponseField name="modifierGroups" type="object[]">
+      Grupos de modificadores selecionados. Cada um: `{ uid, description, selectedModifiers[] }`. `selectedModifiers[n]` se forma recursivamente como uma linha de pedido (price, modifierGroups, itemDescription, …) até alguns níveis.
+    </ResponseField>
+    <ResponseField name="metadata" type="object">
+      Metadata por linha. Pode conter `fiscal: { ncm, cfop, csosn, vTotTrib, fiscalCategoryCode }` para classificação fiscal BR, mais `redeemed`, `externalCode`, `referenceUnitPrice`, `referenceTotalPrice`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.marketing`, `data.metadata`, `data.channel`
+
+<ResponseField name="marketing" type="object | null">Loyalty + cupons. `null` na maioria dos países hoje; reservado para uso futuro.</ResponseField>
+
+<ResponseField name="metadata" type="object">Bag free-form para extras a nível de pedido. Frequentemente `{}`.</ResponseField>
+
+<ResponseField name="channel" type="object">`{ uid, code, metadata }`. Exemplos de `code`: `KIOSK`, `APP`, `IFOOD`, `RAPPI`.</ResponseField>
+
+## Dados fiscais
+
+<Note>
+  Os dados fiscais são incluídos **apenas quando a loja tem emissão fiscal habilitada** (`store.storeFiscalConfig.enabled === true`). Para países sem fiscal ou lojas sem configuração, todas as três localizações abaixo estão ausentes ou em `null`.
+</Note>
+
+`order.completed` carrega informação fiscal em **três** localizações distintas. Cada uma serve um propósito diferente:
+
+### 1. `data.store.storeFiscalConfig` — identidade do emissor e config do provedor
+
+Identifica a entidade legal que emite o documento e como autenticar com o provedor fiscal. **Credenciais NÃO estão aqui intencionalmente** — o nó fiscal as busca por provedor/account.
+
+```json
+"storeFiscalConfig": {
+  "enabled": true,
+  "company": {
+    "govIdType":   "CNPJ",
+    "govIdNumber": "00000000000000",
+    "legalName":   "Sandbox LTDA",
+    "tradeName":   "Sandbox"
+  },
+  "govIdType":            "CNPJ",
+  "govIdNumber":          "00000000000000",
+  "secondaryGovIdType":   "INSCRICAO_ESTADUAL",
+  "secondaryGovIdNumber": "000000000000",
+  "metadata": {
+    "neverstop":    { "url": "", "enabled": false },
+    "storeCode3S":  "50000001",
+    "serialNumber": 1
+  }
+}
+```
+
+### 2. `data.payments.metadata.fiscal` — agregados fiscais a nível de pedido
+
+Totais agregados estilo SEFAZ, prontos para envio ao provedor fiscal (seu provedor fiscal no Brasil). Os valores são strings × 10000.
+
+```json
+"metadata": {
+  "fiscal": {
+    "vBC":      "229000",
+    "vNF":      "229000",
+    "vICMS":    "9200",
+    "vPIS":     "3800",
+    "vCOFINS":  "17400",
+    "vCBS":     "1100",
+    "vIBS":     "100",
+    "vIBSUF":   "100",
+    "vIBSMun":  "0",
+    "vTotTrib": "31600",
+    "vBCIBSCBS":"198700",
+    "vDesc":    "0",
+    "vProd":    "229000"
+  }
+}
+```
+
+### 3. `data.orderLines[n].metadata.fiscal` — classificação fiscal por linha
+
+Códigos fiscais por produto. Usados pelo provedor fiscal para classificar cada linha no documento.
+
+```json
+"metadata": {
+  "fiscal": {
+    "ncm":               "21069090",
+    "cfop":              "5101",
+    "csosn":             "500",
+    "vTotTrib":          3.16,
+    "fiscalCategoryCode":"2106.90.90"
+  }
+}
+```
+
+Além disso, **metadata por imposto** vive dentro de cada `taxes[n].metadata` (em `payments.totals[].taxes[]`, `orderLines[].price.totalPrice[].taxes[]` e `orderLines[].lineTotals[].taxes[]`) com códigos como `cst`, `cBenef`, `cClassTrib`, `reducao`, `rateNominal`, `rateEffective`.
+
+## Variações por país
+
+O exemplo acima é de uma loja brasileira — o caso mais complexo. O formato V4 é idêntico em todos os países, **incluindo o detalhamento granular de `taxes[]`**: cada país popula `payments.totals[].taxes[]` e os taxes por linha com seus **impostos locais** no mesmo formato `{ base, name, rate, amount, metadata }`. O que muda por país:
+
+- **Nomes de imposto** — BR usa `ICMS`, `PIS`, `COFINS`, `IBS_UF`, `IBS_MUN`, `CBS`; outros países carregam seus impostos locais (ex. `IVA`) com a mesma estrutura.
+- **Códigos de `metadata`** — BR carrega códigos SEFAZ (`cst`, `cBenef`, `cClassTrib`, `reducao`, `rateNominal`, `rateEffective`); outros países seus próprios códigos.
+- **Emissão fiscal SEFAZ — apenas Brasil.** `payments.metadata.fiscal`, `orderLines[].metadata.fiscal` (ncm/cfop/csosn) e os eventos `order.invoiced` / `order.reversed` só aplicam ao BR. Os demais países ainda carregam seu `taxes[]`, mas esses blocos SEFAZ estão ausentes.
+
+<Tabs>
+  <Tab title="Brasil (BR)">
+    As lojas brasileiras com `storeFiscalConfig.enabled === true` carregam o payload fiscal completo — veja a seção [Dados fiscais](#dados-fiscais) acima. Marcadores de país:
+
+    - `store.locationInfo.country.code: "BR"` · `name: "Brasil"` · `timezone: "America/Sao_Paulo"`
+    - `store.locationInfo.currencyCode: "BRL"`
+    - `store.storeFiscalConfig.govIdType: "CNPJ"` (14 dígitos)
+    - `store.storeFiscalConfig.secondaryGovIdType: "INSCRICAO_ESTADUAL"`
+    - `payments.totals[].currency_code: "BRL"`, `paymentMethods[].currencyCode: "BRL"`, `orderLines[].selectedCurrency: "BRL"`
+    - **Populados:** `payments.metadata.fiscal` (vBC / vNF / vICMS / vPIS / vCOFINS / vTotTrib …), `orderLines[].metadata.fiscal` (ncm / cfop / csosn), `lineTotals[].taxes[]` (ICMS, PIS, COFINS, IBS_*)
+  </Tab>
+
+  <Tab title="Argentina (AR)">
+    As lojas argentinas carregam o formato V4 mas **sem agregados fiscais hoje** (nenhum `fiscal.*` flow trigger dispara para AR). Sample compacto dos campos específicos do país:
+
+    ```json
+    {
+      "store": {
+        "code": "AR-BUE-001",
+        "locationInfo": {
+          "city":     { "uid": "<uid>", "code": "<code>", "name": "Buenos Aires" },
+          "country":  { "uid": "<uid>", "code": "AR",      "name": "Argentina" },
+          "currencyCode": "ARS",
+          "timezone": "America/Argentina/Buenos_Aires"
+        },
+        "storeFiscalConfig": {
+          "enabled": true,
+          "govIdType": "CUIT",
+          "govIdNumber": "30-12345678-9",
+          "secondaryGovIdType": null,
+          "secondaryGovIdNumber": null,
+          "company": {
+            "govIdType": "CUIT",
+            "govIdNumber": "30-12345678-9",
+            "legalName": "Your Company SRL",
+            "tradeName": "Your Brand"
+          },
+          "metadata": {}
+        }
+      },
+      "payments": {
+        "totals": [
+          {
+            "currency_code": "ARS",
+            "total": "100000",
+            "subtotal": "82645",
+            "taxes": [
+              { "base": "82645", "name": "IVA", "rate": "0.21", "amount": "17355" }
+            ],
+            "taxes_value": "17355",
+            "discounts": [],
+            "discount_value": "0",
+            "subtotal_before_taxes": "82645"
+          }
+        ],
+        "metadata": { "fiscal": null }
+      },
+      "orderLines": [
+        {
+          "selectedCurrency": "ARS",
+          "metadata": { "fiscal": null },
+          "lineTotals": [{ "currencyCode": "ARS", "total": "100000", "taxes": [
+            { "base": "82645", "name": "IVA", "rate": "0.21", "amount": "17355" }
+          ] }]
+        }
+      ]
+    }
+    ```
+
+    `store.locationInfo.currencyCode` está populado (`ARS`) — igual ao comportamento de BR. Você também pode lê-lo de `payments.totals[0].currency_code` ou `orderLines[0].selectedCurrency` se precisar; todos coincidem.
+  </Tab>
+
+  <Tab title="Chile (CL)">
+    Mesmo formato que Argentina com `RUT` como tipo de gov ID e `CLP` como moeda:
+
+    ```json
+    {
+      "store": {
+        "code": "CL-SCL-001",
+        "locationInfo": {
+          "country": { "code": "CL", "name": "Chile" },
+          "currencyCode": "CLP",
+          "timezone": "America/Santiago"
+        },
+        "storeFiscalConfig": {
+          "enabled": true,
+          "govIdType": "RUT",
+          "govIdNumber": "76123456-7",
+          "company": {
+            "govIdType": "RUT",
+            "govIdNumber": "76123456-7",
+            "legalName": "Your Company SpA",
+            "tradeName": "Your Brand"
+          }
+        }
+      },
+      "payments": {
+        "totals": [{ "currency_code": "CLP", "total": "10000", "taxes": [{ "base": "8403", "name": "IVA", "rate": "0.19", "amount": "1597" }] }],
+        "metadata": { "fiscal": null }
+      },
+      "orderLines": [{ "selectedCurrency": "CLP", "metadata": { "fiscal": null } }]
+    }
+    ```
+  </Tab>
+
+  <Tab title="Colombia (CO)">
+    Lojas colombianas com `NIT` como tipo de gov ID e `COP` como moeda. Sufixo de razão social tipicamente `SAS`. Sem agregados fiscais hoje (integração DIAN existe apenas a nível de schema — ver [`POST /v1/webhooks/fiscal/callback`](/pt/api-reference/fiscal-callback)):
+
+    ```json
+    {
+      "store": {
+        "code": "CO-BOG-001",
+        "locationInfo": {
+          "country": { "code": "CO", "name": "Colombia" },
+          "currencyCode": "COP",
+          "timezone": "America/Bogota"
+        },
+        "storeFiscalConfig": {
+          "enabled": true,
+          "govIdType": "NIT",
+          "govIdNumber": "900123456-7",
+          "company": {
+            "govIdType": "NIT",
+            "govIdNumber": "900123456-7",
+            "legalName": "Your Company SAS",
+            "tradeName": "Your Brand"
+          }
+        }
+      },
+      "payments": {
+        "totals": [{ "currency_code": "COP", "total": "10000", "taxes": [{ "base": "8403", "name": "IVA", "rate": "0.19", "amount": "1597" }] }],
+        "metadata": { "fiscal": null }
+      },
+      "orderLines": [{ "selectedCurrency": "COP", "metadata": { "fiscal": null } }]
+    }
+    ```
+  </Tab>
+
+  <Tab title="Ecuador (EC)">
+    Lojas equatorianas com `RUC` (13 dígitos) como tipo de gov ID. **A moeda é `USD`** (moeda oficial do Equador, sem moeda local). Sufixo de razão social tipicamente `Cia. Ltda.` ou `S.A.`:
+
+    ```json
+    {
+      "store": {
+        "code": "EC-UIO-001",
+        "locationInfo": {
+          "country": { "code": "EC", "name": "Ecuador" },
+          "currencyCode": "USD",
+          "timezone": "America/Guayaquil"
+        },
+        "storeFiscalConfig": {
+          "enabled": true,
+          "govIdType": "RUC",
+          "govIdNumber": "1790012345001",
+          "company": {
+            "govIdType": "RUC",
+            "govIdNumber": "1790012345001",
+            "legalName": "Your Company Cia. Ltda.",
+            "tradeName": "Your Brand"
+          }
+        }
+      },
+      "payments": {
+        "totals": [{ "currency_code": "USD", "total": "10000", "taxes": [{ "base": "8696", "name": "IVA", "rate": "0.15", "amount": "1304" }] }],
+        "metadata": { "fiscal": null }
+      },
+      "orderLines": [{ "selectedCurrency": "USD", "metadata": { "fiscal": null } }]
+    }
+    ```
+  </Tab>
+
+  <Tab title="Venezuela (VE)">
+    Mesmo formato com `RIF` como tipo de gov ID e `VES` como moeda:
+
+    ```json
+    {
+      "store": {
+        "code": "VE-CCS-001",
+        "locationInfo": {
+          "country": { "code": "VE", "name": "Venezuela" },
+          "currencyCode": "VES",
+          "timezone": "America/Caracas"
+        },
+        "storeFiscalConfig": {
+          "enabled": true,
+          "govIdType": "RIF",
+          "govIdNumber": "J-12345678-9",
+          "company": {
+            "govIdType": "RIF",
+            "govIdNumber": "J-12345678-9",
+            "legalName": "Your Company CA",
+            "tradeName": "Your Brand"
+          }
+        }
+      },
+      "payments": {
+        "totals": [{ "currency_code": "VES", "total": "1000", "taxes": [{ "base": "862", "name": "IVA", "rate": "0.16", "amount": "138" }] }],
+        "metadata": { "fiscal": null }
+      },
+      "orderLines": [{ "selectedCurrency": "VES", "metadata": { "fiscal": null } }]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Tabela de referência rápida
+
+| País | `country.code` | Moeda efetiva | `govIdType` (formato) | Agregados fiscais |
+|---|---|---|---|---|
+| Brasil | `BR` | `BRL` | `CNPJ` (14 dígitos) | Sim — agregados SEFAZ completos |
+| Argentina | `AR` | `ARS` | `CUIT` (`XX-XXXXXXXX-X`) | Não — `null` / vazio |
+| Chile | `CL` | `CLP` | `RUT` (`XXXXXXXX-X`) | Não |
+| Colombia | `CO` | `COP` | `NIT` (`XXXXXXXXX-X`) | Não |
+| Ecuador | `EC` | `USD` (moeda oficial do Equador) | `RUC` (13 dígitos) | Não |
+| Venezuela | `VE` | `VES` | `RIF` (`J-XXXXXXXX-X`) | Não |
+| Outros países | varia | varia | varia | Não |
+
+<Note>
+  À medida que mais países tiverem um pipeline fiscal dedicado, seus eventos fiscais chegarão como `fiscal.*.{cc}` (ex.: `fiscal.authorized.co`, `fiscal.authorized.ec`). Até lá, apenas `order.completed` e `order.cancelled` disparam para lojas não-BR — os blocos fiscais permanecem `null` / vazios.
+</Note>
+
+## Handler de exemplo
+
+```js
+async function onOrderCompleted(data) {
+  const {
+    orderId,
+    externalOrderId,
+    store,
+    payments,
+    orderLines,
+    fulfillment,
+    createdAt,
+  } = data;
+
+  // 1. Persiste para contabilidade / analítica
+  await db.orders.upsert({
+    where: { fireOrderId: orderId },
+    create: {
+      fireOrderId: orderId,
+      externalOrderId,
+      storeCode: store.code,
+      country: store.locationInfo.country.code,
+      currency: store.locationInfo.currencyCode,
+      // payments.totals[0].total é "229000" unidades menores × 10000
+      totalMinorUnits: BigInt(payments.totals[0]?.total ?? "0"),
+      completedAt: new Date(createdAt ?? Date.now()),
+      service: fulfillment.service.code,
+    },
+    update: {},
+  });
+
+  // 2. Se fiscal-enabled, despache para o pipeline fiscal
+  if (store.storeFiscalConfig?.enabled) {
+    await fiscalPipeline.enqueue({
+      orderId,
+      country: store.locationInfo.country.code,
+      emitter: store.storeFiscalConfig.company,
+      aggregates: payments.metadata?.fiscal,
+      lines: orderLines.map((l) => ({
+        itemId: l.itemId,
+        ncm: l.metadata?.fiscal?.ncm,
+        cfop: l.metadata?.fiscal?.cfop,
+      })),
+    });
+  }
+
+  // 3. Se delivery, despache para logística
+  if (fulfillment.service.code === "DELIVERY" && fulfillment.delivery) {
+    await dispatcher.send({
+      orderId,
+      address: fulfillment.delivery,
+      items: orderLines,
+    });
+  }
+}
+```
+
+## Erros comuns
+
+- **Decimais como strings × 10000.** `payments.totals[0].total === "229000"` significa 22.9 BRL. Use uma biblioteca decimal; nunca com `parseFloat`.
+- **O casing é misto em `payments.totals[]` e partes de `paymentMethods[]`.** Leia tanto `currencyCode` quanto `currency_code` defensivamente. O builder V4 transforma a maior parte do snapshot mas passa os objetos de payment sem alteração.
+- **`fulfillment.delivery` pode estar presente mesmo para serviços non-delivery** com zeros placeholder. Sempre ramifique em `fulfillment.service.code`.
+- **`client` pode ser um placeholder "FINAL_CONSUMER" populado** em BR — não é `null`. Trate `govIdType === "FINAL_CONSUMER"` como anônimo para analítica.
+- **`event.id` é o ID de execução do flow, não o ID do pedido.** Use `event.id` para idempotência (muda por entrega), e `orderId` como chave de negócio.
+- **Routing multi-tenant.** Use `store.account.uid`, `store.vendor.uid` e `store.code` para rotear ao tenant correto no seu sistema, mesmo que o Fire já dê escopo ao flow do lado dele.
+
+## Eventos relacionados
+
+<CardGroup cols={2}>
+  <Card title="order.cancelled" icon="ban" href="/pt/events/order-cancelled">
+    Dispara quando este pedido é cancelado depois.
+  </Card>
+  <Card title="order.invoiced" icon="file-invoice" href="/pt/events/order-invoiced">
+    Apenas Brasil — dispara quando a SEFAZ autoriza o documento fiscal do pedido.
+  </Card>
+</CardGroup>

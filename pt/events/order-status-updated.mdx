@@ -1,0 +1,137 @@
+---
+title: "order.status_updated"
+description: "O status de cozinha de um pedido mudou — o KDS reportou preparing, ready, dispatched ou cancelled."
+---
+
+<Note>
+  Evento novo (junho 2026). Nasce diretamente na **v1** — não existe forma v0.
+</Note>
+
+`order.status_updated` dispara quando o **KDS** (Kitchen Display System) reporta uma mudança de status na cozinha: começou a ser preparado (`preparing`), está pronto (`ready`), foi despachado (`dispatched`) ou foi cancelado na cozinha (`cancelled`).
+
+Para os três status de avanço, o Fire aplica um **gate anti-regressão** (um status nunca retrocede: `dispatched` não volta para `ready`) e só emite este evento quando o status genuinamente avança. `cancelled` é a exceção — ignora o gate e pode chegar de qualquer estado da cozinha. Por isso você recebe **um evento por mudança real** — sem duplicados, sem retrocessos.
+
+## Condição de disparo
+
+O Fire emite `order.status_updated` quando **qualquer uma** das seguintes condições for verdadeira:
+
+- O KDS reportou um status de **avanço** (`preparing`, `ready` ou `dispatched`) que passa pelo gate anti-regressão (`preparing` → `ready` → `dispatched`)
+- O KDS reportou `cancelled` para o pedido (sem restrição anti-regressão — pode chegar de qualquer estado da cozinha)
+
+Em ambos os casos, o reporte deve referenciar um evento que o Fire emitiu para esse pedido (validação de origem).
+
+| | |
+|---|---|
+| Cobertura | **Todos os países** |
+| Status | `preparing` → `ready` → `dispatched` (monotônico); `cancelled` (de qualquer estado) |
+| Chave de idempotência | `event.id` |
+| Dispara mais de uma vez | Uma vez por mudança de status (máx. 4 por pedido); retentativas compartilham `event.id` |
+| Origem do dado | `kitchen.source` — apenas `kds` hoje; o campo fica aberto a fontes futuras |
+
+## O que vem em `data`
+
+É um **payload leve (thin)** — diferente de `order.completed`, **não** carrega o pedido completo. Carrega o necessário para agir sobre uma mudança de status: a **identidade** do pedido, refs mínimas de **canal / loja**, o **tipo de fulfillment**, e o bloco **`kitchen`** (o avanço + o percurso). Omite de propósito `orderLines`, `payments`, `taxes`, `client`, `device` e o endereço de entrega — você já recebeu isso em [`order.completed`](/pt/events/order-completed); faça o match por `orderId` / `externalOrderId` e aplique a mudança.
+
+```json
+{
+  "event": {
+    "id": "7f3c2a1b-9d4e-4f6a-8b2c-1e5d3a7f9c0b",
+    "type": "order.status_updated",
+    "createdAt": "2026-06-10T18:24:31.000Z"
+  },
+  "data": {
+    "orderId": "443bb714-fb69-4538-9ecb-de0acad7b88f",
+    "orderCode": "OC-br-001",
+    "externalOrderId": "f3bf9fa1-baa8-4050-9e37-4e6d905ee308",
+    "businessDayDate": "2026-05-25",
+    "status": "COMPLETED",
+    "channel": { "code": "99", "uid": "6bac8d41-..." },
+    "store": {
+      "code": "BR-SP-001",
+      "name": "Lab Store BR",
+      "account": { "uid": "100", "name": "Sandbox" },
+      "vendor":  { "uid": "100.2.1", "name": "Deli Burger BR" }
+    },
+    "fulfillment": { "service": { "code": "DELIVERY" } },
+    "kitchen": {
+      "status": "ready",
+      "previousStatus": "preparing",
+      "rank": 2,
+      "occurredAt": "2026-06-10T18:24:29.000Z",
+      "stationName": "Cozinha quente",
+      "providerEventId": "kds-evt-8842",
+      "kdsEventLogId": "1a2b3c4d-...",
+      "source": "kds",
+      "history": [
+        { "status": "preparing", "rank": 1, "occurredAt": "2026-06-10T18:12:02.000Z", "stationName": "Cozinha quente" },
+        { "status": "ready",     "rank": 2, "occurredAt": "2026-06-10T18:24:29.000Z", "stationName": "Cozinha quente" }
+      ]
+    }
+  }
+}
+```
+
+### Identidade e contexto
+
+<ResponseField name="orderId" type="string">UUID do pedido no Fire — faça o match com o `order.completed` que você recebeu.</ResponseField>
+<ResponseField name="orderCode" type="string">Código legível do pedido.</ResponseField>
+<ResponseField name="externalOrderId" type="string">O id do pedido **no canal/agregador** — use-o para fazer o match do lado deles.</ResponseField>
+<ResponseField name="status" type="string">Status de negócio do pedido (`COMPLETED` / `CANCELLED`). Contexto — o percurso da cozinha é paralelo.</ResponseField>
+<ResponseField name="channel" type="object">
+  `code` (canônico, sempre presente — ex. `99`) e `uid`. O nome legível do canal vem do seu catálogo de channels, não deste evento.
+</ResponseField>
+<ResponseField name="store" type="object">
+  Ref mínima da loja: `code`, `name`, mais `account { uid, name }` e `vendor { uid, name }`.
+</ResponseField>
+<ResponseField name="fulfillment" type="object">
+  `service.code` — `DELIVERY` ou `PICKUP`. Dá sentido ao status (um `ready` para delivery vs pickup).
+</ResponseField>
+
+### O bloco `kitchen`
+
+<ResponseField name="kitchen" type="object">
+  O avanço que disparou o evento + o percurso completo. Distinto do bloco `kds` (dados estáticos do pedido capturados na injeção).
+
+  <Expandable title="kitchen">
+    <ResponseField name="status" type="string">
+      Status que disparou o evento: `preparing` | `ready` | `dispatched` | `cancelled`.
+    </ResponseField>
+    <ResponseField name="previousStatus" type="string | null">
+      Status anterior. `null` no primeiro avanço.
+    </ResponseField>
+    <ResponseField name="rank" type="number">
+      Sequência do percurso: `preparing`=1 < `ready`=2 < `dispatched`=3. **Webhooks não chegam ordenados** — use isto para detectar eventos antigos/fora de ordem (ignore um `rank` menor que o último que você aplicou).
+    </ResponseField>
+    <ResponseField name="occurredAt" type="string">
+      ISO 8601 — quando ocorreu no KDS (relógio do cliente).
+    </ResponseField>
+    <ResponseField name="stationName" type="string | null">
+      Estação que reportou, se o KDS enviar.
+    </ResponseField>
+    <ResponseField name="providerEventId" type="string">
+      Chave de dedup do reporte de entrada do KDS.
+    </ResponseField>
+    <ResponseField name="kdsEventLogId" type="string">
+      O id do recibo do Fire para o evento KDS de entrada (cross-audit).
+    </ResponseField>
+    <ResponseField name="source" type="string">
+      Quem reportou. Apenas `kds` hoje.
+    </ResponseField>
+    <ResponseField name="history" type="array">
+      Percurso completo até agora — uma entrada por marco (`status`, `rank`, `occurredAt`, `stationName`), ordenado por rank. Permite reconstruir todo o caminho a partir de um único evento e reconciliar se chegarem fora de ordem.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Casos de uso típicos
+
+- **Acompanhamento do pedido para o cliente** — "seu pedido está pronto" ou "seu pedido foi cancelado" no app ou tela de retirada
+- **Notificar o agregador** — avisar iFood/Rappi/99food que o pedido está pronto para o entregador ou que foi cancelado na cozinha
+- **Métricas de cozinha** — tempos preparing→ready por loja/estação a partir de `history`
+- **Fluxo de cancelamento** — acionar limpeza downstream (liberar entregador, reembolso, alerta de operações) quando `kitchen.status = "cancelled"`
+
+## O que NÃO faz
+
+- **Não muda o status do pedido** — exceto no cancelamento. Para os status de avanço (`preparing`, `ready`, `dispatched`), `data.status` continua `"COMPLETED"`. Quando `kitchen.status = "cancelled"`, `data.status` será `"CANCELLED"`.
+- **Nunca retrocede** para status de avanço. Se o KDS reportar `ready` depois de `dispatched`, o Fire descarta (gate anti-regressão) e não emite nada. `cancelled` está isento desta regra.
+- **Não substitui `order.completed`.** Assine os dois: `order.completed` para o fato de negócio, `order.status_updated` para o progresso físico.

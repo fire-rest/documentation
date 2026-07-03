@@ -1,0 +1,191 @@
+---
+title: "order.invoiced"
+description: "La autoridad fiscal autorizó el documento (factura electrónica) de una orden vía tu proveedor fiscal — todos los países."
+---
+
+<Tabs>
+  <Tab title="v1 · actual">
+    Contrato **actual (v1)**. El snapshot de orden que se lleva acá sigue el contrato v1 de `order.completed` — descuentos de orden/producto, impuestos granulares, enum `itemType`, `deliveryConfirmationCode` — más el bloque `fiscal` de autorización.
+  </Tab>
+  <Tab title="v0 · deprecado">
+    <Warning>El contrato **v0** está **deprecado** — se mantiene solo como referencia histórica. Ábrelo acá: [order-completed — v0](/es/events-v0/order-completed).</Warning>
+  </Tab>
+</Tabs>
+
+`order.invoiced` dispara cuando la **autoridad fiscal del país** autoriza el documento fiscal asociado a una orden — SEFAZ en Brasil, SRI en Ecuador, DIAN en Colombia, AFIP en Argentina, SII en Chile, SENIAT en Venezuela. Lo emite el pipeline fiscal de Fire, que se integra con tu proveedor fiscal como proveedor de documentos.
+
+Este evento es **separado de** [`order.completed`](/es/events/order-completed): la orden se paga primero (`order.completed`), después Fire pide la emisión fiscal vía tu proveedor fiscal, y `order.invoiced` dispara solo cuando la autoridad fiscal devuelve la autorización.
+
+## Condición de disparo
+
+Fire emite `order.invoiced` una vez por documento fiscal, la primera vez que **todo** lo siguiente es verdadero:
+
+- La orden está en una tienda con facturación fiscal habilitada (`storeFiscalConfig.enabled === true`)
+- Se emitió un documento fiscal a tu proveedor fiscal
+- tu proveedor fiscal reporta que la autoridad fiscal autorizó el documento (el `status` transiciona a `authorized`; en Brasil esto corresponde al código `cStat` de autorización SEFAZ)
+
+| | |
+|---|---|
+| Cobertura | **Todos los países** — Brasil (NFC-e/NF-e vía SEFAZ) y CO/EC/CL/AR/VE vía el [callback fiscal genérico](/es/api-reference/fiscal-callback). El país viaja en `fiscal.countryCode`, ya no en el nombre del evento |
+| Tipos de documento | Varían por país — `nfce`/`nfe` (BR), factura electrónica (CO/EC/CL/AR/VE). Llega en `fiscal.docSubtype` |
+| Llave de idempotencia | `event.id` |
+| Dispara más de una vez | No, salvo en reintentos |
+| Latencia relativa a `order.completed` | Usualmente segundos; puede ser minutos si la autoridad fiscal está degradada |
+
+## Qué hay en `trigger.data`
+
+Mismo snapshot V4 que [`order.completed`](/es/events/order-completed) más un bloque top-level **`fiscal`** con las referencias del documento autorizado. **Los campos varían por país** — abajo se muestra Brasil (`chaveAcesso`, `protocolo`); otros países llevan sus identificadores propios (`cufe` en CO, `claveAcceso` en EC, `cae` en AR, etc.). Ver el [callback fiscal genérico](/es/api-reference/fiscal-callback) para el contrato por país.
+
+El `status` de la orden permanece `"COMPLETED"` y `paymentStatus` permanece `"SUCCEEDED"` — la autorización fiscal no cambia el status de orden.
+
+## Ejemplo — payload real de producción (BR, sanitizado)
+
+```json
+{
+  "event": {
+    "id": "...",
+    "type": "order.invoiced",
+    "createdAt": "2026-05-06T01:23:11.000Z"
+  },
+  "data": {
+    "orderId": "8017b54c-af0c-4246-a60a-a0d4ae9a0fef",
+    "orderCode": "OC-br-001",
+    "businessDayDate": "2026-03-31",
+    "externalOrderId": "8017b54c-af0c-4246-a60a-a0d4ae9a0fef",
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "createdAt": "2026-05-06T01:22:56.488Z",
+    "store": { /* igual que order.completed — incluye storeFiscalConfig con CNPJ, legalName */ },
+    "client": { /* ... */ },
+    "payments": { /* ... — incluye payments.metadata.fiscal con agregados */ },
+    "orderLines": [ /* ... */ ],
+    "fulfillment": { /* ... */ },
+    "device": { /* ... */ },
+    "channel": { /* ... */ },
+    "operator": { /* ... */ },
+    "kds": { /* ... */ },
+    "marketing": null,
+    "metadata": {},
+
+    "fiscal": {
+      "status": "authorized",
+      "docSubtype": "nfce",
+      "chaveAcesso": "41201008187168000160558050010000131609769080",
+      "numero": "1000013",
+      "serie": null,
+      "protocolo": "141200000956123",
+      "providerDocId": "69fa97fe427d1240856e1282",
+      "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/xml",
+      "dataAutorizacao": "2026-05-06T01:23:10.991Z",
+      "cStat": null
+    }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "attempt": "1" }
+}
+```
+
+## Referencia de `data.fiscal`
+
+<ResponseField name="fiscal" type="object">
+  Referencias del documento autorizado por SEFAZ.
+
+  <Expandable title="fiscal">
+    <ResponseField name="status" type="string">
+      Status del documento. Para este evento, siempre `"authorized"`. Otros valores que puedes ver en tu proveedor fiscal (`pending`, `processing`, `rejected`, `denied`) **no** disparan `order.invoiced` — solo el estado terminal autorizado.
+    </ResponseField>
+    <ResponseField name="docSubtype" type="string">
+      Tipo de documento. Valores: `nfce` (NFC-e — factura de consumidor, B2C) o `nfe` (NF-e — factura de negocio, B2B).
+    </ResponseField>
+    <ResponseField name="chaveAcesso" type="string">
+      Chave de acesso SEFAZ de 44 dígitos. Codifica UF, año/mes, CNPJ, modelo, serie, número, tipo de emisión y un dígito verificador. Úsala para reconciliar con portales SEFAZ.
+    </ResponseField>
+    <ResponseField name="numero" type="string">
+      Número de documento asignado por el pipeline de emisión de Fire. Secuencial por `(cnpj, serie, docSubtype)`.
+    </ResponseField>
+    <ResponseField name="serie" type="string | null">
+      Serie del documento. Puede ser `null` para algunas configuraciones; la serie está codificada en `chaveAcesso` igualmente.
+    </ResponseField>
+    <ResponseField name="protocolo" type="string">
+      Número de protocolo de autorización SEFAZ. Requerido para cualquier operación SEFAZ subsecuente (cancelación, corrección).
+    </ResponseField>
+    <ResponseField name="providerDocId" type="string">
+      ID interno del documento en tu proveedor fiscal. Úsalo para consultar las APIs de tu proveedor fiscal directamente (p. ej. obtener el XML canónico).
+    </ResponseField>
+    <ResponseField name="pdfUrl" type="string">
+      URL para descargar el PDF del documento (DANFE para NF-e, DANFCE para NFC-e). Hosteado por tu proveedor fiscal; firmado/de vida corta en producción, durable en sandbox.
+    </ResponseField>
+    <ResponseField name="xmlUrl" type="string">
+      URL para descargar el XML canónico SEFAZ. Mismo hosting que `pdfUrl`.
+    </ResponseField>
+    <ResponseField name="dataAutorizacao" type="string">
+      Timestamp ISO 8601 UTC de la autorización SEFAZ (cuando SEFAZ estampó el protocolo).
+    </ResponseField>
+    <ResponseField name="cStat" type="string | null">
+      Código de status raw de SEFAZ. Puede ser `null` cuando el proveedor no lo expone (tu proveedor fiscal lo oculta para algunos flows de consumidor). Cuando está presente, `100` (NF-e) o `100` (NFC-e) indican autorización.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Dónde viven los totales fiscales
+
+Los valores agregados fiscales (vBC, vNF, vICMS, etc.) **no están** dentro de `data.fiscal` — están en `data.payments.metadata.fiscal`, el mismo lugar donde [`order.completed`](/es/events/order-completed#datos-fiscales) los lleva. `order.invoiced` no los duplica; trata el snapshot de la orden como la única fuente de verdad para los agregados monetarios.
+
+La clasificación por línea (NCM, CFOP, CSOSN, fiscalCategoryCode) vive en `data.orderLines[n].metadata.fiscal`. Igual que en `order.completed`.
+
+El bloque `data.store.storeFiscalConfig` lleva la identidad del emisor (CNPJ, legalName, tradeName) — también igual a `order.completed`.
+
+## Handler de ejemplo
+
+```js
+async function onFiscalAuthorized(data) {
+  const { orderId, fiscal, store } = data;
+
+  // 1. Persiste la autorización SEFAZ para auditoría
+  await db.fiscalDocs.upsert({
+    where: { providerDocId: fiscal.providerDocId },
+    create: {
+      providerDocId: fiscal.providerDocId,
+      fireOrderId: orderId,
+      country: "BR",
+      cnpj: store.storeFiscalConfig.govIdNumber,
+      docSubtype: fiscal.docSubtype,
+      chaveAcesso: fiscal.chaveAcesso,
+      protocolo: fiscal.protocolo,
+      authorizedAt: new Date(fiscal.dataAutorizacao),
+      status: "authorized",
+    },
+    update: {},
+  });
+
+  // 2. Obtén el XML canónico para archivado (legalmente requerido en BR)
+  const xml = await fetch(fiscal.xmlUrl).then(r => r.text());
+  await archive.put(`xml/${fiscal.providerDocId}.xml`, xml);
+
+  // 3. Notifica al cliente con el link del PDF
+  await mailer.send({
+    to: data.client?.email,
+    template: "fiscal-receipt",
+    pdf: fiscal.pdfUrl,
+  });
+}
+```
+
+## Errores comunes
+
+- **`status === "authorized"`, no `"COMPLETED"`.** El `data.status` (status de la orden) es `"COMPLETED"`; el status fiscal está en `data.fiscal.status`.
+- **`pdfUrl` y `xmlUrl` pueden ser efímeros.** En producción, tu proveedor fiscal puede firmar/expirar estos links. Descarga y persiste los artefactos al recibir, en lugar de linkear clientes directamente a tu proveedor fiscal.
+- **`cStat` a menudo es `null`.** No hagas lógica que dependa de él. Usa `status === "authorized"` y `protocolo` como señales autoritativas.
+- **No hay evento para `rejected` / `denied` / `error`.** Si SEFAZ rechaza el documento, no dispara evento hoy. El status del documento fiscal se persiste internamente pero no se dispara flow. Vigila esto en el roadmap.
+- **El país ya no vive en el nombre del evento.** `order.invoiced` dispara para todos los países; usa `fiscal.countryCode` para filtrar. Los campos del bloque `fiscal` varían por país (chaveAcesso/protocolo en BR, cufe en CO, claveAcceso en EC, etc.).
+
+## Eventos relacionados
+
+<CardGroup cols={2}>
+  <Card title="order.completed" icon="receipt" href="/es/events/order-completed">
+    Dispara antes de este evento — la orden misma.
+  </Card>
+  <Card title="order.reversed" icon="file-circle-xmark" href="/es/events/order-reversed">
+    Dispara después si el documento se cancela en SEFAZ.
+  </Card>
+</CardGroup>

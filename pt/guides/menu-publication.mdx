@@ -1,88 +1,112 @@
 ---
 title: "Publicação de cardápios"
-description: "Trate os eventos de cardápio do Fire: atualizações e sincronizações em massa."
+description: "Como tratar o evento menu.updated do Fire: quando é emitido, o que contém e como processá-lo."
 ---
 
-Um cardápio no Fire é a definição completa do catálogo para uma combinação específica de loja e canal — categorias, produtos, grupos de modificadores e horários. O Fire emite dois tipos de eventos de cardápio:
+Um cardápio no Fire é a definição completa do catálogo para uma combinação específica de loja e canal — categorias, produtos, grupos de modificadores e horários. Sempre que um cardápio muda, o Fire emite um evento `menu.updated` com o catálogo completo pronto para encaminhar downstream.
 
-| Evento | Quando |
-|---|---|
-| [`menu.updated`](/pt/webhook-reference/menu-updated) | Um único cardápio mudou — também sinaliza remoção via payload vazio |
-| [`menus.sync`](/pt/webhook-reference/menus-sync) | Sincronização em massa — onboarding ou mudanças que afetam várias lojas |
+O payload é autocontido. Não é necessário chamar endpoints adicionais para obter os dados do cardápio — tudo já vem incluído.
 
-## menu.updated
+## Processamento
 
-Emitido sempre que um cardápio muda. O payload é uma definição completa do cardápio — categorias, produtos, grupos de modificadores e horários programados — pronta para encaminhar downstream.
+<Steps>
+  <Step title="Verifique a assinatura">
+    Extraia o header `X-Fire-Signature` e valide-o contra o body bruto da requisição usando o signing secret da sua integração. O secret é gerado ao registrar o endpoint no dashboard do Fire em **Integrações de agregadores**. Veja [Autenticação](/pt/authentication) para o processo de verificação completo.
+  </Step>
+  <Step title="Confirme imediatamente">
+    Retorne `200 OK` antes de qualquer processamento. O Fire reenviará se não receber resposta a tempo.
+  </Step>
+  <Step title="Identifique o cardápio">
+    Use `data.menu.list.storeId` e `data.menu.list.channelId` para determinar a qual loja e canal este cardápio pertence.
+  </Step>
+  <Step title="Substitua o cardápio completo">
+    Aplique `data.menu` como substituição total no seu sistema downstream. Não é um diff — sobrescreva o estado anterior por completo.
+  </Step>
+</Steps>
 
-```
-Fire emite menu.updated → Seu sistema recebe o evento → Seu sistema atualiza downstream
-```
+<Warning>
+  O payload é um **cardápio completo**, não um diff. Substitua o cardápio inteiro no sistema downstream sempre que receber este evento.
+</Warning>
+
+## Payload
 
 ```json
 {
-  "event": "menu.updated",
-  "id": "evt_def456",
-  "created_at": "2025-01-15T14:31:00Z",
+  "event": {
+    "id": "evt_def456",
+    "type": "menu.updated",
+    "executionId": "exec_abc123",
+    "createdAt": "2025-01-15T14:31:00.000Z"
+  },
   "data": {
     "account": "1",
-    "country": "EC",
+    "country": "BR",
+    "groupId": "a3f7c2d1-84be-4e10-9b3a-2c5d6e7f8091",
     "menu": {
-      "list": { ... },
+      "list": {
+        "listId": "805-iFood-delivery",
+        "listName": "iFood - Store 805",
+        "storeId": "805",
+        "channelId": "0E049503-85CF-E511-80C6-000D3A3261F3",
+        "channelReferenceName": "iFood",
+        "schedules": [ ... ]
+      },
       "categories": [ ... ],
       "products": [ ... ],
-      "modifierGroups": [ ... ],
-      "scheduledActivities": [ ... ]
+      "modifierGroups": [ ... ]
     }
   }
 }
 ```
 
-O objeto `data` é autocontido e está pronto para ser encaminhado downstream. Veja [`menu.updated`](/pt/webhook-reference/menu-updated) para o esquema completo.
+Veja [`menu.updated`](/pt/webhook-reference/menu-updated) para o esquema completo com todos os campos e tipos.
 
-<Steps>
-  <Step title="Verifique a assinatura">
-    Valide `X-Fire-Signature`. Veja [Autenticação](/pt/authentication).
-  </Step>
-  <Step title="Confirme imediatamente">
-    Retorne `200 OK` antes de qualquer trabalho.
-  </Step>
-  <Step title="Atualize downstream">
-    Passe `data.menu` para seu sistema downstream, identificado por `menu.list.storeId` e `menu.list.channelId`.
-  </Step>
-</Steps>
+## Estrutura do cardápio
 
-<Warning>
-  O payload é um **cardápio completo** — não um diff. Substitua o cardápio inteiro no sistema downstream.
-</Warning>
+### `data.menu.list`
 
-### Remover um cardápio externamente
+Identifica a qual loja e canal o cardápio pertence. Use `storeId` e `channelId` como chave para fazer upsert no seu sistema downstream.
 
-O Fire não tem um evento explícito de exclusão de cardápio. Quando um cardápio precisa ser removido de um sistema downstream, o Fire envia um evento `menu.updated` com `menu.categories`, `menu.products`, `menu.modifierGroups` e `menu.scheduledActivities` como arrays vazios. Trate um cardápio vazio como um sinal para desativá-lo ou removê-lo externamente.
+O campo `schedules` em `list` define as janelas de tempo em que o cardápio está ativo. Sempre presente; `null` se nenhum horário estiver definido.
 
-## menus.sync
+### `data.menu.categories`
 
-Emitido quando o Fire precisa propagar cardápios para várias lojas de uma vez. O Fire divide sincronizações grandes automaticamente e emite vários eventos em sequência. Cada evento traz um cardápio em `data.menu`, com a mesma estrutura de [`menu.updated`](/pt/webhook-reference/menu-updated).
+Lista de categorias visíveis. Cada categoria inclui `productListing` — um array com os `productId` de seus produtos e suas posições de exibição.
 
-```
-Fire emite menus.sync (lote 1 de N) → Seu sistema processa o lote → repita até batchIndex = batchTotal
-```
+As categorias também podem ter `schedules` próprios que restringem sua visibilidade a determinados horários, independentemente do horário do cardápio.
 
-```json
-{
-  "event": "menus.sync",
-  "id": "evt_def458",
-  "created_at": "2025-01-15T15:15:00Z",
-  "data": {
-    "account": "1",
-    "country": "EC",
-    "batchIndex": 1,
-    "batchTotal": 4,
-    "menu": { ... }
-  }
-}
-```
+### `data.menu.products`
 
-Processe cada evento de forma independente. Aplique `data.menu` ao sistema downstream identificado por `menu.list.storeId` e `menu.list.channelId`. Cada evento é reenviado de forma independente em caso de falha. Veja [`menus.sync`](/pt/webhook-reference/menus-sync) para o esquema completo.
+Lista plana de todos os itens do cardápio — tanto produtos principais quanto opções usadas em grupos de modificadores. O campo `type` indica o papel de cada item:
+
+| Tipo | Descrição |
+|---|---|
+| `PRODUCT` | Item principal vendável |
+| `MODIFIER` | Opção de modificador (ex.: tamanho, ingrediente extra) |
+| `COMPLEMENT` | Complemento incluído na seleção |
+| `COMBO` | Produto cujo preço depende das seleções do cliente |
+
+Para produtos `COMBO`, `priceInfo.price` é sempre `0`. Use `priceInfo.referencePrice` como preço de cabeçalho. Os grupos de modificadores de um combo podem incluir `overrides` de preço por opção.
+
+Veja o guia [Estrutura de produtos](/pt/guides/combo-products) para o tratamento completo de COMBOs e overrides de modificadores.
+
+### `data.menu.modifierGroups`
+
+Define os grupos de opções e suas regras de seleção. Cada grupo referencia suas opções via `productId`, que deve existir em `products`.
+
+| Campo | Descrição |
+|---|---|
+| `minOptions` | Mínimo de seleções obrigatórias (`0` = grupo opcional) |
+| `maxOptions` | Máximo de seleções permitidas |
+| `type` | `RADIO` (uma opção) ou `CHECKBOX` (múltiplas) |
+
+## groupId
+
+Eventos emitidos na mesma publicação compartilham o mesmo `groupId`. Você pode usá-lo para correlacionar eventos relacionados, mas não é necessário para processá-los — cada um é independente e autocontido.
+
+## Remover um cardápio
+
+O Fire não emite um evento de exclusão separado. Para sinalizar a remoção de um cardápio, o Fire envia um `menu.updated` com `categories`, `products` e `modifierGroups` como arrays vazios. Trate um cardápio vazio como sinal para desativá-lo ou removê-lo no seu sistema downstream.
 
 ## Idempotência
 

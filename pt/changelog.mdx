@@ -3,7 +3,123 @@ title: Registro de alterações
 description: Atualizações recentes na documentação e na referência da API.
 ---
 
+## 29 de junho de 2026 — Manuais do usuário KDS
+
+Adicionada a seção **KDS** na aba Manuais do usuário, cobrindo tanto o uso pelo operador quanto a administração pelo backoffice:
+
+- **[Visão geral e conceitos](/pt/manuals/kds/admin-overview)** — como lojas, estações, telas, roteamento, dispositivos e impressão se relacionam; dois tipos de estação (produção vs convergência); padrões de cozinha (somente montagem, KITCHEN, multi-estação).
+- **[Configurar uma loja](/pt/manuals/kds/store-setup)** — aplicar um modelo (assistente de blueprint) ou configurar do zero; ordem recomendada das etapas.
+- **[Estações](/pt/manuals/kds/stations)** — campos, regras opcionais por canal / serviço / tipo de item, criação passo a passo.
+- **[Telas](/pt/manuals/kds/screens)** — identificador de dispositivo, criar e atribuir estações, relação tela ↔ estação.
+- **[Roteamento](/pt/manuals/kds/routing)** — camadas de decisão (roteamento → regras → distribuição → convergência), modos de distribuição, exemplo multi-estação.
+- **[Periféricos, impressão e validação](/pt/manuals/kds/peripherals-printing)** — teclados, impressão de retirada (uma tela por loja), cancelamento de pedidos, checklist de go-live e rotas de referência.
+- **[Ações na tela](/pt/manuals/kds/screen-actions)** — avançar, reter/liberar, desfazer, cancelar, paginação, menu de configurações e atalhos de teclado.
+- **[Tela de espera](/pt/manuals/kds/waitlist)** — tela para clientes (áreas em preparo / pronto, destaque ao ficar pronto, paginação automática).
+
+As 8 páginas publicadas em **EN / ES / PT**.
+
+---
+
+## 22 de junho de 2026 — Novo guia: Estrutura de produtos · Publicação de cardápios atualizada
+
+### Novo guia: Estrutura de produtos
+
+Nova página [Estrutura de produtos](/pt/guides/combo-products) na aba Guias — cobre o tipo `COMBO` e os overrides de modificadores:
+
+- **Tipo COMBO** — `priceInfo.price` é sempre `0`; usar `priceInfo.referencePrice` como preço de cabeçalho do produto.
+- **Preço de referência** — soma de (opção mais barata × `minOptions`) em cada grupo de modificadores obrigatório (`minOptions ≥ 1`).
+- **Overrides de modificadores** — `productModifiers[n].overrides` define um preço diferente para uma opção dentro de um combo específico; tem precedência sobre o preço base do produto em `products[]`.
+- **Preços delta** — grupos obrigatórios exibem `+R$ X` acima do baseline; grupos opcionais exibem o preço cheio do add-on.
+
+### Guia de publicação de cardápios
+
+- Removida a seção `menus.sync` — esse evento não existe mais.
+- Corrigido o formato do payload: `event` é agora um objeto aninhado (`id`, `type`, `executionId`, `createdAt`), não campos no nível raiz.
+- O passo de verificação de assinatura agora especifica que o signing secret é obtido em **Integrações de agregadores** no dashboard do Fire.
+- Adicionada seção de estrutura do cardápio com descrição de `list`, `categories`, `products` (tabela de tipos) e `modifierGroups`.
+
+Atualizado em **EN / ES / PT**.
+
+---
+
+## 15 de junho de 2026 — `order.completed` — novos campos do método de pagamento
+
+Adicionados 4 campos em `payments.paymentMethods[n]` no evento [`order.completed`](/pt/events/order-completed). Todos são nullable e já estão em produção.
+
+- **`idAuth`** (`string | null`) — ID de autorização do processador de pagamento (ex.: SiTef `IdAuth`). Diferente de `authorizationCode`.
+- **`receiptCustomer`** (`string | null`) — Texto completo do comprovante para o cliente; pode ser multilinha.
+- **`receiptMerchant`** (`string | null`) — Texto completo do comprovante para o estabelecimento; pode ser multilinha.
+- **`acquirer.cnpj`** (`string | null`) — CNPJ da credenciadora de pagamento — apenas Brasil.
+
+Atualizado em **EN / ES / PT**.
+
+## 15 de junho de 2026 — Campos de detalhe do método de pagamento
+
+Adicionados 5 campos opcionais em `payments.paymentMethods[n]` em [Injetar pedido](/pt/api-reference/orders):
+
+- **`id_auth`** (`string | null`) — Número de autorização NFCE (SiTef 952 / IdAuth).
+- **`receipt_customer`** (`string | null`) — Via do cliente: texto do comprovante impresso para o portador (SiTef 121 / ReceiptCustomer).
+- **`receipt_merchant`** (`string | null`) — Via do estabelecimento: texto do comprovante impresso para o lojista (SiTef 122 / ReceiptMerchant).
+- **`acquirer.cnpj`** (`string`) — CNPJ da credenciadora para NFCE (SiTef 950 / CNPJAuth). `acquirer` fica documentado como nullable — envie `null` para métodos sem credenciadora.
+- **`card.media`** (`string`) — Tipo de leitura do cartão: `CHIP`, `MAGNETIC`, `NFC`, `MANUAL` (SiTef 2090 / Media). `card` fica documentado como nullable — envie `null` para métodos sem cartão.
+
+Todos os campos são opcionais e já estão implementados no validador. Atualizado em **EN / ES / PT**.
+
+## 14 de junho de 2026 — Webhook de status de pedido do agregador
+
+- **Novo webhook de entrada [`POST /v1/webhooks/aggregators/order-status`](/pt/api-reference/aggregator-order-status)** — seu agregador de delivery (Rappi / Uber / Didi / iFood / PedidosYa / Glovo…) faz POST com o status de entrega do pedido conforme ele avança (`courier_assigned` → `on_route` → `delivered`…). O Fire espelha o status mais recente em `orders.aggregator` e registra cada evento.
+- **O status é passthrough** — nenhum enum é imposto; os rótulos do próprio agregador são armazenados **literalmente**, e o status **atual** é o que tem o **`occurredAt` mais recente** (sem guard anti-regressão). Rótulos traduzidos amigáveis são resolvidos no momento da exibição a partir do catálogo do canal.
+- **Resolução flexível do pedido** — envie `orderId` (UUID do Fire) **e/ou** `externalOrderId` (sua referência, casada em `metadata.order_id`); ao menos um é obrigatório, ambos vendor-scoped. Se os dois forem enviados e resolverem para pedidos **diferentes** → `409`.
+- **Não há `eventId` emitido pelo Fire para ecoar** — um status de agregador é um evento externo espontâneo (o Fire não é a fonte da verdade aqui). A idempotência é chaveada em `(channelCode, providerEventId)` + `status`; `channelCode` deve ser igual ao `metadata.channel.code` do pedido.
+- **Auth**: API key vendor-scoped com o novo escopo **`webhooks:aggregator`**. `202` async + fila, mesmo envelope que os callbacks fiscal / KDS.
+- Documentado em **EN / ES / PT**.
+
+## 12 de junho de 2026 — Descontos do agregador em Injetar pedido
+
+Documentado como enviar descontos promocionais do agregador (iFood, Rappi, UberEats, etc.) no endpoint [Injetar pedido](/pt/api-reference/orders).
+
+- **Descontos do agregador são um método de pagamento, não uma linha de desconto.** Quando o agregador aplica um desconto ao cliente, o estabelecimento recebe o valor integral e o agregador reembolsa a diferença — modele como uma entrada extra em `payments.paymentMethods[]` com `paymentMethodCode: "AGGREGATOR_DISCOUNT"`, `transactionType: "BENEFIT"`, `processor` com o nome do agregador e `card: null`.
+- **`payments.discounts[]` fica vazio** para descontos do agregador — esse array é apenas para promos/cupons absorvidos pelo estabelecimento.
+- Nova regra de saldo documentada: `SUM(paymentMethods[].totalBill)` deve ser igual a produtos + cobranças extras + frete.
+- Novo [exemplo de request](/pt/api-reference/orders#descontos-do-agregador) com um pedido do iFood (BRL 38.69 CREDIT + BRL 1.00 AGGREGATOR_DISCOUNT = BRL 39.69 bruto).
+- Atualizado em **EN / ES / PT**.
+
+## 11 de junho de 2026 — Nomenclatura underscore + payload thin de fechamento de dia
+
+- **Nomes (breaking)** — `store.day-closed` → **`store.business_day_closed`** e `order.status-updated` → **`order.status_updated`** (nomenclatura underscore). Atualize seu switch de `event.type`.
+- **[`store.business_day_closed`](/pt/events/store-day-closed) agora é um payload thin** — identidade do fechamento (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`/`closedAt`), `closedBy` e uma **`store` mínima** (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). **Removido do evento**: `sales`, `metrics`, `summary`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders`, `metadata` — consulte-os por `businessDayId` quando precisar. **`snapshotId` renomeado para `businessDayId`** (mesmo valor).
+- Documentado em **EN / ES / PT**.
+
+## 10 de junho de 2026 — Eventos canônicos de pedido + evento de cozinha
+
+Os eventos fiscais perdem o país do nome e passam a ser **canônicos de pedido** — continua sendo o contrato **v1**, só muda o `event.type`:
+
+- **`fiscal.authorized.br` → [`order.invoiced`](/pt/events/order-invoiced)** e **`fiscal.cancelled.br` → [`order.reversed`](/pt/events/order-reversed)**. Se sua integração despacha por `event.type`, atualize o switch — a forma do payload não muda.
+- **Agora disparam para todos os países**: Brasil (SEFAZ via seu provedor fiscal) e CO/EC/CL/AR/VE via o [callback fiscal genérico](/pt/api-reference/fiscal-callback). O país viaja em `fiscal.countryCode`.
+- **Novo evento [`order.status_updated`](/pt/events/order-status-updated)** — o KDS avança o pedido na cozinha (`preparing` → `ready` → `dispatched`), com bloco `kitchen` e o percurso completo em `history`.
+- **O Fire é a fonte da verdade** — os webhooks de entrada ([callback fiscal](/pt/api-reference/fiscal-callback), [status KDS](/pt/api-reference/kds-order-status)) agora **validam que `eventId` referencia um evento emitido pelo Fire para esse pedido**; caso contrário respondem `400` antes do `202`. Sempre ecoe o `event.id` de um envelope que você recebeu.
+- Documentado em **EN / ES / PT**.
+
+## 9 de junho de 2026 — Contrato de eventos **v1**
+
+O contrato de eventos de pedido/fiscal/fechamento agora é oficialmente **v1**. Todas as adições são **retrocompatíveis** (novos campos opcionais); o formato anterior é preservado como **v0 (descontinuado, histórico)** — alterne com o seletor de versão no topo de cada página de evento.
+
+- **Descontos** — descontos de pedido e de produto trafegam como objeto **`Discount`** (`priority`, `type` `FIXED`/`PERCENTAGE`, `value`, `net_price`, `discount_value`, `net_price_after_discount`) em `payments.discounts`, `payments.totals[].discounts` e `orderLines[].price.*[].discounts` + `lineTotals[].discounts`.
+- **Impostos granulares** — `taxes[]` agora carrega os impostos da reforma BR `IBS_UF`, `IBS_MUN`, `CBS` junto de `ICMS`/`PIS`/`COFINS`, com metadata de reforma (`cClassTrib`, `reducao`, `rateNominal`, `rateEffective`). O detalhamento é **uniforme em todos os países** — LATAM carrega seu `IVA` local no mesmo `taxes[]`; apenas a emissão SEFAZ (`metadata.fiscal`, `fiscal.*.br`) é exclusiva do BR.
+- **`itemType`** — enum completo: `PRODUCT` / `COMBO` / `MODIFIER` / `PACKAGING`.
+- **`fulfillment.delivery.deliveryConfirmationCode`** — código de confirmação do agregador (ex. iFood / Rappi).
+- **store.business_day_closed** — `sales` agora inclui `product_discounts`, `gross_before_discounts`, `shipping`, `extra_charges`, `total_charged` e `taxes_by_type`. *(Substituído em 11 de junho — esses agregados já não vão embutidos no evento; o payload de fechamento agora é thin. Veja a entrada no topo.)*
+- **order.cancelled / order.invoiced / order.reversed** — carregam o snapshot v1 do pedido.
+- Documentado em **EN / ES / PT** com exemplos atualizados.
+
+## 8 de junho de 2026
+
+- **menu.updated**: adicionado `productModifiers[n].overrides[]` — permite definir um preço diferente para uma opção específica de modificador quando pertence a um produto específico. Cada override aponta para um `productId` e fornece seu próprio `priceInfo.price` e `priceInfo.salePrice`. Atualizado EN/ES/PT.
+
 ## 5 de junho de 2026
+
+- **menus.sync**: página removida — o Fire envia um único evento `menu.updated` por menu; a sincronização em lote não é mais um evento separado.
+- **menu.updated**: campo `event.timezone` removido do payload. Adicionado `data.groupId` — UUID que identifica o batch de sincronização; vários eventos emitidos juntos compartilham o mesmo valor, permitindo correlacioná-los em sistemas externos. Os arrays `schedules` de categorias e produtos agora incluem exemplos completos de 7 dias com janelas de horário diferentes por categoria (ex.: Hambúrgueres 11:00–23:00, Café da Manhã 07:00–11:00). Campo `standardTime` em produtos documentado: `true` herda os horários do menu, `false` significa que o produto tem seu próprio array `schedules`. Atualizado EN/ES/PT.
 
 - **Injetar pedido**: o campo `type` é agora **obrigatório** em cada item de `order.products[]`, em cada item de `selectedModifiers[]` e em cada item de `payments.extraCharges[]`. Valores aceitos: `COMBO` (produto com grupos de modificadores não vazios), `PRODUCT` (produto simples vendável ou opção vendável dentro de modificadores), `MODIFIER` (opção de modificador puro), `PACKAGING` (item de embalagem). Payloads que omitem `type` são inválidos. Exemplos de requisição atualizados em EN/ES/PT.
 - **Injetar pedido**: documentado `shippingMethod.delivery.additionalInfo.deliveryConfirmationCode` como string opcional para enviar o código de confirmação da entrega.

@@ -3,7 +3,124 @@ title: Changelog
 description: Recent documentation and API reference updates.
 ---
 
+## 29 June 2026 — KDS user manuals
+
+Added a **KDS** section to the User manuals tab covering both operator and backoffice administration:
+
+- **[Overview and concepts](/en/manuals/kds/admin-overview)** — how stores, stations, screens, routing, devices and printing fit together; two station types (production vs convergence); kitchen patterns (assembly-only, KITCHEN, multi-station).
+- **[Set up a store](/en/manuals/kds/store-setup)** — apply a template (blueprint wizard) or configure from scratch; step-by-step order.
+- **[Stations](/en/manuals/kds/stations)** — fields, optional station rules by channel / service / item type, step-by-step creation.
+- **[Screens](/en/manuals/kds/screens)** — device identifier, create and assign stations, screen ↔ station relationship.
+- **[Routing](/en/manuals/kds/routing)** — decision layers (routing → rules → distribution → convergence), distribution modes, multi-station example.
+- **[Peripherals, printing and validation](/en/manuals/kds/peripherals-printing)** — keyboard layouts, ready-pickup printing (one screen per store), order cancellation, go-live checklist and reference routes.
+- **[Screen actions](/en/manuals/kds/screen-actions)** — bump, hold/unhold, undo, cancel, pagination, settings menu and keyboard shortcuts.
+- **[Order display](/en/manuals/kds/waitlist)** — customer-facing waitlist screen (preparing / ready areas, hero on ready, auto-pagination).
+
+All 8 pages published in **EN / ES / PT**.
+
+---
+
+## 22 June 2026 — New guide: Products structure · Menu publication updated
+
+### New guide: Products structure
+
+New [Products structure](/en/guides/combo-products) page in the Guides tab — covers the `COMBO` type and modifier overrides:
+
+- **COMBO type** — `priceInfo.price` is always `0`; use `priceInfo.referencePrice` as the product header price.
+- **Reference price** — sum of (cheapest option × `minOptions`) across every required modifier group (`minOptions ≥ 1`).
+- **Modifier overrides** — `productModifiers[n].overrides` sets a different price for an option inside a specific combo; takes precedence over the option's base price in `products[]`.
+- **Delta pricing** — required groups show `+R$ X` above the baseline; optional groups show the full add-on price.
+
+### Menu publication guide
+
+- Removed the `menus.sync` section — that event no longer exists.
+- Fixed the payload format: `event` is now a nested object (`id`, `type`, `executionId`, `createdAt`), not top-level fields.
+- The signature verification step now specifies that the signing secret is obtained under **Aggregator integrations** in the Fire dashboard.
+- Added a menu structure section describing `list`, `categories`, `products` (type table), and `modifierGroups`.
+
+Updated in **EN / ES / PT**.
+
+---
+
+## 15 June 2026 — `order.completed` — new payment method fields
+
+Added 4 fields to `payments.paymentMethods[n]` in the [`order.completed`](/en/events/order-completed) event. All fields are nullable and already live in production.
+
+- **`idAuth`** (`string | null`) — Authorization ID from the payment processor (e.g. SiTef `IdAuth`). Distinct from `authorizationCode`.
+- **`receiptCustomer`** (`string | null`) — Full customer-facing receipt text; may be multi-line.
+- **`receiptMerchant`** (`string | null`) — Full merchant-facing receipt text; may be multi-line.
+- **`acquirer.cnpj`** (`string | null`) — Tax ID (CNPJ) of the payment acquirer — Brazil only.
+
+Updated in **EN / ES / PT**.
+
+## 15 June 2026 — Payment method details fields
+
+Added 5 optional fields to `payments.paymentMethods[n]` in [Inject Order](/en/api-reference/orders):
+
+- **`id_auth`** (`string | null`) — NFCE authorization number (SiTef 952 / IdAuth).
+- **`receipt_customer`** (`string | null`) — Customer receipt copy: printed receipt text for the cardholder (SiTef 121 / ReceiptCustomer).
+- **`receipt_merchant`** (`string | null`) — Merchant receipt copy: printed receipt text for the store (SiTef 122 / ReceiptMerchant).
+- **`acquirer.cnpj`** (`string`) — Acquirer CNPJ for NFCE (SiTef 950 / CNPJAuth). `acquirer` itself is now documented as nullable — send `null` for methods without an acquirer.
+- **`card.media`** (`string`) — Card read method: `CHIP`, `MAGNETIC`, `NFC`, `MANUAL` (SiTef 2090 / Media). `card` is now documented as nullable — send `null` for non-card methods.
+
+All fields are optional and already implemented in the validator. Updated in **EN / ES / PT**.
+
+## 14 June 2026 — Aggregator order-status webhook
+
+- **New inbound webhook [`POST /v1/webhooks/aggregators/order-status`](/en/api-reference/aggregator-order-status)** — your delivery aggregator (Rappi / Uber / Didi / iFood / PedidosYa / Glovo…) POSTs the order's delivery status as it advances (`courier_assigned` → `on_route` → `delivered`…). Fire mirrors the latest status onto `orders.aggregator` and logs every event.
+- **Status is passthrough** — no enum is imposed; the aggregator's own labels are stored **verbatim**, and the **current** status is the one with the **latest `occurredAt`** (no anti-regression gate). Friendly translated labels are resolved at display time from the channel catalog.
+- **Flexible order resolution** — send `orderId` (Fire UUID) **and/or** `externalOrderId` (your reference, matched on `metadata.order_id`); at least one is required, both vendor-scoped. If both are sent and resolve to **different** orders → `409`.
+- **No Fire-emitted `eventId` to echo** — an aggregator status is a spontaneous external event (Fire is not the source of truth here). Idempotency is keyed on `(channelCode, providerEventId)` + `status`; `channelCode` must equal the order's `metadata.channel.code`.
+- **Auth**: vendor-scoped API key with the new **`webhooks:aggregator`** scope. Async `202` + queue, same envelope as the fiscal / KDS callbacks.
+- Documented in **EN / ES / PT**.
+
+## 12 June 2026 — Aggregator discounts in Inject Order
+
+Documented how to send aggregator platform discounts (iFood, Rappi, UberEats, etc.) in the [Inject Order](/en/api-reference/orders) endpoint.
+
+- **Aggregator discounts are a payment method, not a discount row.** When an aggregator applies a promotional discount to the customer, the store receives the full amount and the aggregator reimburses the difference — model it as an extra entry in `payments.paymentMethods[]` with `paymentMethodCode: "AGGREGATOR_DISCOUNT"`, `transactionType: "BENEFIT"`, `processor` set to the aggregator name, and `card: null`.
+- **`payments.discounts[]` stays empty** for aggregator discounts — that array is only for store-absorbed promos/coupons.
+- New balance rule documented: `SUM(paymentMethods[].totalBill)` must equal products + extra charges + shipping.
+- New [request example](/en/api-reference/orders#aggregator-discounts) with an iFood order (BRL 38.69 CREDIT + BRL 1.00 AGGREGATOR_DISCOUNT = BRL 39.69 gross).
+- Updated in **EN / ES / PT**.
+
+## 11 June 2026 — Underscore nomenclature + lean day-close payload
+
+- **Naming (breaking)** — `store.day-closed` → **`store.business_day_closed`** and `order.status-updated` → **`order.status_updated`** (underscore nomenclature). Update your `event.type` switch.
+- **[`store.business_day_closed`](/en/events/store-day-closed) is now a thin payload** — close identity (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`/`closedAt`), `closedBy`, and a **minimal `store`** (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). **Removed from the event**: `sales`, `metrics`, `summary`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders`, `metadata` — query them by `businessDayId` when needed. **`snapshotId` renamed to `businessDayId`** (same value).
+- Documented in **EN / ES / PT**.
+
+## 10 June 2026 — Canonical order events + kitchen event
+
+Fiscal events drop the country from the name and become **canonical order events** — still the **v1** contract, only the `event.type` changes:
+
+- **`fiscal.authorized.br` → [`order.invoiced`](/en/events/order-invoiced)** and **`fiscal.cancelled.br` → [`order.reversed`](/en/events/order-reversed)**. If your integration dispatches on `event.type`, update your switch — the payload shape does not change.
+- **They now fire for all countries**: Brazil (SEFAZ via your fiscal provider) and CO/EC/CL/AR/VE via the [generic fiscal callback](/en/api-reference/fiscal-callback). The country travels in `fiscal.countryCode`.
+- **New event [`order.status_updated`](/en/events/order-status-updated)** — the KDS advances the order in the kitchen (`preparing` → `ready` → `dispatched`), with a `kitchen` block and the full journey in `history`.
+- **Fire is the source of truth** — inbound webhooks ([fiscal callback](/en/api-reference/fiscal-callback), [KDS statuses](/en/api-reference/kds-order-status)) now **validate that `eventId` references an event Fire emitted for that order**; otherwise they respond `400` before the `202`. Always echo the `event.id` of an envelope you received.
+- Documented in **EN / ES / PT**.
+
+## 9 June 2026 — Event contract **v1**
+
+The order/fiscal/day-close event contract is now officially **v1**. All additions are **backward-compatible** (new optional fields); the previous shape is preserved as **v0 (deprecated, historical)** — switch with the version selector at the top of each event page.
+
+- **Discounts** — order- and product-level discounts now travel as a structured **`Discount`** object (`priority`, `type` `FIXED`/`PERCENTAGE`, `value`, `net_price`, `discount_value`, `net_price_after_discount`) in `payments.discounts`, `payments.totals[].discounts`, `orderLines[].price.unitPrice/totalPrice[].discounts` and `orderLines[].lineTotals[].discounts`.
+- **Granular taxes** — `taxes[]` now carries the BR tax-reform taxes `IBS_UF`, `IBS_MUN`, `CBS` alongside `ICMS`/`PIS`/`COFINS`, each with reform `metadata` (`cClassTrib`, `reducao`, `rateNominal`, `rateEffective`) in addition to `cst`/`cBenef`. The breakdown is **uniform across countries** — LATAM carries its local `IVA` in the same `taxes[]` shape; only SEFAZ emission (`metadata.fiscal`, `fiscal.*.br`) is BR-only.
+- **`itemType`** — full enum documented: `PRODUCT` / `COMBO` / `MODIFIER` / `PACKAGING`, with the meaning of each.
+- **`fulfillment.delivery.deliveryConfirmationCode`** — aggregator delivery/pickup confirmation code (e.g. iFood / Rappi).
+- **`payments.shippingCost` / `extraCharges`** — documented as PriceBlock rows (same shape as `totals[]`).
+- **store.business_day_closed** — `sales` now includes `product_discounts`, `gross_before_discounts`, `shipping`, `extra_charges`, `total_charged`, and `taxes_by_type` (per-tax breakdown with an `OTHER` reconciliation bucket). *(Superseded 11 June — these aggregates are no longer embedded in the event; the day-close payload is now thin. See the entry at the top.)*
+- **order.cancelled / order.invoiced / order.reversed** — carry the v1 order snapshot (they reference `order.completed` / `order.cancelled`).
+- All of the above documented in **EN / ES / PT** with updated examples.
+
+## 8 June 2026
+
+- **menu.updated**: `productModifiers[n].overrides[]` added — allows setting a different price for a specific modifier option when it belongs to a particular product. Each override targets one `productId` and provides its own `priceInfo.price` and `priceInfo.salePrice`. EN/ES/PT updated.
+
 ## 5 June 2026
+
+- **menus.sync**: page removed — Fire sends a single `menu.updated` event per menu; batch sync is no longer a separate event.
+- **menu.updated**: `event.timezone` field removed from the payload. `data.groupId` added — a UUID that identifies the synchronization batch; multiple events emitted together share the same value, allowing downstream systems to correlate them. Category and product `schedules` arrays now include full 7-day examples showing different time windows per category (e.g. Burgers 11:00–23:00, Breakfast 07:00–11:00). `standardTime` field on products documented: `true` inherits menu-level schedules, `false` means the product has its own `schedules` array. EN/ES/PT updated.
 
 - **Inject order**: `type` is now **required** on every `order.products[]` item, every `selectedModifiers[]` item, and every `payments.extraCharges[]` item. Accepted values: `COMBO` (product with non-empty modifier groups), `PRODUCT` (simple sellable product or sellable modifier option), `MODIFIER` (pure modifier option), `PACKAGING` (packing-cost item). Payloads that omit `type` are invalid. Request examples updated in EN/ES/PT.
 - **Inject order**: `shippingMethod.delivery.additionalInfo.deliveryConfirmationCode` documented as an optional string for delivery verification codes.

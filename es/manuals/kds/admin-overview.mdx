@@ -1,0 +1,138 @@
+---
+title: "Descripción general y conceptos"
+description: "Cómo se estructura una cocina KDS en el backoffice de Fire: tiendas, estaciones, pantallas, ruteo y los patrones de cocina entre los que elegir."
+---
+
+Esta sección explica cómo configurar y administrar una cocina digital (KDS) **desde el backoffice de Fire**, sin entrar en código. Está pensada para operaciones, implementación en tienda y soporte de producto.
+
+**Dónde trabajas:** el menú **KDS**, bajo `/kds/admin`.
+
+Para las acciones diarias del operador en la pantalla de cocina, consulta [Acciones en pantalla](/es/manuals/kds/screen-actions) y [Turnero](/es/manuals/kds/waitlist).
+
+## Antes de empezar
+
+### Qué necesitas
+
+| Requisito | Detalle |
+|---|---|
+| Acceso al módulo KDS | Un rol con permisos KDS en la cuenta. |
+| Una tienda KDS creada | **KDS → All Stores → Create store**. Al crear una tienda nueva, el sistema puede llevarte al asistente de configuración inicial. |
+| Una pantalla física (fire-kds) | Cada pantalla KDS en cocina usa la app **fire-kds** con un **Device ID** que debe coincidir con el configurado en el backoffice. |
+
+Para la mayoría de tiendas alcanza con la **configuración default**: estaciones genéricas, ruteo con fallback a todas las estaciones activas y reglas de estación en "aceptar todo". Los ajustes finos por `item_type`, canal o servicio son opcionales y se explican más adelante.
+
+### Cómo se relacionan las piezas
+
+```text
+Tienda
+ ├── Estaciones      → "colas" lógicas de cocina (Parrilla, Freidora, Armado, Despacho…)
+ ├── Pantallas       → dispositivos físicos que muestran tickets
+ │    └── Asignación  → qué estaciones ve cada pantalla (pantalla ↔ estación)
+ ├── Estrategia de ruteo → a qué estación va cada línea (por defecto: fallback a todas)
+ ├── Dispositivo de teclado → teclado USB/BT asociado a una pantalla
+ │    └── Layout de teclado → qué tecla ejecuta qué acción (bump, recall, etc.)
+ └── Impresión listo-retiro → opcional; una sola pantalla por tienda
+```
+
+<Tip>
+  Regla mental: el **ruteo** decide *a qué estación de producción* va cada ítem; la **pantalla** decide *qué estaciones* ve el operador en ese monitor.
+</Tip>
+
+<Frame>
+  <img src="/images/manuals/kds/admin-overview/01-kds-menu.png" alt="Menú KDS en el backoffice de Fire" />
+</Frame>
+
+## Dos tipos de estaciones
+
+No todas las estaciones se configuran igual:
+
+| Tipo | Workflow stage | ¿Se elige por item_type en ruteo? | ¿Qué recibe? |
+|---|---|---|---|
+| **Producción** | `PRODUCTION`, `PRE_ASSEMBLY` | **Sí** — mappings + fallback | Cada **línea** del pedido (ítem a ítem). |
+| **Convergencia** | `ASSEMBLY`, `DISPATCH` | **No** — no aparecen en las filas de mapping | El **ticket completo** cuando la producción avanzó (flujo de convergencia). |
+
+En **Routing → Mappings**, el backoffice solo deja elegir estaciones de **producción / pre-assembly**. Armado y despacho **no son ruteables por ítem**: no puedes poner "`BURGER` → ASSEMBLY" en una fila de mapping.
+
+En su lugar:
+
+- **ASSEMBLY / DISPATCH** reciben el **ticket entero**, no línea por línea. Con **Producción requerida = Sí**, eso pasa cuando las líneas de producción se completaron (gates de convergencia). Con **Producción requerida = No** (cocina assembly-only), el ticket aparece **en cuanto entra la orden**.
+- En la estrategia configuras la **convergence distribution** (qué estación de armado o despacho recibe el ticket si hay varias).
+- En la **estación** de armado/despacho puedes filtrar por **canal de venta** (`POS`, `KIOSK`, `UBER_EATS`…) o **tipo de servicio** (`DINE_IN`, `DELIVERY`, `TAKEOUT`…) — **no** por `item_type`.
+
+## Patrones de cocina
+
+### Cocina simple (una sola cola)
+
+Hay dos patrones válidos para una cocina chica. El que usamos **en producción** hoy es el **B** (assembly-only).
+
+<Tabs>
+  <Tab title="Patrón B — una sola estación ASSEMBLY (producción) ⭐">
+    Cocina mínima real: **1 estación ASSEMBLY + 1 pantalla + Producción requerida = No**.
+
+    | Paso | Qué hacer |
+    |---|---|
+    | 1 | **Store settings:** **Producción requerida = No**. |
+    | 2 | Crear **una** estación `ASSEMBLY` (convergence activada). |
+    | 3 | Crear **una pantalla**; asignar solo `ASSEMBLY`. |
+    | 4 | Ruteo activo (mappings vacíos alcanza). |
+    | 5 | (Opcional) Impresión listo-retiro en esa pantalla. |
+    | 6 | Turnero en `/waitlist/{storeId}`. |
+
+    ```text
+    Orden → ASSEMBLY (inmediato) → cocinar → bump ticket → turnero "Listo" + impresión opcional
+    ```
+  </Tab>
+  <Tab title="Patrón A — estación de producción KITCHEN">
+    Modelar la cocina como "producción" pura (sin stage ASSEMBLY):
+
+    | Paso | Qué hacer |
+    |---|---|
+    | 1 | Crear **una estación** con stage `PRODUCTION` (ej. code `KITCHEN`). |
+    | 2 | Crear **una pantalla** y asignarle solo esa estación. |
+    | 3 | Crear ruteo **sin mappings** y **fallback** apuntando a esa única estación. |
+    | 4 | Reglas de estación en **Accept all item types**. |
+    | 5 | **Producción requerida = Sí** (default). |
+
+    ```text
+    Orden → (sin mapping) → fallback → estación KITCHEN → pantalla única → bump por línea
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Si la cocina crece más adelante, agregas estaciones de producción, activas **Producción requerida = Sí** y mapeas por `item_type`. ASSEMBLY pasa a ser el expo donde converge el ticket cuando producción terminó.
+</Tip>
+
+### Flujo operativo (assembly-only)
+
+Este es el setup que usan las tiendas chicas **hoy en producción**: una estación de armado, una pantalla, sin parrilla/freidora/despacho separados.
+
+1. **Entra la orden** — el POS/kiosk envía el pedido al KDS. Se crea un ticket con sus líneas.
+2. **Turnero: "Preparando"** — mientras la orden está `SENT_TO_KITCHEN`, su código aparece en la zona de preparación.
+3. **Ticket en pantalla** — con **Producción requerida = No**, el ticket entra directo a la columna `ASSEMBLY`.
+4. **Operador cocina** — ve el ticket completo: código, canal, servicio, ítems y modificadores. Puede usar **HOLD** si hace falta.
+5. **Bump** — en ASSEMBLY es **un bump por pedido** (ticket completo).
+6. **Se cierra el ciclo de cocina** — sin estación `DISPATCH`, el bump en armado es el cierre final: orden → **listo para retiro**, ticket KDS → **DONE**.
+7. **Snackbar "Enviado"** — aparece unos segundos con opción **Deshacer** (ventana configurable, ~3 min).
+8. **Turnero: "Listo"** — el mismo código salta a la zona de listo para retirar.
+9. **Impresión** (si está configurada) — cupón fiscal y/o ticket de entrega.
+10. **El cliente retira** — usando el código en pantalla o el ticket impreso.
+
+Para la experiencia completa del operador en estos pasos, consulta [Acciones en pantalla](/es/manuals/kds/screen-actions).
+
+### Cocina multi-estación (referencia)
+
+Para cocinas con parrilla + armado + despacho, el flujo es más largo:
+
+```text
+Orden
+  └─► Ruteo por item_type → estaciones PRODUCTION (GRILL, FRY, KITCHEN…)
+        └─► Reglas opcionales (canal / servicio / ítem)
+              └─► Pantalla producción → bump POR LÍNEA
+                    └─► El gate de convergencia se abre cuando producción terminó
+                          └─► ASSEMBLY (ticket completo) → bump
+                                └─► DISPATCH (opcional) → bump
+                                      └─► READY_FOR_PICKUP + turnero + impresión
+```
+
+Siguiente: [Configurar una tienda](/es/manuals/kds/store-setup).

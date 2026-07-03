@@ -3,7 +3,123 @@ title: Registro de cambios
 description: Actualizaciones recientes en la documentación y la referencia de API.
 ---
 
+## 29 de junio de 2026 — Manuales de usuario KDS
+
+Añadida la sección **KDS** en la pestaña Manuales de usuario, cubriendo tanto el uso por parte del operador como la administración desde el backoffice:
+
+- **[Descripción general y conceptos](/es/manuals/kds/admin-overview)** — cómo encajan tiendas, estaciones, pantallas, enrutamiento, dispositivos e impresión; dos tipos de estación (producción vs convergencia); patrones de cocina (solo ensamblaje, KITCHEN, multi-estación).
+- **[Configurar una tienda](/es/manuals/kds/store-setup)** — aplicar una plantilla (asistente de blueprint) o configurar desde cero; orden recomendado de pasos.
+- **[Estaciones](/es/manuals/kds/stations)** — campos, reglas opcionales por canal / servicio / tipo de ítem, creación paso a paso.
+- **[Pantallas](/es/manuals/kds/screens)** — identificador de dispositivo, crear y asignar estaciones, relación pantalla ↔ estación.
+- **[Enrutamiento](/es/manuals/kds/routing)** — capas de decisión (enrutamiento → reglas → distribución → convergencia), modos de distribución, ejemplo multi-estación.
+- **[Periféricos, impresión y validación](/es/manuals/kds/peripherals-printing)** — teclados, impresión de recogida (una pantalla por tienda), cancelación de órdenes, checklist de go-live y rutas de referencia.
+- **[Acciones en pantalla](/es/manuals/kds/screen-actions)** — avanzar, retener/liberar, deshacer, cancelar, paginación, menú de configuración y atajos de teclado.
+- **[Pantalla de espera](/es/manuals/kds/waitlist)** — pantalla para clientes (áreas en preparación / listo, destaque al pasar a listo, paginación automática).
+
+Las 8 páginas publicadas en **EN / ES / PT**.
+
+---
+
+## 22 de junio de 2026 — Nueva guía: Estructura de productos · Publicación de menús actualizada
+
+### Nueva guía: Estructura de productos
+
+Nueva página [Estructura de productos](/es/guides/combo-products) en la pestaña Guías — cubre el tipo `COMBO` y los overrides de modificadores:
+
+- **Tipo COMBO** — `priceInfo.price` es siempre `0`; usar `priceInfo.referencePrice` como precio de encabezado del producto.
+- **Precio de referencia** — suma de (opción más barata × `minOptions`) en cada grupo de modificadores obligatorio (`minOptions ≥ 1`).
+- **Overrides de modificadores** — `productModifiers[n].overrides` define un precio diferente para una opción dentro de un combo específico; tiene precedencia sobre el precio base del producto en `products[]`.
+- **Precios delta** — grupos obligatorios muestran `+R$ X` respecto al baseline; grupos opcionales muestran el precio completo del add-on.
+
+### Guía de publicación de menús
+
+- Eliminada la sección `menus.sync` — ese evento ya no existe.
+- Corregido el formato del payload: `event` es ahora un objeto anidado (`id`, `type`, `executionId`, `createdAt`), no campos al nivel raíz.
+- El paso de verificación de firma ahora especifica que el signing secret se obtiene en **Integraciones de agregadores** en el dashboard de Fire.
+- Añadida sección de estructura del menú con descripción de `list`, `categories`, `products` (tabla de tipos) y `modifierGroups`.
+
+Actualizado en **EN / ES / PT**.
+
+---
+
+## 15 de junio de 2026 — `order.completed` — nuevos campos de método de pago
+
+Añadidos 4 campos a `payments.paymentMethods[n]` en el evento [`order.completed`](/es/events/order-completed). Todos son nullable y ya están en producción.
+
+- **`idAuth`** (`string | null`) — ID de autorización del procesador de pago (ej. SiTef `IdAuth`). Distinto de `authorizationCode`.
+- **`receiptCustomer`** (`string | null`) — Texto completo del comprobante para el cliente; puede ser multilínea.
+- **`receiptMerchant`** (`string | null`) — Texto completo del comprobante para el comercio; puede ser multilínea.
+- **`acquirer.cnpj`** (`string | null`) — CNPJ de la credenciadora de pago — solo Brasil.
+
+Actualizado en **EN / ES / PT**.
+
+## 15 de junio de 2026 — Campos de detalle de método de pago
+
+Añadidos 5 campos opcionales a `payments.paymentMethods[n]` en [Inyectar orden](/es/api-reference/orders):
+
+- **`id_auth`** (`string | null`) — Número de autorización NFCE (SiTef 952 / IdAuth).
+- **`receipt_customer`** (`string | null`) — Vía del cliente: texto del comprobante impreso para el portador (SiTef 121 / ReceiptCustomer).
+- **`receipt_merchant`** (`string | null`) — Vía del comercio: texto del comprobante impreso para el establecimiento (SiTef 122 / ReceiptMerchant).
+- **`acquirer.cnpj`** (`string`) — CNPJ de la credenciadora para NFCE (SiTef 950 / CNPJAuth). `acquirer` queda documentado como nullable — enviar `null` para métodos sin credenciadora.
+- **`card.media`** (`string`) — Tipo de lectura de la tarjeta: `CHIP`, `MAGNETIC`, `NFC`, `MANUAL` (SiTef 2090 / Media). `card` queda documentado como nullable — enviar `null` para métodos sin tarjeta.
+
+Todos los campos son opcionales y ya están implementados en el validador. Actualizado en **EN / ES / PT**.
+
+## 14 de junio de 2026 — Webhook de estado de orden de agregador
+
+- **Nuevo webhook entrante [`POST /v1/webhooks/aggregators/order-status`](/es/api-reference/aggregator-order-status)** — tu agregador de delivery (Rappi / Uber / Didi / iFood / PedidosYa / Glovo…) hace POST con el estado de entrega de la orden a medida que avanza (`courier_assigned` → `on_route` → `delivered`…). Fire refleja el último estado en `orders.aggregator` y registra cada evento.
+- **El estado es passthrough** — no se impone ningún enum; las etiquetas propias del agregador se guardan **tal cual**, y el estado **actual** es el del **`occurredAt` más reciente** (sin compuerta anti-regresión). Las etiquetas amigables y traducidas se resuelven al momento de mostrar desde el catálogo del canal.
+- **Correlación flexible de la orden** — envía `orderId` (UUID de Fire) **y/o** `externalOrderId` (tu referencia, comparada contra `metadata.order_id`); al menos uno es requerido, ambos vendor-scoped. Si envías ambos y correlacionan a órdenes **distintas** → `409`.
+- **No hay un `eventId` emitido por Fire para ecoar** — un estado de agregador es un evento externo espontáneo (Fire no es la fuente de verdad aquí). La idempotencia se llavea por `(channelCode, providerEventId)` + `status`; `channelCode` debe ser igual al `metadata.channel.code` de la orden.
+- **Auth**: API key vendor-scoped con el nuevo scope **`webhooks:aggregator`**. `202` async + cola, mismo envelope que los callbacks fiscal / KDS.
+- Documentado en **EN / ES / PT**.
+
+## 12 de junio de 2026 — Descuentos del agregador en Inyectar orden
+
+Documentado cómo enviar descuentos promocionales del agregador (iFood, Rappi, UberEats, etc.) en el endpoint [Inyectar orden](/es/api-reference/orders).
+
+- **Los descuentos del agregador son un método de pago, no una fila de descuento.** Cuando el agregador aplica un descuento al cliente, el local recibe el importe completo y el agregador reembolsa la diferencia — modélalo como una entrada extra en `payments.paymentMethods[]` con `paymentMethodCode: "AGGREGATOR_DISCOUNT"`, `transactionType: "BENEFIT"`, `processor` con el nombre del agregador y `card: null`.
+- **`payments.discounts[]` queda vacío** para descuentos del agregador — ese array es solo para promos/cupones que absorbe el local.
+- Nueva regla de balance documentada: `SUM(paymentMethods[].totalBill)` debe ser igual a productos + cargos extra + envío.
+- Nuevo [ejemplo de request](/es/api-reference/orders#descuentos-del-agregador) con una orden de iFood (BRL 38.69 CREDIT + BRL 1.00 AGGREGATOR_DISCOUNT = BRL 39.69 bruto).
+- Actualizado en **EN / ES / PT**.
+
+## 11 de junio de 2026 — Nomenclatura underscore + payload thin de cierre de día
+
+- **Nombres (breaking)** — `store.day-closed` → **`store.business_day_closed`** y `order.status-updated` → **`order.status_updated`** (nomenclatura underscore). Actualiza tu switch de `event.type`.
+- **[`store.business_day_closed`](/es/events/store-day-closed) ahora es un payload thin** — identidad del cierre (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`/`closedAt`), `closedBy` y una **`store` mínima** (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). **Removido del evento**: `sales`, `metrics`, `summary`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders`, `metadata` — consúltalos por `businessDayId` cuando los necesites. **`snapshotId` renombrado a `businessDayId`** (mismo valor).
+- Documentado en **EN / ES / PT**.
+
+## 10 de junio de 2026 — Eventos canónicos de orden + evento de cocina
+
+Los eventos fiscales pierden el país del nombre y pasan a ser **canónicos de orden** — sigue siendo el contrato **v1**, solo cambia el `event.type`:
+
+- **`fiscal.authorized.br` → [`order.invoiced`](/es/events/order-invoiced)** y **`fiscal.cancelled.br` → [`order.reversed`](/es/events/order-reversed)**. Si tu integración despacha por `event.type`, actualiza el switch — el payload no cambia de forma.
+- **Ahora disparan para todos los países**: Brasil (SEFAZ vía tu proveedor fiscal) y CO/EC/CL/AR/VE vía el [callback fiscal genérico](/es/api-reference/fiscal-callback). El país viaja en `fiscal.countryCode`.
+- **Nuevo evento [`order.status_updated`](/es/events/order-status-updated)** — el KDS avanza la orden en cocina (`preparing` → `ready` → `dispatched`), con bloque `kitchen` y el recorrido completo en `history`.
+- **Fire es la fuente de verdad** — los webhooks entrantes ([callback fiscal](/es/api-reference/fiscal-callback), [estados KDS](/es/api-reference/kds-order-status)) ahora **validan que `eventId` referencie un evento emitido por Fire para esa orden**; si no, responden `400` antes del `202`. Ecoa siempre el `event.id` de un envelope que recibiste.
+- Documentado en **EN / ES / PT**.
+
+## 9 de junio de 2026 — Contrato de eventos **v1**
+
+El contrato de eventos de orden/fiscal/cierre es ahora oficialmente **v1**. Todas las adiciones son **retrocompatibles** (campos opcionales nuevos); la forma anterior se preserva como **v0 (deprecada, histórica)** — cambia con el selector de versión arriba de cada página de evento.
+
+- **Descuentos** — descuentos de orden y de producto viajan como objeto **`Discount`** (`priority`, `type` `FIXED`/`PERCENTAGE`, `value`, `net_price`, `discount_value`, `net_price_after_discount`) en `payments.discounts`, `payments.totals[].discounts` y `orderLines[].price.*[].discounts` + `lineTotals[].discounts`.
+- **Impuestos granulares** — `taxes[]` ahora lleva los impuestos de la reforma BR `IBS_UF`, `IBS_MUN`, `CBS` junto a `ICMS`/`PIS`/`COFINS`, con metadata de reforma (`cClassTrib`, `reducao`, `rateNominal`, `rateEffective`). El desglose es **uniforme en todos los países** — LATAM lleva su `IVA` local en el mismo `taxes[]`; solo la emisión SEFAZ (`metadata.fiscal`, `fiscal.*.br`) es BR-only.
+- **`itemType`** — enum completo: `PRODUCT` / `COMBO` / `MODIFIER` / `PACKAGING`.
+- **`fulfillment.delivery.deliveryConfirmationCode`** — código de confirmación del agregador (ej. iFood / Rappi).
+- **store.business_day_closed** — `sales` ahora incluye `product_discounts`, `gross_before_discounts`, `shipping`, `extra_charges`, `total_charged` y `taxes_by_type`. *(Superado el 11 de junio — estos agregados ya no van embebidos en el evento; el payload de cierre ahora es thin. Ver la entrada de arriba.)*
+- **order.cancelled / order.invoiced / order.reversed** — llevan el snapshot v1 de orden.
+- Documentado en **EN / ES / PT** con ejemplos actualizados.
+
+## 8 de junio de 2026
+
+- **menu.updated**: añadido `productModifiers[n].overrides[]` — permite definir un precio diferente para una opción específica de modificador cuando pertenece a un producto concreto. Cada override apunta a un `productId` y proporciona su propio `priceInfo.price` y `priceInfo.salePrice`. Actualizado EN/ES/PT.
+
 ## 5 de junio de 2026
+
+- **menus.sync**: página eliminada — Fire envía un único evento `menu.updated` por menú; la sincronización en lote ya no es un evento separado.
+- **menu.updated**: campo `event.timezone` eliminado del payload. Añadido `data.groupId` — UUID que identifica el batch de sincronización; varios eventos emitidos juntos comparten el mismo valor, lo que permite correlacionarlos en sistemas externos. Los arrays `schedules` de categorías y productos ahora incluyen ejemplos completos de 7 días con distintas ventanas de horario por categoría (p. ej. Hamburguesas 11:00–23:00, Desayunos 07:00–11:00). Campo `standardTime` en productos documentado: `true` hereda los horarios del menú, `false` significa que el producto tiene su propio array `schedules`. Actualizado EN/ES/PT.
 
 - **Inyectar orden**: el campo `type` es ahora **obligatorio** en cada ítem de `order.products[]`, en cada ítem de `selectedModifiers[]` y en cada ítem de `payments.extraCharges[]`. Valores aceptados: `COMBO` (producto con grupos de modificadores no vacíos), `PRODUCT` (producto simple vendible o opción vendible dentro de modificadores), `MODIFIER` (opción de modificador puro), `PACKAGING` (ítem de empaque). Los payloads que omitan `type` son inválidos. Ejemplos de petición actualizados en EN/ES/PT.
 - **Inyectar orden**: documentado `shippingMethod.delivery.additionalInfo.deliveryConfirmationCode` como string opcional para enviar el código de confirmación de entrega.
