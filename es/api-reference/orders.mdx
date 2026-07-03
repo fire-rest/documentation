@@ -455,6 +455,101 @@ Resumen de la parte de **productos** de la orden. Al conciliar: **productos (tot
   Fire no rechaza la petición si `paymentMethods[].totalBill` difiere levemente de la suma de tramos; aun así envía valores coherentes desde tu sistema origen.
 </Note>
 
+## Descuentos de combo
+
+Cuando un producto combo tiene **precio contenedor 0** (es decir, `type: "COMBO"` con `subtotalWithoutTaxes: 0`), el descuento del combo **no debe colocarse** en la línea del contenedor. Asignar `discountsValue` a una base cero produce totales negativos, que Fire rechaza.
+
+En su lugar, **distribuye el monto total del descuento entre los `selectedModifiers`** que componen el combo.
+
+### Reglas
+
+| Regla | Detalle |
+|---|---|
+| Contenedor COMBO (`price === 0`) | Todos los campos de precio deben ser `0` — sin `discountsValue`, sin valores negativos |
+| Ubicación del descuento | Repartir `discountsValue` entre los modificadores proporcionalmente a su precio base |
+| Restricción no negativa | Tras aplicar el descuento, cada modificador debe tener `subtotalIncludeDiscounts >= 0` y `total >= 0` |
+| Cuadre de totales | `SUM(modifier.totalPrice.discountsValue)` debe igualar el descuento total del combo, y las sumas deben coincidir con `payments.totals[]` |
+
+### Algoritmo de reparto
+
+```
+D = descuento total del combo
+B = SUM(modifier.price.totalPrice.subtotalWithoutTaxes)
+
+discount_i = ROUND(D × (base_i / B), 2)
+net_i      = base_i − discount_i        // debe ser >= 0
+```
+
+Ajustar el redondeo en el último modificador para que `SUM(discount_i) === D` exacto. Si el reparto proporcional dejaría algún modificador con `net_i < 0`, capar el descuento de ese ítem a su base (`discount_i = base_i`, neto = 0) y redistribuir el remanente entre los demás.
+
+### Ejemplo — descuento BRL 17,94 sobre un combo (base BRL 89,68)
+
+<Warning>
+  A continuación se muestra el patrón **incorrecto** (descuento en el contenedor) y el patrón **correcto** (descuento repartido entre modificadores).
+</Warning>
+
+```json Incorrecto — descuento en COMBO con base cero (totales negativos)
+{
+  "type": "COMBO",
+  "price": {
+    "unitPrice": {
+      "subtotalWithoutTaxes": "0",
+      "discountsValue": "17.94",
+      "subtotalIncludeDiscounts": "-17.94",
+      "total": "-17.94"
+    }
+  }
+}
+```
+
+```json Correcto — contenedor COMBO en cero, descuento en modificadores
+{
+  "type": "COMBO",
+  "price": {
+    "unitPrice":  { "subtotalWithoutTaxes": "0", "discountsValue": "0", "subtotalIncludeDiscounts": "0", "total": "0" },
+    "totalPrice": { "subtotalWithoutTaxes": "0", "discountsValue": "0", "subtotalIncludeDiscounts": "0", "total": "0" }
+  },
+  "modifierGroups": [
+    {
+      "selectedModifiers": [
+        {
+          "product": "12 Coxinhas da Asa",
+          "type": "MODIFIER",
+          "price": {
+            "unitPrice":  { "subtotalWithoutTaxes": "22.30", "discountsValue": "4.46", "subtotalIncludeDiscounts": "17.84", "total": "17.84" },
+            "totalPrice": { "subtotalWithoutTaxes": "22.30", "discountsValue": "4.46", "subtotalIncludeDiscounts": "17.84", "total": "17.84" }
+          }
+        },
+        {
+          "product": "Batata Média",
+          "type": "MODIFIER",
+          "price": {
+            "unitPrice":  { "subtotalWithoutTaxes": "4.59", "discountsValue": "0.92", "subtotalIncludeDiscounts": "3.67", "total": "3.67" },
+            "totalPrice": { "subtotalWithoutTaxes": "4.59", "discountsValue": "0.92", "subtotalIncludeDiscounts": "3.67", "total": "3.67" }
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Desglose completo para este ejemplo (los 7 modificadores):
+
+| Modificador | Base | `discountsValue` | Neto |
+|---|---:|---:|---:|
+| 12 Coxinhas da Asa | 22,30 | 4,46 | 17,84 |
+| Batata Média | 4,59 | 0,92 | 3,67 |
+| Onion Rings | 7,50 | 1,50 | 6,00 |
+| Batata Grande | 6,50 | 1,30 | 5,20 |
+| Molho Secreto 120g | 4,09 | 0,82 | 3,27 |
+| Água sem Gás (×2) | 29,80 | 5,96 | 23,84 |
+| Água com gás | 14,90 | 2,98 | 11,92 |
+| **Contenedor COMBO** | **0** | **0** | **0** |
+| **Total** | **89,68** | **17,94** | **71,74** |
+
+`payments.totals[0].subtotalWithoutTaxes` = **89,68**, `subtotalIncludeDiscounts` = **71,74** ✓
+
 ## Descuentos del agregador
 
 Cuando la plataforma del agregador (iFood, Rappi, UberEats, etc.) aplica un descuento promocional al cliente, el **agregador reembolsa al local** ese monto — el local siempre recibe el precio completo. Por eso el descuento no resta de los ingresos del local y **no debe aparecer en `payments.discounts[]`**.
