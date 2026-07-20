@@ -1,0 +1,132 @@
+---
+title: "Listar órdenes"
+api: "GET https://app.fire.rest/api/v1/fire/external/orders"
+description: "Lista las órdenes del account y vendor asociados a tu API key, con paginación, filtros y projection de campos."
+authMethod: "bearer"
+---
+
+Devuelve todas las órdenes del account + vendor asociados a tu API key. Soporta paginación, un
+conjunto amplio de filtros y **projection de campos** (elegís qué campos devuelve cada orden). Para
+listar las órdenes de una sola tienda, usá [Listar órdenes de tienda](/es/api-reference/list-store-orders).
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `orders:read`. La key **debe ser vendor-scoped** (binding account +
+  vendor) — las keys sin `vendorId` se rechazan con `403`.
+</ParamField>
+
+## Query params
+
+<ParamField query="accountId" type="string" required>
+  Identificador del account. **Debe coincidir** con el account de tu API key, o la petición se rechaza con `403`.
+</ParamField>
+
+<ParamField query="vendorId" type="string" required>
+  Identificador del vendor. **Debe coincidir** con el vendor de tu API key, o la petición se rechaza con `403`.
+</ParamField>
+
+<ParamField query="fields" type="string">
+  Lista de campos a devolver separados por coma (projection). Ver [Projection de campos](#projection-de-campos).
+  Omitir para devolver todos los campos. Un campo desconocido da `400`.
+</ParamField>
+
+<ParamField query="status" type="string">`OPEN`, `COMPLETED`, `FORCE_CLOSED`, `CANCELLED`.</ParamField>
+<ParamField query="paymentStatus" type="string">`PENDING`, `SUCCEEDED`, `FAILED`.</ParamField>
+<ParamField query="businessDayDate" type="string">Día de negocio exacto, `YYYY-MM-DD`.</ParamField>
+<ParamField query="dateFrom" type="string">Inicio del rango, `YYYY-MM-DD`.</ParamField>
+<ParamField query="dateTo" type="string">Fin del rango, `YYYY-MM-DD`.</ParamField>
+<ParamField query="dateFilterMode" type="string" default="business_day">`business_day` o `created_at`.</ParamField>
+<ParamField query="tzOffset" type="string" default="+00:00">Offset de timezone (`+HH:MM`) usado con `dateFilterMode=created_at`.</ParamField>
+<ParamField query="channel" type="string">Código de canal (`APP`, `KIOSK`, …).</ParamField>
+<ParamField query="fulfillmentMethod" type="string">Código de servicio de fulfillment.</ParamField>
+<ParamField query="paymentMethod" type="string">Código de método de pago (ej. `CASH`).</ParamField>
+<ParamField query="orderCode" type="string">Match parcial sobre order code.</ParamField>
+<ParamField query="search" type="string">UUID exacto, o match parcial sobre external order id / order code.</ParamField>
+<ParamField query="page" type="integer" default="1">Número de página (base 1).</ParamField>
+<ParamField query="size" type="integer" default="20">Tamaño de página (1–100).</ParamField>
+
+## Petición
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/fire/external/orders?accountId=100&vendorId=100.1.10&fields=id,orderCode,status,totals&page=1&size=20
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+## Projection de campos
+
+El consumidor decide qué campos devuelve cada orden, similar al projection de MongoDB o al parámetro
+`_source` de Elasticsearch.
+
+- Sin `fields` → se devuelven todos los campos.
+- `fields=id,orderCode,totals` → solo esos campos.
+- Un campo fuera del catálogo → `400` con la lista de campos permitidos.
+
+**Campos disponibles**: `id`, `orderCode`, `accountId`, `vendorId`, `storeId`, `status`,
+`paymentStatus`, `channel`, `businessDayDate`, `createdAt`, `updatedAt`, `store`, `customer`,
+`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `fiscal`.
+
+<Note>
+  Los snapshots JSONB (`totals`, `orderLines`, `paymentMethods`, `store`, `customer`, `fulfillment`,
+  `metadata`, `fiscal`) se devuelven en el formato de persistencia interno de Fire (por ejemplo, los
+  montos de `totals` van a escala ×10000).
+</Note>
+
+## Respuesta
+
+<ResponseField name="orders" type="object[]">Array de órdenes, cada una proyectada según `fields`.</ResponseField>
+<ResponseField name="pagination" type="object">
+  <Expandable title="pagination">
+    <ResponseField name="page" type="integer">Página actual.</ResponseField>
+    <ResponseField name="size" type="integer">Tamaño de página.</ResponseField>
+    <ResponseField name="total" type="integer">Total de órdenes que matchean el query.</ResponseField>
+    <ResponseField name="totalPages" type="integer">Total de páginas.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "orders": [
+    {
+      "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+      "orderCode": "OC-1024",
+      "status": "COMPLETED",
+      "totals": [
+        { "currencyCode": "USD", "total": 125000 }
+      ]
+    }
+  ],
+  "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+```json 400 — campo de projection desconocido
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, accountId, vendorId, storeId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, fiscal"
+}
+```
+
+```json 403 — account/vendor no coincide o key no vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key is not authorized for the requested vendor"
+}
+```
+</ResponseExample>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Listar órdenes de tienda" icon="store" href="/es/api-reference/list-store-orders">
+    El mismo listado, acotado a una sola tienda.
+  </Card>
+  <Card title="Obtener orden" icon="receipt" href="/es/api-reference/get-order">
+    Lee una orden puntual por id.
+  </Card>
+</CardGroup>
