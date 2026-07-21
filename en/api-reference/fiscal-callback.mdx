@@ -58,13 +58,14 @@ The body is a JSON object with these top-level fields. The `document` shape is *
 
 <ParamField body="eventType" type="string" required>
   Document state. One of:
+  - `fiscal_graphic` — the provider is delivering the **representación gráfica** (the printable artifact) for the document. **It is not an approval** and not a terminal state — see [The `fiscal_graphic` state](#the-fiscal_graphic-state) below.
   - `authorized` — the fiscal authority approved the document
   - `cancelled` — a previously authorized document was cancelled
   - `rejected` — the document was rejected (validation, schema, signature)
   - `denied` — the authority denied the request (typically a permanent business rule failure)
   - `error` — a non-recoverable error occurred at the provider or authority
 
-  When `eventType` is `authorized` or `cancelled`, the `document` field is **required**. When it is `rejected`, `denied`, or `error`, the `error` field is **required** instead.
+  When `eventType` is `fiscal_graphic`, `authorized` or `cancelled`, the `document` field is **required**. When it is `rejected`, `denied`, or `error`, the `error` field is **required** instead.
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
@@ -83,11 +84,11 @@ The body is a JSON object with these top-level fields. The `document` shape is *
   Correlation UUID **and idempotency key** (together with `orderId`). It must be the `event.id` of a V4 envelope **Fire emitted for this order** — echo it exactly; never invent it.
 
   - **Source-of-truth check.** An `eventId` that does not reference a Fire event for that order is rejected with `400` before the `202`.
-  - **Each action carries its own event.** Echo the `event.id` of the event that drove *this* action — the `order.invoiced` emission for an `authorized` callback, the cancellation/reversal event for a `cancelled` callback. Reusing one action's `eventId` for a different `eventType` (e.g. a `cancelled` that echoes the `authorized`'s `eventId`) is rejected with **`409`** — a cancellation must reference its **own** event, not ride on the authorization's. See [Idempotency & scenarios](#idempotency--scenarios).
+  - **Each action carries its own event.** Echo the `event.id` of the event that drove *this* action — the `order.invoiced` emission for an `authorized` callback, the cancellation/reversal event for a `cancelled` callback. Reusing one action's `eventId` for a different terminal `eventType` (e.g. a `cancelled` that echoes the `authorized`'s `eventId`) is rejected with **`409`** — a cancellation must reference its **own** event, not ride on the authorization's. See [Idempotency & scenarios](#idempotency--scenarios).
 </ParamField>
 
 <ParamField body="document" type="object">
-  The authorized / cancelled fiscal document. **Required** when `eventType` is `authorized` or `cancelled`. Shape varies per country — see [Document by country](#document-by-country).
+  The authorized / cancelled fiscal document. **Required** when `eventType` is `fiscal_graphic`, `authorized` or `cancelled`. Shape varies per country — see [Document by country](#document-by-country).
 </ParamField>
 
 <ParamField body="error" type="object">
@@ -355,6 +356,35 @@ These apply to any `countryCode`. `docType` and `docSubtype` are **required**; t
   </Tab>
 </Tabs>
 
+## The `fiscal_graphic` state
+
+`fiscal_graphic` reports that your provider is delivering the **representación gráfica** — the printable artifact (PDF / RIDE / DANFE) for the document. It is a **state of its own**, not an outcome:
+
+- **It is not an approval.** Receiving `fiscal_graphic` says nothing about whether the authority approved the document. Fire stores the graphic and the document stays non-terminal.
+- **It is optional.** If your provider has no graphic for a document, send `authorized` (or any terminal state) **directly** — no `fiscal_graphic` is required first. Both flows are valid.
+- **It can share the `eventId` with its outcome.** The graphic and the terminal result belong to the same action, so you may send `fiscal_graphic` and then `authorized` / `rejected` / `denied` / `cancelled` reusing the **same** `eventId`. That is not a conflict and never returns `409` — see [Idempotency & scenarios](#idempotency--scenarios).
+- **It requires `document` with `pdfUrl`.** The PDF *is* the representation, so it is mandatory. `xmlUrl` stays optional here — the legal XML travels with the authorization.
+- **It triggers no outbound flow event.** `order.invoiced` and `order.reversed` remain tied to `authorized` and `cancelled` respectively. The graphic only changes the document's state.
+
+```json fiscal_graphic (CO)
+{
+  "countryCode": "CO",
+  "eventType": "fiscal_graphic",
+  "providerEventId": "evt-co-graphic-1",
+  "occurredAt": "2026-04-26T14:32:05.000Z",
+  "orderId": "550e8400-e29b-41d4-a716-446655440000",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "document": {
+    "docType": "invoice",
+    "docSubtype": "factura",
+    "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
+    "prefijo": "C012",
+    "numeroDian": "C012-001",
+    "pdfUrl": "https://api.fiscal-provider.example/dian/C012-001/pdf"
+  }
+}
+```
+
 ### Negative outcomes (`rejected`, `denied`, `error`)
 
 For non-authorized states, omit `document` and provide `error`. The `countryCode` still applies (validates routing); the document itself is not required because there is no authorized artifact.
@@ -491,6 +521,10 @@ x-api-key: <your webhooks:fiscal key>
 <ResponseField name="result" type="object | null">On success, the worker outcome — e.g. `{ "kind": "updated", "documentId": "…", "receiptId": "…" }`.</ResponseField>
 <ResponseField name="error" type="object | null">`{ "message": "…" }` when the last attempt failed; `null` otherwise.</ResponseField>
 
+<Note>
+  The `eventType` returned here is the one **you sent** for that queued record. If you sent `fiscal_graphic` and then the terminal state under the same `eventId`, each is its own queue record with its own `webhookEventId` — poll the one you care about.
+</Note>
+
 <ResponseExample>
 ```json 200 — processed
 {
@@ -510,7 +544,9 @@ A `404` is returned for unknown ids — or ids that belong to another tenant —
 
 ## Idempotency & scenarios
 
-Fire deduplicates callbacks on **`(orderId, eventId)`** — *not* on `providerEventId` (which you may regenerate freely). An event is unique to its order: the same `(orderId, eventId)` resent with the **same** `eventType` is a benign replay; the same `(orderId, eventId)` with a **different** `eventType` is an attempt to ride one action on another's event, which Fire rejects.
+Fire deduplicates callbacks on **`(orderId, eventId, eventType)`** — *not* on `providerEventId` (which you may regenerate freely). The same `(orderId, eventId)` resent with the **same** `eventType` is a benign replay; the same `(orderId, eventId)` with a **different** terminal `eventType` is an attempt to ride one action on another's event, which Fire rejects.
+
+**`fiscal_graphic` is the exception.** It is a step of the *same* action, not a competing outcome, so it may share the `eventId` with the terminal state that follows it — that combination is accepted, never a `409`.
 
 This is the full behavior matrix — every combination you can send:
 
@@ -518,7 +554,8 @@ This is the full behavior matrix — every combination you can send:
 |---|---|
 | New `(orderId, eventId)` | **`202`** · `duplicate: false` — enqueued |
 | Same `(orderId, eventId, eventType)` resent (any `providerEventId`) | **`202`** · `duplicate: true` — existing record returned, **not** re-enqueued |
-| Same `(orderId, eventId)` but **different `eventType`** (e.g. `cancelled` echoing the `authorized`'s `eventId`) | **`409`** — rejected. Use the event that belongs to *this* action |
+| `fiscal_graphic` then a terminal state on the **same `eventId`** | **`202`** both times — the graphic is a step of the same action, not a conflict |
+| Same `(orderId, eventId)` but **different terminal `eventType`** (e.g. `cancelled` echoing the `authorized`'s `eventId`) | **`409`** — rejected. Use the event that belongs to *this* action |
 | `eventId` not emitted by Fire for this `orderId` | **`400`** — wrong/invented `eventId` |
 | Order/event not under your API key's account + vendor | **`403`** |
 | Malformed payload (Zod), missing required fields | **`400`** |

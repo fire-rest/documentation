@@ -5,8 +5,11 @@ description: "List the stores of the account and vendor bound to your API key, w
 authMethod: "bearer"
 ---
 
-Returns the stores of the account + vendor bound to your API key. The response is a slim, stable
-representation of each store — it excludes internal fields (raw settings, drafts, overrides).
+Returns the stores of the account + vendor bound to your API key, with their **full configuration** —
+including the `fiscal` block needed for electronic-invoicing integrations. Internal back-office
+fields (drafts, overrides, audit columns) are excluded.
+
+Use `fields` to narrow the payload to just what you need.
 
 ## Authentication
 
@@ -23,6 +26,11 @@ representation of each store — it excludes internal fields (raw settings, draf
 
 <ParamField query="vendorId" type="string" required>
   Vendor identifier. **Must match** the vendor bound to your API key, or the request is rejected with `403`.
+</ParamField>
+
+<ParamField query="fields" type="string">
+  Comma-separated list of fields to return (projection). See [Field projection](#field-projection).
+  Omit to return every field. An unknown field yields `400`.
 </ParamField>
 
 <ParamField query="status" type="string">
@@ -71,13 +79,32 @@ x-api-key: <your_api_key>
     <ResponseField name="location" type="object | null">
       <Expandable title="location">
         <ResponseField name="countryId" type="string">Country id.</ResponseField>
-        <ResponseField name="countryCode" type="string">ISO 3166-1 alpha-2.</ResponseField>
+        <ResponseField name="countryCode" type="string">ISO 3166-1 alpha-2. Use it to know which `fiscal.metadata` shape to expect.</ResponseField>
+        <ResponseField name="countryName" type="string | null">Country display name.</ResponseField>
         <ResponseField name="cityId" type="string">City id.</ResponseField>
+        <ResponseField name="cityCode" type="string | null">Short city code (e.g. `SAO`).</ResponseField>
         <ResponseField name="cityName" type="string">City name.</ResponseField>
         <ResponseField name="address" type="string">Full address.</ResponseField>
+        <ResponseField name="latitude" type="number | null">Latitude.</ResponseField>
+        <ResponseField name="longitude" type="number | null">Longitude.</ResponseField>
+        <ResponseField name="timezone" type="string | null">IANA timezone.</ResponseField>
+        <ResponseField name="currencyCode" type="string | null">ISO 4217 currency.</ResponseField>
       </Expandable>
     </ResponseField>
+    <ResponseField name="services" type="object[] | null">Active services/channels: `{ name, active, url? }`.</ResponseField>
+    <ResponseField name="channels" type="object[] | null">Channel config: `{ code, enabled, publishedAt, fulfillmentTypes[], schedules[] }`.</ResponseField>
     <ResponseField name="publishedChannels" type="string[]">Published channel codes.</ResponseField>
+    <ResponseField name="operationSchedule" type="object[] | null">Operating hours: `{ day, startTime, endTime }`.</ResponseField>
+    <ResponseField name="salesSchedule" type="object[] | null">Sales hours, same shape.</ResponseField>
+    <ResponseField name="schedulesByChannel" type="object[] | null">Per-channel schedules.</ResponseField>
+    <ResponseField name="taxesInfo" type="object | null">`{ taxRate, vatRatePercentage }`.</ResponseField>
+    <ResponseField name="contactInfo" type="object | null">`{ phone, email? }`.</ResponseField>
+    <ResponseField name="deliveryInfo" type="object | null">`{ cookTime, deliveryId?, minimumOrder, shippingCost }`.</ResponseField>
+    <ResponseField name="salesGoals" type="object | null">`{ currency?, weekdayTemplate?, dateOverrides? }`.</ResponseField>
+    <ResponseField name="fiscal" type="object | null">
+      Fiscal configuration — same shape as `store.storeFiscalConfig` in order events. See [Fiscal block](#fiscal-block). `null` if the store has no fiscal setup.
+    </ResponseField>
+    <ResponseField name="operational" type="object | null">Runtime state: `{ isBusinessDayOpen, businessDayDate, isOperational, activeChannels[], openedAt, closedAt }`.</ResponseField>
     <ResponseField name="syncStatus" type="string">`SYNCED` | `PENDING` | `FAILED`.</ResponseField>
     <ResponseField name="lastSyncedAt" type="string | null">ISO 8601 datetime.</ResponseField>
     <ResponseField name="createdAt" type="string">ISO 8601 datetime.</ResponseField>
@@ -104,15 +131,55 @@ x-api-key: <your_api_key>
       "externalId": "EXT-10",
       "status": "PUBLISHED",
       "active": "ACTIVE",
-      "timezone": "America/Guayaquil",
+      "timezone": "America/Sao_Paulo",
       "location": {
         "countryId": "1",
-        "countryCode": "EC",
+        "countryCode": "BR",
+        "countryName": "Brasil",
         "cityId": "2",
-        "cityName": "Quito",
-        "address": "Av. Amazonas N32-14"
+        "cityCode": "SAO",
+        "cityName": "São Paulo",
+        "address": "Av. Paulista 1000",
+        "latitude": -23.5,
+        "longitude": -46.6,
+        "timezone": "America/Sao_Paulo",
+        "currencyCode": "BRL"
       },
+      "services": [{ "name": "APP", "active": true }],
+      "channels": [
+        { "code": "APP", "enabled": true, "fulfillmentTypes": [{ "code": "DELIVERY", "enabled": true }] }
+      ],
       "publishedChannels": ["APP"],
+      "operationSchedule": [{ "day": "MONDAY", "startTime": "10:00", "endTime": "22:30" }],
+      "salesSchedule": [],
+      "schedulesByChannel": [],
+      "taxesInfo": { "taxRate": 0, "vatRatePercentage": 0 },
+      "contactInfo": { "phone": "+5511999999999" },
+      "deliveryInfo": { "cookTime": 15, "minimumOrder": 0, "shippingCost": 0 },
+      "salesGoals": null,
+      "fiscal": {
+        "enabled": true,
+        "company": {
+          "govIdType": "CNPJ",
+          "govIdNumber": "00000000000000",
+          "legalName": "Sandbox LTDA",
+          "tradeName": "Sandbox"
+        },
+        "govIdType": "CNPJ",
+        "govIdNumber": "00000000000000",
+        "secondaryGovIdType": "INSCRICAO_ESTADUAL",
+        "secondaryGovIdNumber": "000000000000",
+        "metadata": {
+          "neverstop": { "url": "", "enabled": false },
+          "storeCode3S": "50000001",
+          "serialNumber": 1
+        }
+      },
+      "operational": {
+        "isBusinessDayOpen": true,
+        "businessDayDate": "2026-07-01",
+        "activeChannels": ["APP"]
+      },
       "syncStatus": "SYNCED",
       "lastSyncedAt": "2026-07-01T00:00:00Z",
       "createdAt": "2026-06-01T00:00:00Z",
@@ -142,6 +209,59 @@ x-api-key: <your_api_key>
 }
 ```
 </ResponseExample>
+
+## Fiscal block
+
+`fiscal` carries the store's electronic-invoicing configuration. It is the **same object** you
+already receive as `store.storeFiscalConfig` in order events such as
+[`order.completed`](/en/events/order-completed) — both are produced by the same projection, so the
+two sources never drift.
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | boolean | `true` if invoicing is enabled for the store |
+| `company` | object \| null | Issuer snapshot: `{ govIdType, govIdNumber, legalName, tradeName }` |
+| `govIdType` | string \| null | Store tax-id type (see table below) |
+| `govIdNumber` | string \| null | Store tax-id number |
+| `secondaryGovIdType` | string \| null | Secondary tax-id type — Brazil only today |
+| `secondaryGovIdNumber` | string \| null | Secondary tax-id number |
+| `metadata` | object \| null | **Country-specific** — see below |
+
+### What `metadata` returns per country
+
+Only `metadata` changes between countries. Discriminate using `location.countryCode` — there is no
+`country` field inside `fiscal`.
+
+| Country | `govIdType` | `secondaryGovIdType` | `metadata` |
+|---|---|---|---|
+| 🇧🇷 BR | `CNPJ` | `INSCRICAO_ESTADUAL` | `{ storeCode3S, serialNumber, neverstop: { enabled, url } }` |
+| 🇪🇨 EC | `RUC` | — | `null` |
+| 🇨🇴 CO | `NIT` | — | `null` |
+| 🇨🇱 CL | `RUT` | — | `null` |
+| 🇦🇷 AR | `CUIT` | — | `null` |
+| 🇻🇪 VE | `RIF` | — | `null` |
+
+Brazil is the only country populating `metadata` today. New countries add keys without breaking the
+contract. `fiscal` is `null` for stores with no fiscal configuration.
+
+## Field projection
+
+Pick which fields each store returns, like MongoDB projection or the Elasticsearch `_source` param.
+
+- No `fields` → every field is returned.
+- `fields=id,name,fiscal` → only those fields.
+- A field outside the catalog → `400` with the list of allowed fields.
+
+**Available fields**: `id`, `storeNumber`, `storeCode`, `accountId`, `vendorId`, `name`,
+`externalId`, `status`, `active`, `timezone`, `location`, `services`, `channels`,
+`publishedChannels`, `operationSchedule`, `salesSchedule`, `schedulesByChannel`, `taxesInfo`,
+`contactInfo`, `deliveryInfo`, `salesGoals`, `fiscal`, `operational`, `syncStatus`, `lastSyncedAt`,
+`createdAt`, `updatedAt`.
+
+```http
+GET https://app.fire.rest/api/v1/fire/external/stores?accountId=100&vendorId=100.1.10&fields=id,storeCode,fiscal
+x-api-key: <your_api_key>
+```
 
 ## Related
 
