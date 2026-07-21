@@ -1,0 +1,72 @@
+---
+title: "order.opened"
+description: "Um pedido acaba de ser injetado no Fire — emitido para todo pedido, antes de qualquer guard de pagamento. Carrega o snapshot V4 completo. É a porta de entrada para os fluxos de pagamento diferido (pós-pago) e de despacho ao KDS."
+---
+
+`order.opened` dispara no momento em que um pedido é **injetado** no Fire — um fato puro do ciclo de vida ("o pedido nasceu"), independente de ter sido pago. Carrega o **snapshot V4 do pedido** como `trigger.data`, igual a [`order.completed`](/pt/events/order-completed).
+
+É a contraparte de `order.completed`:
+
+- `order.opened` → o pedido **existe** (pode continuar sem pagamento).
+- `order.completed` → o pedido está **pago e finalizado**.
+
+<Info>
+`order.opened` é o gatilho ao qual você conecta um fluxo de **pagamento diferido (pós-pago)**: iniciar a cozinha assim que o pedido chega, em vez de esperar o pagamento. Também alimenta os guards de **idempotência de envio ao KDS** ("este pedido já chegou ao KDS?").
+</Info>
+
+## Condição de disparo
+
+O Fire emite `order.opened` **uma vez por pedido novo que entra aberto** — e "aberto" é **derivado do pagamento**: um pedido está `OPEN` enquanto **nem todos** os seus métodos de pagamento estiverem `APPROVED`. No momento em que todos são aprovados, passa a `COMPLETED`. Então `order.opened` significa *"o pedido entrou ainda não totalmente pago"* — que é justamente o caso de pagamento diferido. Um pedido injetado já totalmente pago é `COMPLETED` e vai direto para [`order.completed`](/pt/events/order-completed); nunca dispara `order.opened`.
+
+| | |
+|---|---|
+| Quando | Na injeção, logo após criar a linha — apenas se `status === "OPEN"` |
+| Condição | `status === "OPEN"` ⟺ nem todos os pagamentos `APPROVED` (não pago / parcialmente pago) |
+| Cobertura | Global (todo país, todo canal) |
+| Chave de idempotência | `event.id` (= `flow_executions.id`) |
+| Dispara mais de uma vez | Não — apenas para pedidos **novos**. Injeções idempotentes (duplicadas) **não** o reemitem |
+| Ordenação | Não garantida entre pedidos — ordene por `data.createdAt` se precisar |
+| Retentativas | Enqueue best-effort com retentativa; um enqueue falho nunca rejeita o pedido |
+
+<Warning>
+`order.opened` **não** substitui `order.completed`. Um pedido injetado **diretamente** como `COMPLETED` emite **apenas** `order.completed` — `order.opened` é ignorado. Os dois disparam para o mesmo pedido apenas ao longo do seu ciclo de vida: `order.opened` quando entra `OPEN`, e `order.completed` depois quando é pago. Fluxos fiscais / de faturamento devem permanecer em `order.completed`.
+</Warning>
+
+## O que há em `trigger.data`
+
+`trigger.data` é o **mesmo snapshot V4** que `order.completed` carrega — cada key de nível superior (`orderId`, `store`, `channel`, `client`, `payments`, `kds`, `orderLines`, `fulfillment`, …) é idêntica. Veja a referência completa de campos e o payload de exemplo em [`order.completed` → O que há em `trigger.data`](/pt/events/order-completed#whats-in-trigger-data).
+
+A única diferença relevante são os dois campos de ciclo de vida, que em `order.opened` carregam os valores **reais no momento da injeção** em vez de estarem fixados no estado concluído:
+
+| Key | Em `order.completed` | Em `order.opened` |
+|---|---|---|
+| `status` | sempre `"COMPLETED"` | sempre `"OPEN"` (a condição de disparo) |
+| `paymentStatus` | sempre `"SUCCEEDED"` | `"PENDING"` ou `"FAILED"` — **nunca** `"SUCCEEDED"` (um pedido com todos os pagamentos aprovados é `COMPLETED`, não `OPEN`) |
+
+Todo o resto — `store` (com `storeFiscalConfig` opcional), `channel`, `fulfillment.service`, `payments`, `orderLines`, etc. — coincide com o contrato de `order.completed` byte a byte.
+
+## Forma típica do fluxo
+
+Um fluxo de pagamento diferido (pós-pago) lê a política canal × serviço e, quando aplicável, inicia a cozinha sem esperar o pagamento:
+
+```text
+order.opened
+  └─ [deferred-payment-check]  (este canal × serviço é pós-pago?)
+       ├─ true  → [kds-order-check]  (já foi enviado ao KDS?)
+       │            └─ false → despachar para a cozinha
+       └─ false → parar (pré-pago: esperar order.completed)
+```
+
+- **`deferred-payment-check`** lê a configuração de canais da conta (com Redis cache) e bifurca `true` (pós-pago) / `false` (pré-pago).
+- **`kds-order-check`** lê o estado de cozinha ao vivo do pedido e bifurca `true` (já está no KDS → não reenviar) / `false` (nunca chegou ao KDS → seguro enviar).
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="order.completed" icon="receipt" href="/pt/events/order-completed">
+    A contraparte paga + finalizada. Compartilha o mesmo snapshot V4.
+  </Card>
+  <Card title="Trabalhar com eventos" icon="diagram-project" href="/pt/events/integration-flows">
+    Como gatilhos, nós e ramos se encaixam em um fluxo.
+  </Card>
+</CardGroup>

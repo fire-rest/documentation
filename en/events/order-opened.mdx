@@ -1,0 +1,72 @@
+---
+title: "order.opened"
+description: "An order has just been injected into Fire — emitted for every order, before any payment guard. Carries the full V4 order snapshot. The entry point for deferred-payment (post-paid) and KDS-dispatch flows."
+---
+
+`order.opened` fires the moment an order is **injected** into Fire — a pure lifecycle fact ("the order was born"), independent of whether it has been paid. It carries the **V4 order snapshot** as `trigger.data`, exactly like [`order.completed`](/en/events/order-completed).
+
+It is the counterpart to `order.completed`:
+
+- `order.opened` → the order **exists** (may still be unpaid).
+- `order.completed` → the order is **paid and finished**.
+
+<Info>
+`order.opened` is the trigger you attach a **deferred-payment (post-paid)** flow to: start the kitchen the moment the order arrives, instead of waiting for the payment. It also powers **KDS send-idempotency** guards ("has this order already reached the KDS?").
+</Info>
+
+## Trigger condition
+
+Fire emits `order.opened` **once per newly injected order that is open** — and "open" is **derived from payment**: an order is `OPEN` while **not all** of its payment methods are `APPROVED`. The moment every payment is approved the order becomes `COMPLETED` instead. So `order.opened` means *"the order arrived not-yet-fully-paid"* — which is exactly the deferred-payment case. An order injected already fully paid is `COMPLETED` and goes straight to [`order.completed`](/en/events/order-completed); it never fires `order.opened`.
+
+| | |
+|---|---|
+| When | At injection, right after the order row is created — only when `status === "OPEN"` |
+| Condition | `status === "OPEN"` ⟺ not all payments `APPROVED` (unpaid / partially paid) |
+| Coverage | Global (every country, every channel) |
+| Idempotency key | `event.id` (= `flow_executions.id`) |
+| Fires more than once | No — only for **new** orders. Idempotent (duplicate) injections do **not** re-emit it |
+| Ordering | Not guaranteed across orders — sort by `data.createdAt` if you need it |
+| Retries | Best-effort enqueue with retry; a failed enqueue never rejects the order |
+
+<Warning>
+`order.opened` does **not** replace `order.completed`. An order injected **directly** as `COMPLETED` emits **only** `order.completed` — `order.opened` is skipped. The two fire for the same order only across its lifecycle: `order.opened` when it arrives `OPEN`, then `order.completed` later when it is paid. Fiscal / invoicing flows should stay on `order.completed`.
+</Warning>
+
+## What's in `trigger.data`
+
+`trigger.data` is the **same V4 order snapshot** carried by `order.completed` — every top-level key (`orderId`, `store`, `channel`, `client`, `payments`, `kds`, `orderLines`, `fulfillment`, …) is identical. See the full field reference and example payload in [`order.completed` → What's in `trigger.data`](/en/events/order-completed#whats-in-trigger-data).
+
+The only meaningful difference is the two lifecycle fields, which on `order.opened` carry the order's **actual injection-time** values instead of being pinned to the completed state:
+
+| Key | On `order.completed` | On `order.opened` |
+|---|---|---|
+| `status` | always `"COMPLETED"` | always `"OPEN"` (the trigger condition) |
+| `paymentStatus` | always `"SUCCEEDED"` | `"PENDING"` or `"FAILED"` — **never** `"SUCCEEDED"` (an all-approved order is `COMPLETED`, not `OPEN`) |
+
+Everything else — `store` (with optional `storeFiscalConfig`), `channel`, `fulfillment.service`, `payments`, `orderLines`, and so on — matches the `order.completed` contract byte for byte.
+
+## Typical flow shape
+
+A deferred-payment (post-paid) flow reads the channel × fulfillment policy and, when eligible, starts the kitchen without waiting for payment:
+
+```text
+order.opened
+  └─ [deferred-payment-check]  (is this channel × service post-paid?)
+       ├─ true  → [kds-order-check]  (already sent to the KDS?)
+       │            └─ false → dispatch to kitchen
+       └─ false → stop (pre-paid: wait for order.completed)
+```
+
+- **`deferred-payment-check`** reads the account's channel configuration (Redis-cached) and branches `true` (post-paid) / `false` (pre-paid).
+- **`kds-order-check`** reads the order's live kitchen state and branches `true` (already in the KDS → don't resend) / `false` (never reached the KDS → safe to send).
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="order.completed" icon="receipt" href="/en/events/order-completed">
+    The paid + finished counterpart. Shares the same V4 snapshot.
+  </Card>
+  <Card title="Working with events" icon="diagram-project" href="/en/events/integration-flows">
+    How triggers, nodes and branches fit together in a flow.
+  </Card>
+</CardGroup>
