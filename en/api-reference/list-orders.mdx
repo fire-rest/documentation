@@ -1,0 +1,132 @@
+---
+title: "List orders"
+api: "GET https://app.fire.rest/api/v1/fire/external/orders"
+description: "List the orders of the account and vendor bound to your API key, with pagination, filters and field projection."
+authMethod: "bearer"
+---
+
+Returns all orders of the account + vendor bound to your API key. Supports pagination, a rich set of
+filters, and **field projection** (choose which fields each order returns). To list the orders of a
+single store, use [List store orders](/en/api-reference/list-store-orders).
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `orders:read` scope. The key **must be vendor-scoped** (account +
+  vendor binding) — keys without a `vendorId` are rejected with `403`.
+</ParamField>
+
+## Query parameters
+
+<ParamField query="accountId" type="string" required>
+  Account identifier. **Must match** the account bound to your API key, or the request is rejected with `403`.
+</ParamField>
+
+<ParamField query="vendorId" type="string" required>
+  Vendor identifier. **Must match** the vendor bound to your API key, or the request is rejected with `403`.
+</ParamField>
+
+<ParamField query="fields" type="string">
+  Comma-separated list of fields to return (projection). See [Field projection](#field-projection).
+  Omit to return every field. An unknown field yields `400`.
+</ParamField>
+
+<ParamField query="status" type="string">`OPEN`, `COMPLETED`, `FORCE_CLOSED`, `CANCELLED`.</ParamField>
+<ParamField query="paymentStatus" type="string">`PENDING`, `SUCCEEDED`, `FAILED`.</ParamField>
+<ParamField query="businessDayDate" type="string">Exact business day, `YYYY-MM-DD`.</ParamField>
+<ParamField query="dateFrom" type="string">Range start, `YYYY-MM-DD`.</ParamField>
+<ParamField query="dateTo" type="string">Range end, `YYYY-MM-DD`.</ParamField>
+<ParamField query="dateFilterMode" type="string" default="business_day">`business_day` or `created_at`.</ParamField>
+<ParamField query="tzOffset" type="string" default="+00:00">Timezone offset (`+HH:MM`) used with `dateFilterMode=created_at`.</ParamField>
+<ParamField query="channel" type="string">Channel code (`APP`, `KIOSK`, …).</ParamField>
+<ParamField query="fulfillmentMethod" type="string">Fulfillment service code.</ParamField>
+<ParamField query="paymentMethod" type="string">Payment method code (e.g. `CASH`).</ParamField>
+<ParamField query="orderCode" type="string">Partial match on order code.</ParamField>
+<ParamField query="search" type="string">Exact UUID, or partial match on external order id / order code.</ParamField>
+<ParamField query="page" type="integer" default="1">Page number (1-based).</ParamField>
+<ParamField query="size" type="integer" default="20">Page size (1–100).</ParamField>
+
+## Request
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/fire/external/orders?accountId=100&vendorId=100.1.10&fields=id,orderCode,status,totals&page=1&size=20
+x-api-key: <your_api_key>
+```
+</RequestExample>
+
+## Field projection
+
+The consumer decides which fields each order returns, similar to MongoDB projection or the
+Elasticsearch `_source` parameter.
+
+- No `fields` → every field is returned.
+- `fields=id,orderCode,totals` → only those fields.
+- A field outside the catalog → `400` with the list of allowed fields.
+
+**Available fields**: `id`, `orderCode`, `accountId`, `vendorId`, `storeId`, `status`,
+`paymentStatus`, `channel`, `businessDayDate`, `createdAt`, `updatedAt`, `store`, `customer`,
+`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `fiscal`.
+
+<Note>
+  The JSONB snapshots (`totals`, `orderLines`, `paymentMethods`, `store`, `customer`, `fulfillment`,
+  `metadata`, `fiscal`) are returned in Fire's internal persistence format (for example, `totals`
+  amounts are scaled ×10000).
+</Note>
+
+## Response
+
+<ResponseField name="orders" type="object[]">Array of orders, each projected according to `fields`.</ResponseField>
+<ResponseField name="pagination" type="object">
+  <Expandable title="pagination">
+    <ResponseField name="page" type="integer">Current page.</ResponseField>
+    <ResponseField name="size" type="integer">Page size.</ResponseField>
+    <ResponseField name="total" type="integer">Total orders matching the query.</ResponseField>
+    <ResponseField name="totalPages" type="integer">Total number of pages.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "orders": [
+    {
+      "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+      "orderCode": "OC-1024",
+      "status": "COMPLETED",
+      "totals": [
+        { "currencyCode": "USD", "total": 125000 }
+      ]
+    }
+  ],
+  "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+```json 400 — unknown projection field
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, accountId, vendorId, storeId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, fiscal"
+}
+```
+
+```json 403 — account/vendor mismatch or key not vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key is not authorized for the requested vendor"
+}
+```
+</ResponseExample>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="List store orders" icon="store" href="/en/api-reference/list-store-orders">
+    Same listing, scoped to a single store.
+  </Card>
+  <Card title="Get order" icon="receipt" href="/en/api-reference/get-order">
+    Read a single order by id.
+  </Card>
+</CardGroup>
