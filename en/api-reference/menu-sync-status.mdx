@@ -1,0 +1,199 @@
+---
+title: "Menu sync status"
+api: "POST https://app.fire.rest/api/v1/webhooks/xmart/sync-status"
+description: "Inbound endpoint your client POSTs to when it finishes publishing a vendor's menu/products downstream. Fire finalizes the vendor's pending sync logs and recomputes the menu's sync status. One status per vendor — all-or-nothing."
+authMethod: "bearer"
+---
+
+This endpoint is **inbound** — your client (the system that publishes Fire's catalog to the aggregators) POSTs to it once it finishes the asynchronous publish of a vendor's products. Fire authenticates the request, resolves the vendor, **finalizes** every sync log that was left pending for that vendor, and **recomputes** the affected menu's `syncStatus`. This is the callback that closes the loop opened by a menu/products publication event carrying `autoPublish`.
+
+<Note>
+  **This endpoint is synchronous.** Fire authenticates, resolves the vendor, finalizes the pending sync logs, recomputes the menu status, and returns **`200 OK`** with the number of rows it flipped (`updated`). There is no queue and no polling — unlike the [aggregator order status](/en/api-reference/aggregator-order-status) and [KDS](/en/api-reference/kds-order-status) webhooks, the work is done before the response returns.
+</Note>
+
+<Note>
+  **One status per vendor — all-or-nothing.** Your client reports a **single** result per vendor (not per product, not per assignment). Fire applies that result to **all** of the vendor's pending sync logs for the entity resolved from `type`. If the vendor had several assignments and only some failed, you still send one `FAILED`, and every pending row for that vendor goes to `FAILED` — Fire cannot tell which assignment failed from this callback.
+</Note>
+
+<Note>
+  **No request id to echo.** Unlike the [fiscal callback](/en/api-reference/fiscal-callback) and [KDS statuses](/en/api-reference/kds-order-status) — which echo an `event.id` Fire emitted — this callback carries **no correlation id**. The only key is `vendorId`. Correctness relies on Fire's **per-vendor lock**: there is never more than one publish batch pending for a vendor at a time, so every pending row belongs to the batch this callback finalizes. See [Correlation & the vendor lock](#correlation--the-vendor-lock).
+</Note>
+
+## Authentication
+
+This endpoint requires a **vendor-scoped API key with the `webhooks:xmart` scope** (account + vendor binding). Fire enforces that the `vendorId` in the body belongs to that vendor. Keys without the scope, or without a vendor binding, are rejected with `403 Forbidden`.
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire vendor-scoped API key with scope `webhooks:xmart`. Generate one from **Developers → API Management** for the account/vendor whose sync results this key may report.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  Optional `Bearer <token>` — accepted as a legacy alternative to `x-api-key`. Send one or the other.
+</ParamField>
+
+## Request body
+
+<ParamField body="vendorId" type="string" required>
+  The vendor identifier in **dotted** form (e.g. `100.6.1350`) — the same value Fire uses on the sync logs and stores. It must belong to the vendor bound to your API key.
+
+  <Note>
+    Outbound publication payloads carry the **numeric legacy** vendor id (e.g. `1350`) inside `list`. This callback is different: send the **dotted** id.
+  </Note>
+</ParamField>
+
+<ParamField body="type" type="string" required>
+  Which entity your client published. Compared **case-insensitively**.
+
+  - `PRODUCTS` finalizes **both** the menu and the product dimensions of the vendor — the menu sync pushes products downstream, and your client reports the outcome as `PRODUCTS`.
+  - Any other value (`STORES`, …) finalizes **only** that entity's pending rows.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  The publish result for the vendor. Enum: `SUCCESS` | `FAILED`.
+</ParamField>
+
+<ParamField body="message" type="string">
+  Optional detail (failure reason, provider trace). Stored on the finalized rows; surfaced as the error detail when `status` is `FAILED`.
+</ParamField>
+
+### `type` — what gets finalized
+
+| `type` (case-insensitive) | Entities finalized | Why |
+|---|---|---|
+| `PRODUCTS` | menu **and** products | The menu sync pushes products downstream; your client reports the result as `PRODUCTS`, and both dimensions of the vendor close on that one callback. |
+| any other (`STORES`, …) | that entity only | Each type closes only its own pending rows. |
+
+### Examples
+
+```json PRODUCTS — publish succeeded
+{
+  "vendorId": "100.6.1350",
+  "type": "PRODUCTS",
+  "status": "SUCCESS"
+}
+```
+
+```json PRODUCTS — publish failed (with detail)
+{
+  "vendorId": "100.6.1350",
+  "type": "PRODUCTS",
+  "status": "FAILED",
+  "message": "Product 4471 rejected: missing tax info"
+}
+```
+
+## What Fire does
+
+Once authenticated and resolved, Fire, in a single synchronous pass:
+
+1. Resolves the affected entities from `type` (`PRODUCTS` → menu **and** products; any other → that entity only).
+2. **Finalizes** every pending sync log for that vendor and those entities — sets the `status` you sent, stamps the completion time, and records `message` as the error detail when `FAILED`. The number of rows flipped is returned as `updated`.
+3. If **no rows** were pending, it is an **idempotent no-op** → `200` with `updated: 0`.
+4. **Recomputes** the affected menu's `syncStatus` from its finalized rows:
+   - any dimension still pending → `PENDING`
+   - all terminal and all succeeded → `SYNCED`
+   - all terminal and any failed → `FAILED`
+5. Finalizing the rows **releases the vendor lock** — there are no more pending rows for those entities, so the next publish batch for the vendor can start.
+
+## Response
+
+On success the endpoint returns **`200 OK`** with the number of sync-log rows it flipped. A `200` means the work is **done** — the logs are finalized and the menu status is recomputed.
+
+<ResponseField name="ok" type="boolean">
+  Always `true` when the request was processed.
+</ResponseField>
+
+<ResponseField name="updated" type="number">
+  How many pending sync-log rows were finalized. `0` on an idempotent no-op (nothing was pending — e.g. the callback was already applied).
+</ResponseField>
+
+<ResponseExample>
+```json 200 — processed (rows finalized)
+{
+  "ok": true,
+  "updated": 2
+}
+```
+
+```json 200 — idempotent no-op (nothing was pending)
+{
+  "ok": true,
+  "updated": 0
+}
+```
+
+```json 400 — validation error (missing field or status out of enum)
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "status must be one of SUCCESS, FAILED"
+}
+```
+
+```json 401 — missing or invalid API key
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
+}
+```
+
+```json 403 — missing scope or wrong vendor
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "vendorId 100.6.1350 does not belong to this key's vendor"
+}
+```
+
+```json 500 — unexpected error while finalizing / recomputing
+{
+  "success": false,
+  "error": "INTERNAL_ERROR",
+  "message": "An unexpected error occurred. Retry the request."
+}
+```
+</ResponseExample>
+
+## Idempotency & retries
+
+The callback is **safe to re-run**. It keys off the vendor's **pending** rows, so:
+
+| Scenario | Result |
+|---|---|
+| First delivery — rows were pending | `200` with `updated: N` (rows finalized) |
+| Same callback resent after it already finalized | `200` with `updated: 0` (idempotent no-op) |
+| Missing `vendorId` / `type` / `status`, or `status` out of enum | `400` |
+| Key missing `webhooks:xmart`, or `vendorId` not this key's vendor | `403` |
+| Unexpected server error | `500` — transient, **retry** |
+
+Your client may safely retry on `5xx`; a retry after a successful finalize is a clean no-op.
+
+## Correlation & the vendor lock
+
+There is **no request id** on this callback — the only key is `vendorId`. Fire relies on a **per-vendor lock**: while a publish batch is in flight, the vendor's rows are pending and no second batch can start, so **all** pending rows for the vendor belong to the batch this callback finalizes.
+
+<Warning>
+  The lock is **indefinite** — only this callback releases it. If the callback never arrives, the vendor stays locked (its next publish cannot start) until manual intervention. Always send the callback, even on `FAILED`.
+</Warning>
+
+## Relation to the publication flow
+
+This callback is the counterpart of the **`autoPublish`** flag Fire sets on the **last publication request per vendor** in a menu/products publication event. That flag tells your client to publish the batch downstream; when the publish finishes, your client reports the outcome here so Fire can finalize the sync logs and recompute the menu's `syncStatus`.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Menu publication" icon="book-open" href="/en/guides/menu-publication">
+    The publication flow this callback closes — how Fire emits the menu/products a vendor must publish.
+  </Card>
+  <Card title="Aggregator order status" icon="truck" href="/en/api-reference/aggregator-order-status">
+    The sibling inbound webhook for delivery status — same auth model, but asynchronous (queue + polling).
+  </Card>
+  <Card title="Menu updated" icon="utensils" href="/en/webhook-reference/menu-updated">
+    The outbound menu publication event carrying the catalog to publish.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/en/authentication">
+    How API keys, scopes, and vendor binding work.
+  </Card>
+</CardGroup>
