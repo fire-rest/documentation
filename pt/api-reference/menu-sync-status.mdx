@@ -1,18 +1,18 @@
 ---
 title: "Status de sync do menu"
 api: "POST https://app.fire.rest/api/v1/webhooks/xmart/sync-status"
-description: "Endpoint de entrada para o qual seu cliente faz POST quando termina de publicar o menu/produtos de um vendor rio abaixo. O Fire finaliza os sync logs pendentes do vendor e recomputa o status de sync do menu. Um status por vendor — tudo ou nada."
+description: "Endpoint de entrada para o qual seu integrador faz POST quando termina de publicar o menu/produtos de um vendor. O Fire finaliza os sync logs pendentes do vendor e recalcula o status de sync do menu. Um status por vendor — tudo ou nada."
 authMethod: "bearer"
 ---
 
-Este endpoint é **de entrada** — seu cliente (o sistema que publica o catálogo do Fire nos agregadores) faz POST nele assim que termina a publicação assíncrona dos produtos de um vendor. O Fire autentica a requisição, resolve o vendor, **finaliza** todos os sync logs que ficaram pendentes para esse vendor e **recomputa** o `syncStatus` do menu afetado. Este é o callback que fecha o ciclo aberto por um evento de publicação de menu/produtos que carrega `autoPublish`.
+Este endpoint é **de entrada** — seu integrador (o sistema que publica o catálogo do Fire downstream — um agregador, um cliente XMART, um POS…) faz POST nele assim que termina a publicação assíncrona dos produtos de um vendor. O Fire autentica a requisição, resolve o vendor, **finaliza** todos os sync logs que ficaram pendentes para esse vendor e **recalcula** o `syncStatus` do menu afetado. Este é o callback que fecha o ciclo aberto por um evento de publicação de menu/produtos que carrega `autoPublish`.
 
 <Note>
-  **Este endpoint é síncrono.** O Fire autentica, resolve o vendor, finaliza os sync logs pendentes, recomputa o status do menu e responde **`200 OK`** com a quantidade de linhas que alterou (`updated`). Não há fila nem polling — diferente dos webhooks de [status do pedido do agregador](/pt/api-reference/aggregator-order-status) e [KDS](/pt/api-reference/kds-order-status), o trabalho já está feito quando a resposta retorna.
+  **Este endpoint é síncrono.** O Fire autentica, resolve o vendor, finaliza os sync logs pendentes, recalcula o status do menu e responde **`200 OK`** com a quantidade de linhas que alterou (`updated`). Não há fila nem polling — diferente dos webhooks de [status do pedido do agregador](/pt/api-reference/aggregator-order-status) e [KDS](/pt/api-reference/kds-order-status), o trabalho já está feito quando a resposta retorna.
 </Note>
 
 <Note>
-  **Um status por vendor — tudo ou nada.** Seu cliente reporta um **único** resultado por vendor (não por produto, não por assignment). O Fire aplica esse resultado a **todas** as linhas de sync pendentes do vendor para a entidade resolvida a partir de `type`. Se o vendor tinha vários assignments e apenas alguns falharam, você ainda envia um único `FAILED`, e todas as linhas pendentes desse vendor vão para `FAILED` — o Fire não consegue saber qual assignment falhou a partir deste callback.
+  **Um status por vendor — tudo ou nada.** Seu integrador reporta um **único** resultado por vendor (não por produto, não por assignment). O Fire aplica esse resultado a **todas** as linhas de sync pendentes do vendor para a entidade resolvida a partir de `type`. Se o vendor tinha vários assignments e apenas alguns falharam, você ainda envia um único `FAILED`, e todas as linhas pendentes desse vendor vão para `FAILED` — o Fire não consegue saber qual assignment falhou a partir deste callback.
 </Note>
 
 <Note>
@@ -42,9 +42,9 @@ Este endpoint requer uma **API key vendor-scoped com o escopo `webhooks:xmart`**
 </ParamField>
 
 <ParamField body="type" type="string" required>
-  Qual entidade seu cliente publicou. Comparado **sem diferenciar maiúsculas/minúsculas**.
+  Qual entidade seu integrador publicou. Comparado **sem diferenciar maiúsculas/minúsculas**.
 
-  - `PRODUCTS` finaliza **ambas** as dimensões do vendor, a de menu e a de produtos — o sync de menu empurra produtos rio abaixo, e seu cliente reporta o resultado como `PRODUCTS`.
+  - `PRODUCTS` finaliza **ambas** as dimensões do vendor, a de menu e a de produtos — o sync de menu empurra os produtos do vendor downstream, e seu integrador reporta o resultado como `PRODUCTS`.
   - Qualquer outro valor (`STORES`, …) finaliza **apenas** as linhas pendentes daquela entidade.
 </ParamField>
 
@@ -60,7 +60,7 @@ Este endpoint requer uma **API key vendor-scoped com o escopo `webhooks:xmart`**
 
 | `type` (sem diferenciar maiúsculas) | Entidades finalizadas | Por quê |
 |---|---|---|
-| `PRODUCTS` | menu **e** produtos | O sync de menu empurra produtos rio abaixo; seu cliente reporta o resultado como `PRODUCTS`, e ambas as dimensões do vendor fecham nesse único callback. |
+| `PRODUCTS` | menu **e** produtos | O sync de menu empurra os produtos do vendor downstream; seu integrador reporta o resultado como `PRODUCTS`, e ambas as dimensões do vendor fecham nesse único callback. |
 | qualquer outro (`STORES`, …) | apenas aquela entidade | Cada tipo fecha somente suas próprias linhas pendentes. |
 
 ### Exemplos
@@ -89,7 +89,7 @@ Uma vez autenticado e resolvido, o Fire, em uma única passagem síncrona:
 1. Resolve as entidades afetadas a partir de `type` (`PRODUCTS` → menu **e** produtos; qualquer outro → aquela entidade somente).
 2. **Finaliza** todas as linhas de sync pendentes desse vendor para essas entidades — define o `status` que você enviou, carimba o momento de conclusão e registra `message` como o detalhe de erro quando é `FAILED`. A quantidade de linhas alteradas é retornada como `updated`.
 3. Se **não havia linhas** pendentes, é um **no-op idempotente** → `200` com `updated: 0`.
-4. **Recomputa** o `syncStatus` do menu afetado a partir de suas linhas finalizadas:
+4. **Recalcula** o `syncStatus` do menu afetado a partir de suas linhas finalizadas:
    - alguma dimensão ainda pendente → `PENDING`
    - todas terminais e todas bem-sucedidas → `SYNCED`
    - todas terminais e alguma falha → `FAILED`
@@ -97,7 +97,7 @@ Uma vez autenticado e resolvido, o Fire, em uma única passagem síncrona:
 
 ## Resposta
 
-No sucesso o endpoint retorna **`200 OK`** com a quantidade de linhas de sync que alterou. Um `200` significa que o trabalho está **feito** — os logs estão finalizados e o status do menu recomputado.
+No sucesso o endpoint retorna **`200 OK`** com a quantidade de linhas de sync que alterou. Um `200` significa que o trabalho está **feito** — os logs estão finalizados e o status do menu recalculado.
 
 <ResponseField name="ok" type="boolean">
   Sempre `true` quando a requisição foi processada.
@@ -146,7 +146,7 @@ No sucesso o endpoint retorna **`200 OK`** com a quantidade de linhas de sync qu
 }
 ```
 
-```json 500 — erro inesperado ao finalizar / recomputar
+```json 500 — erro inesperado ao finalizar / recalcular
 {
   "success": false,
   "error": "INTERNAL_ERROR",
@@ -167,7 +167,7 @@ O callback é **seguro para reexecutar**. Ele se chaveia sobre as linhas **pende
 | Key sem `webhooks:xmart`, ou `vendorId` não é o vendor desta key | `403` |
 | Erro inesperado do servidor | `500` — transitório, **tente novamente** |
 
-Seu cliente pode tentar novamente com segurança diante de `5xx`; uma retentativa após uma finalização bem-sucedida é um no-op limpo.
+Seu integrador pode tentar novamente com segurança diante de `5xx`; uma retentativa após uma finalização bem-sucedida é um no-op limpo.
 
 ## Correlação e o lock do vendor
 
@@ -179,7 +179,7 @@ Seu cliente pode tentar novamente com segurança diante de `5xx`; uma retentativ
 
 ## Relação com o fluxo de publicação
 
-Este callback é a contraparte da flag **`autoPublish`** que o Fire define no **último request de publicação por vendor** de um evento de publicação de menu/produtos. Essa flag diz ao seu cliente para publicar a leva rio abaixo; quando a publicação termina, seu cliente reporta o resultado aqui para que o Fire finalize os sync logs e recompute o `syncStatus` do menu.
+Este callback é a contraparte da flag **`autoPublish`** que o Fire define no **último request de publicação por vendor** de um evento de publicação de menu/produtos. Essa flag diz ao seu integrador para publicar a leva downstream; quando a publicação termina, seu integrador reporta o resultado aqui para que o Fire finalize os sync logs e recalcule o `syncStatus` do menu.
 
 ## Relacionado
 
