@@ -64,15 +64,192 @@ O consumidor decide quais campos cada pedido retorna, similar à projeção do M
 - `fields=id,orderCode,totals` → apenas esses campos.
 - Um campo fora do catálogo → `400` com a lista de campos permitidos.
 
-**Campos disponíveis**: `id`, `orderCode`, `accountId`, `vendorId`, `storeId`, `status`,
-`paymentStatus`, `channel`, `businessDayDate`, `createdAt`, `updatedAt`, `store`, `customer`,
-`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `fiscal`.
+**Campos disponíveis**: `id`, `orderCode`, `orderExternal`, `accountId`, `vendorId`, `storeId`,
+`stationId`, `anonymousCustomerId`, `customerId`, `billingId`, `status`, `paymentStatus`, `channel`,
+`businessDayDate`, `createdAt`, `updatedAt`, `deletedAt`, `store`, `customer`, `billing`,
+`fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `kitchen`, `aggregator`,
+`fiscal`.
+
+<Note>
+  `channel` é o id de catálogo do pedido (`orders.catalog_id`), exposto sob o nome `channel`.
+</Note>
 
 <Note>
   Os snapshots JSONB (`totals`, `orderLines`, `paymentMethods`, `store`, `customer`, `fulfillment`,
   `metadata`, `fiscal`) são retornados no formato de persistência interno do Fire (por exemplo, os
   valores de `totals` estão em escala ×10000).
 </Note>
+
+## O bloco `fiscal` por país
+
+Quando um pedido possui um documento fiscal, o campo `fiscal` carrega seu estado atual. Seu
+sub-objeto `metadata` sempre tem o **mesmo formato amplo** — ele contém a união dos identificadores
+de todos os países — mas **apenas os campos correspondentes a `fiscal.countryCode` são preenchidos;
+os demais ficam `null`**. Leia `fiscal.countryCode` para saber quais identificadores esperar.
+
+```json order.fiscal (shape)
+{
+  "id": "7e2b8c10-…",
+  "status": "COMPLETED",
+  "fiscal": {
+    "status": "authorized",
+    "countryCode": "CO",
+    "company": { "govIdType": "NIT", "govIdNumber": "9001234561", "legalName": "…", "tradeName": "…" },
+    "store":   { "code": "CO-BOG-001", "name": "…", "govIdType": "NIT", "govIdNumber": "900123456-7" },
+    "buyer":   { "isFinalConsumer": true, "name": null, "govIdType": null, "govIdNumber": null },
+    "metadata": { "…": "see per-country tabs below" }
+  }
+}
+```
+
+`status` é um de `processing`, `authorized`, `cancelled`, `rejected`, `denied`,
+`error`. Quando negativo, `fiscal.error` (`{ code, message }`) também está presente.
+
+Os **campos comuns** de `metadata` (todos os países): `docType`, `docSubtype`, `providerDocId`,
+`pdfUrl`, `xmlUrl`, `emittedAt`, `cancelledAt`, `totalAmount`, `taxAmount`, `currencyCode`. Os
+identificadores específicos de cada país abaixo são adicionados por cima; os identificadores dos
+**outros** países estão presentes, mas com valor `null`.
+
+<Tabs>
+  <Tab title="Colombia (CO)">
+    ```json metadata — CO (DIAN)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "pdfUrl": "https://…/co.pdf",
+      "xmlUrl": "https://…/co.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 95000,
+      "taxAmount": 15170,
+      "currencyCode": "COP",
+      "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
+      "prefijo": "FE-CO",
+      "numeroDian": "FE-CO-1001",
+      "claveAcceso": null, "numeroAutorizacion": null,
+      "folio": null, "ted": null, "tipoDte": null, "trackId": null,
+      "cae": null, "fechaVtoCae": null, "puntoVenta": null, "numeroComprobante": null, "tipoComprobante": null,
+      "numeroControl": null, "numeroFactura": null, "rifEmisor": null,
+      "chaveAcesso": null, "protocolo": null, "numero": null, "serie": null, "modelo": null, "cnpjEmitente": null
+    }
+    ```
+  </Tab>
+  <Tab title="Ecuador (EC)">
+    ```json metadata — EC (SRI)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "pdfUrl": "https://…/ec.pdf",
+      "xmlUrl": "https://…/ec.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 2450,
+      "taxAmount": 315,
+      "currencyCode": "USD",
+      "claveAcceso": "0102030405060708091011121314151617181920212223242",
+      "numeroAutorizacion": "AUT-EC-1001",
+      "cufe": null, "prefijo": null, "numeroDian": null,
+      "folio": null, "ted": null, "tipoDte": null, "trackId": null,
+      "cae": null, "fechaVtoCae": null, "puntoVenta": null, "numeroComprobante": null, "tipoComprobante": null,
+      "numeroControl": null, "numeroFactura": null, "rifEmisor": null,
+      "chaveAcesso": null, "protocolo": null, "numero": null, "serie": null, "modelo": null, "cnpjEmitente": null
+    }
+    ```
+    <Note>O `qrCode` (CO) e o `ambiente` (EC) do callback **não** são persistidos em `fiscal.metadata` — apenas os identificadores listados aqui são.</Note>
+  </Tab>
+  <Tab title="Chile (CL)">
+    ```json metadata — CL (SII)
+    {
+      "docType": "invoice",
+      "docSubtype": "boleta",
+      "pdfUrl": "https://…/cl.pdf",
+      "xmlUrl": "https://…/cl.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 18900,
+      "taxAmount": 3019,
+      "currencyCode": "CLP",
+      "folio": 12345,
+      "ted": "<TED>…</TED>",
+      "tipoDte": 39,
+      "trackId": "SII-TRK-998877",
+      "cufe": null, "prefijo": null, "numeroDian": null,
+      "claveAcceso": null, "numeroAutorizacion": null,
+      "cae": null, "fechaVtoCae": null, "puntoVenta": null, "numeroComprobante": null, "tipoComprobante": null,
+      "numeroControl": null, "numeroFactura": null, "rifEmisor": null,
+      "chaveAcesso": null, "protocolo": null, "numero": null, "serie": null, "modelo": null, "cnpjEmitente": null
+    }
+    ```
+  </Tab>
+  <Tab title="Argentina (AR)">
+    ```json metadata — AR (AFIP)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura_b",
+      "pdfUrl": "https://…/ar.pdf",
+      "xmlUrl": "https://…/ar.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 12100,
+      "taxAmount": 2100,
+      "currencyCode": "ARS",
+      "cae": "74256178925412",
+      "fechaVtoCae": "2026-05-31",
+      "puntoVenta": 1,
+      "numeroComprobante": 12345,
+      "tipoComprobante": 6,
+      "cufe": null, "prefijo": null, "numeroDian": null,
+      "claveAcceso": null, "numeroAutorizacion": null,
+      "folio": null, "ted": null, "tipoDte": null, "trackId": null,
+      "numeroControl": null, "numeroFactura": null, "rifEmisor": null,
+      "chaveAcesso": null, "protocolo": null, "numero": null, "serie": null, "modelo": null, "cnpjEmitente": null
+    }
+    ```
+  </Tab>
+  <Tab title="Venezuela (VE)">
+    ```json metadata — VE (SENIAT)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "pdfUrl": "https://…/ve.pdf",
+      "xmlUrl": "https://…/ve.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 480,
+      "taxAmount": 76,
+      "currencyCode": "VES",
+      "numeroControl": "00-00012345",
+      "numeroFactura": "12345",
+      "rifEmisor": "J-12345678-9",
+      "cufe": null, "prefijo": null, "numeroDian": null,
+      "claveAcceso": null, "numeroAutorizacion": null,
+      "folio": null, "ted": null, "tipoDte": null, "trackId": null,
+      "cae": null, "fechaVtoCae": null, "puntoVenta": null, "numeroComprobante": null, "tipoComprobante": null,
+      "chaveAcesso": null, "protocolo": null, "numero": null, "serie": null, "modelo": null, "cnpjEmitente": null
+    }
+    ```
+  </Tab>
+  <Tab title="Brazil (BR)">
+    ```json metadata — BR (SEFAZ, non-PlugNotas)
+    {
+      "docType": "invoice",
+      "docSubtype": "nfce",
+      "pdfUrl": "https://…/br.pdf",
+      "xmlUrl": "https://…/br.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 14290,
+      "taxAmount": 1857,
+      "currencyCode": "BRL",
+      "chaveAcesso": "35260229062609000177650500000000011000000010",
+      "protocolo": "141210001176277",
+      "numero": 1,
+      "serie": 50,
+      "modelo": 65,
+      "cnpjEmitente": "29062609000177",
+      "cufe": null, "prefijo": null, "numeroDian": null,
+      "claveAcceso": null, "numeroAutorizacion": null,
+      "folio": null, "ted": null, "tipoDte": null, "trackId": null,
+      "cae": null, "fechaVtoCae": null, "puntoVenta": null, "numeroComprobante": null, "tipoComprobante": null,
+      "numeroControl": null, "numeroFactura": null, "rifEmisor": null
+    }
+    ```
+  </Tab>
+</Tabs>
 
 ## Resposta
 
@@ -107,7 +284,7 @@ O consumidor decide quais campos cada pedido retorna, similar à projeção do M
 {
   "success": false,
   "error": "VALIDATION_ERROR",
-  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, accountId, vendorId, storeId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, fiscal"
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, kitchen, aggregator, fiscal"
 }
 ```
 
