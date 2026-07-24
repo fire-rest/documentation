@@ -58,13 +58,14 @@ El body es un objeto JSON con estos campos top-level. La forma del `document` es
 
 <ParamField body="eventType" type="string" required>
   Estado del documento. Uno de:
+  - `fiscal_graphic` — el proveedor está entregando la **representación gráfica** (el artefacto imprimible) del documento. **No es una aprobación** ni un estado terminal — ver [El estado `fiscal_graphic`](#el-estado-fiscal_graphic) abajo.
   - `authorized` — la autoridad fiscal aprobó el documento
   - `cancelled` — un documento previamente autorizado fue cancelado
   - `rejected` — el documento fue rechazado (validación, schema, firma)
   - `denied` — la autoridad denegó la solicitud (típicamente fallo permanente de regla de negocio)
   - `error` — ocurrió un error no recuperable en el proveedor o autoridad
 
-  Cuando `eventType` es `authorized` o `cancelled`, el campo `document` es **requerido**. Cuando es `rejected`, `denied` o `error`, el campo `error` es **requerido**.
+  Cuando `eventType` es `fiscal_graphic`, `authorized` o `cancelled`, el campo `document` es **requerido**. Cuando es `rejected`, `denied` o `error`, el campo `error` es **requerido**.
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
@@ -355,6 +356,35 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
   </Tab>
 </Tabs>
 
+## El estado `fiscal_graphic`
+
+`fiscal_graphic` reporta que tu proveedor está entregando la **representación gráfica** — el artefacto imprimible (PDF / RIDE / DANFE) del documento. Es un **estado propio**, no un resultado:
+
+- **No es una aprobación.** Recibir `fiscal_graphic` no dice nada sobre si la autoridad aprobó el documento. Fire guarda la gráfica y el documento sigue en un estado no terminal.
+- **Es opcional.** Si tu proveedor no tiene gráfica para un documento, envía `authorized` (o cualquier estado terminal) **directamente** — no hace falta un `fiscal_graphic` previo. Ambos flujos son válidos.
+- **Puede compartir el `eventId` con su desenlace.** La gráfica y el resultado terminal pertenecen a la misma acción, así que podés enviar `fiscal_graphic` y luego `authorized` / `rejected` / `denied` / `cancelled` reusando el **mismo** `eventId`. Eso no es un conflicto y nunca devuelve `409` — ver [Idempotencia y escenarios](#idempotencia-y-escenarios).
+- **Requiere `document` con `pdfUrl`.** El PDF *es* la representación, así que es obligatorio. `xmlUrl` queda opcional acá — el XML legal viaja con la autorización.
+- **No dispara ningún evento saliente.** `order.invoiced` y `order.reversed` siguen atados a `authorized` y `cancelled` respectivamente. La gráfica solo cambia el estado del documento.
+
+```json fiscal_graphic (CO)
+{
+  "countryCode": "CO",
+  "eventType": "fiscal_graphic",
+  "providerEventId": "evt-co-graphic-1",
+  "occurredAt": "2026-04-26T14:32:05.000Z",
+  "orderId": "550e8400-e29b-41d4-a716-446655440000",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "document": {
+    "docType": "invoice",
+    "docSubtype": "factura",
+    "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
+    "prefijo": "C012",
+    "numeroDian": "C012-001",
+    "pdfUrl": "https://api.fiscal-provider.example/dian/C012-001/pdf"
+  }
+}
+```
+
 ### Resultados negativos (`rejected`, `denied`, `error`)
 
 Para estados no autorizados, omite `document` y provee `error`. El `countryCode` sigue aplicando (valida el routing); el documento no se requiere porque no hay artefacto autorizado.
@@ -512,12 +542,16 @@ Un `404` se devuelve para ids desconocidos — o ids de otro tenant — sin filt
 
 Fire deduplica callbacks por **`(orderId, eventId)`** — *no* por `providerEventId` (que podés regenerar libremente). Un evento es único con su orden: el mismo `(orderId, eventId)` reenviado con el **mismo** `eventType` es un replay benigno; el mismo `(orderId, eventId)` con un `eventType` **distinto** es un intento de colgar una acción sobre el evento de otra, y Fire lo rechaza.
 
+
+**`fiscal_graphic` es la excepción.** Es un paso de la *misma* acción, no un desenlace que compita, así que puede compartir el `eventId` con el estado terminal que llega después — esa combinación se acepta, nunca da `409`.
+
 Esta es la matriz completa de comportamiento — cada combinación que podés enviar:
 
 | Escenario | Resultado |
 |---|---|
 | `(orderId, eventId)` nuevo | **`202`** · `duplicate: false` — encolado |
 | Mismo `(orderId, eventId, eventType)` reenviado (cualquier `providerEventId`) | **`202`** · `duplicate: true` — se devuelve el registro existente, **no** se re-encola |
+| `fiscal_graphic` y luego un estado terminal con el **mismo `eventId`** | **`202`** ambas veces — la gráfica es un paso de la misma acción, no un conflicto |
 | Mismo `(orderId, eventId)` pero **`eventType` distinto** (ej. `cancelled` con el `eventId` del `authorized`) | **`409`** — rechazado. Usá el evento que pertenece a *esta* acción |
 | `eventId` no emitido por Fire para ese `orderId` | **`400`** — `eventId` incorrecto/inventado |
 | Orden/evento fuera de la cuenta + vendor de tu API key | **`403`** |
