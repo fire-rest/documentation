@@ -1,22 +1,18 @@
 ---
 title: "Status de sync do menu"
 api: "POST https://app.fire.rest/api/v1/webhooks/xmart/sync-status"
-description: "Endpoint de entrada para o qual seu integrador faz POST quando termina de publicar o menu/produtos de um vendor. O Fire finaliza os sync logs pendentes do vendor e recalcula o status de sync do menu. Um status por vendor — tudo ou nada."
+description: "Endpoint de entrada para o qual seu integrador faz POST quando termina de publicar o menu/produtos de um vendor. O Fire finaliza os sync logs pendentes do vendor e recalcula o status de sync do menu. Um status por vendor por padrão (tudo ou nada), a menos que você envie eventId para atingir um único assignment de agregador."
 authMethod: "bearer"
 ---
 
-Este endpoint é **de entrada** — seu integrador (o sistema que publica o catálogo do Fire downstream — um agregador, um cliente XMART, um POS…) faz POST nele assim que termina a publicação assíncrona dos produtos de um vendor. O Fire autentica a requisição, resolve o vendor, **finaliza** todos os sync logs que ficaram pendentes para esse vendor e **recalcula** o `syncStatus` do menu afetado. Este é o callback que fecha o ciclo aberto por um evento de publicação de menu/produtos que carrega `autoPublish`.
+Este endpoint é **de entrada**: seu integrador (o sistema que publica o catálogo do Fire downstream, um agregador, um cliente XMART, um POS, etc.) faz POST nele assim que termina a publicação assíncrona dos produtos de um vendor. O Fire autentica a requisição, resolve o vendor, **finaliza** todos os sync logs que ficaram pendentes para esse vendor e **recalcula** o `syncStatus` do menu afetado. Este é o callback que fecha o ciclo aberto por um evento de publicação de menu/produtos que carrega `autoPublish`.
 
 <Note>
-  **Este endpoint é síncrono.** O Fire autentica, resolve o vendor, finaliza os sync logs pendentes, recalcula o status do menu e responde **`200 OK`** com a quantidade de linhas que alterou (`updated`). Não há fila nem polling — diferente dos webhooks de [status do pedido do agregador](/pt/api-reference/aggregator-order-status) e [KDS](/pt/api-reference/kds-order-status), o trabalho já está feito quando a resposta retorna.
+  **Este endpoint é síncrono.** O Fire autentica, resolve o vendor, finaliza os sync logs pendentes, recalcula o status do menu e responde **`200 OK`** com a quantidade de linhas que alterou (`updated`). Não há fila nem polling; diferente dos webhooks de [status do pedido do agregador](/pt/api-reference/aggregator-order-status) e [KDS](/pt/api-reference/kds-order-status), o trabalho já está feito quando a resposta retorna.
 </Note>
 
 <Note>
-  **Um status por vendor — tudo ou nada.** Seu integrador reporta um **único** resultado por vendor (não por produto, não por assignment). O Fire aplica esse resultado a **todas** as linhas de sync pendentes do vendor para a entidade resolvida a partir de `type`. Se o vendor tinha vários assignments e apenas alguns falharam, você ainda envia um único `FAILED`, e todas as linhas pendentes desse vendor vão para `FAILED` — o Fire não consegue saber qual assignment falhou a partir deste callback.
-</Note>
-
-<Note>
-  **Não há id de requisição para ecoar.** Diferente do [callback fiscal](/pt/api-reference/fiscal-callback) e dos [status KDS](/pt/api-reference/kds-order-status) — que ecoam um `event.id` que o Fire emitiu — este callback **não carrega id de correlação**. A única chave é `vendorId`. A correção se apoia no **lock por vendor** do Fire: nunca há mais de uma leva de publicação pendente para um vendor por vez, então todas as linhas pendentes pertencem à leva que este callback finaliza. Veja [Correlação e o lock do vendor](#correlação-e-o-lock-do-vendor).
+  **O id de correlação é opcional.** Se você enviar `eventId` (somente canais agregador), o Fire fecha apenas a linha de sync daquele assignment. Se você omiti-lo, a única chave é `vendorId`, e o Fire aplica o resultado a **todas** as linhas de sync pendentes do vendor para a entidade resolvida a partir de `type` (tudo ou nada): se o vendor tinha vários assignments e apenas alguns falharam, você ainda envia um único `FAILED`, e todas as linhas pendentes desse vendor vão para `FAILED`, porque sem `eventId` o Fire não consegue saber qual assignment falhou. Nesse caso, a correção se apoia no **lock por vendor** do Fire, já que nunca há mais de uma leva de publicação pendente para um vendor por vez. Veja [Correlação e o lock do vendor](#correlação-e-o-lock-do-vendor).
 </Note>
 
 ## Autenticação
@@ -28,13 +24,13 @@ Este endpoint requer uma **API key vendor-scoped com o escopo `webhooks:xmart`**
 </ParamField>
 
 <ParamField header="Authorization" type="string">
-  Opcional `Bearer <token>` — aceito como alternativa legacy ao `x-api-key`. Envie um ou outro.
+  Opcional `Bearer <token>`, aceito como alternativa legacy ao `x-api-key`. Envie um ou outro.
 </ParamField>
 
 ## Corpo da requisição
 
 <ParamField body="vendorId" type="string" required>
-  O identificador do vendor no formato **dotted** (ex. `100.6.1350`) — o mesmo valor que o Fire usa nos sync logs e nas lojas. Deve pertencer ao vendor vinculado à sua API key.
+  O identificador do vendor no formato **dotted** (ex. `100.6.1350`), o mesmo valor que o Fire usa nos sync logs e nas lojas. Deve pertencer ao vendor vinculado à sua API key.
 
   <Note>
     Os payloads de publicação de saída carregam o id do vendor **numérico legacy** (ex. `1350`) dentro de `list`. Este callback é diferente: envie o id **dotted**.
@@ -44,7 +40,7 @@ Este endpoint requer uma **API key vendor-scoped com o escopo `webhooks:xmart`**
 <ParamField body="type" type="string" required>
   Qual entidade seu integrador publicou. Comparado **sem diferenciar maiúsculas/minúsculas**.
 
-  - `PRODUCTS` finaliza **ambas** as dimensões do vendor, a de menu e a de produtos — o sync de menu empurra os produtos do vendor downstream, e seu integrador reporta o resultado como `PRODUCTS`.
+  - `PRODUCTS` finaliza **ambas** as dimensões do vendor, a de menu e a de produtos; o sync de menu empurra os produtos do vendor downstream, e seu integrador reporta o resultado como `PRODUCTS`.
   - Qualquer outro valor (`STORES`, …) finaliza **apenas** as linhas pendentes daquela entidade.
 </ParamField>
 
@@ -53,7 +49,13 @@ Este endpoint requer uma **API key vendor-scoped com o escopo `webhooks:xmart`**
 </ParamField>
 
 <ParamField body="message" type="string">
-  Detalhe opcional (motivo da falha, trace do provedor). Armazenado nas linhas finalizadas; exposto como o detalhe de erro quando `status` é `FAILED`.
+  Detalhe opcional (motivo da falha, trace do provedor). Armazenado nas linhas finalizadas como o detalhe de erro quando `status` é `FAILED`; ignorado (e limpo) quando `status` é `SUCCESS`. Se omitido com `status` em `FAILED`, o Fire armazena uma mensagem de falha genérica padrão.
+</ParamField>
+
+<ParamField body="eventId" type="string">
+  O `event.id` do envelope Fire que seu integrador recebeu para esse assignment (`menu.updated` / `product.updated`), formato `evt_<12 hex>` (ex. `evt_9f2c41ab77de`). Um por assignment (loja × canal × fulfillment).
+
+  Quando presente, o Fire fecha **apenas a linha de sync daquele assignment**, em vez de varrer todas as linhas pendentes do vendor. **Somente canais agregador**: omita para outros integradores, que recebem a varredura por vendor descrita acima.
 </ParamField>
 
 ### `type` — o que é finalizado
@@ -82,43 +84,57 @@ Este endpoint requer uma **API key vendor-scoped com o escopo `webhooks:xmart`**
 }
 ```
 
+```json PRODUCTS — canal agregador, um único assignment falhou (eventId)
+{
+  "vendorId": "100.6.1350",
+  "type": "PRODUCTS",
+  "status": "FAILED",
+  "eventId": "evt_9f2c41ab77de",
+  "message": "Product 4471 rejected: missing tax info"
+}
+```
+
 ## O que o Fire faz
 
 Uma vez autenticado e resolvido, o Fire, em uma única passagem síncrona:
 
-1. Resolve as entidades afetadas a partir de `type` (`PRODUCTS` → menu **e** produtos; qualquer outro → aquela entidade somente).
-2. **Finaliza** todas as linhas de sync pendentes desse vendor para essas entidades — define o `status` que você enviou, carimba o momento de conclusão e registra `message` como o detalhe de erro quando é `FAILED`. A quantidade de linhas alteradas é retornada como `updated`.
+1. Se `eventId` estiver presente, resolve a **única** linha de sync pendente que corresponde, com `vendorId` como guard. Caso contrário, resolve as entidades afetadas a partir de `type` (`PRODUCTS` → menu **e** produtos; qualquer outro → aquela entidade somente) e mira em **todas** as linhas pendentes do vendor para essas entidades.
+2. **Finaliza** a(s) linha(s) resolvida(s): define o `status` que você enviou, carimba o momento de conclusão e registra `message` como o detalhe de erro quando é `FAILED`. A quantidade de linhas alteradas é retornada como `updated`.
 3. Se **não havia linhas** pendentes, é um **no-op idempotente** → `200` com `updated: 0`.
 4. **Recalcula** o `syncStatus` do menu afetado a partir de suas linhas finalizadas:
    - alguma dimensão ainda pendente → `PENDING`
    - todas terminais e todas bem-sucedidas → `SYNCED`
    - todas terminais e alguma falha → `FAILED`
-5. Finalizar as linhas **libera o lock do vendor** — não há mais linhas pendentes para essas entidades, então a próxima leva de publicação do vendor pode começar.
+5. Finalizar as linhas **libera o lock do vendor**: não há mais linhas pendentes para essas entidades, então a próxima leva de publicação do vendor pode começar.
 
 ## Resposta
 
-No sucesso o endpoint retorna **`200 OK`** com a quantidade de linhas de sync que alterou. Um `200` significa que o trabalho está **feito** — os logs estão finalizados e o status do menu recalculado.
+No sucesso o endpoint retorna **`200 OK`** com a quantidade de linhas de sync que alterou, envolvida no envelope padrão de sucesso do Fire. Um `200` significa que o trabalho está **feito**: os logs estão finalizados e o status do menu recalculado.
 
-<ResponseField name="ok" type="boolean">
+<ResponseField name="success" type="boolean">
+  Sempre `true` em uma resposta `200`.
+</ResponseField>
+
+<ResponseField name="data.ok" type="boolean">
   Sempre `true` quando a requisição foi processada.
 </ResponseField>
 
-<ResponseField name="updated" type="number">
-  Quantas linhas de sync pendentes foram finalizadas. `0` em um no-op idempotente (não havia nada pendente — ex. o callback já havia sido aplicado).
+<ResponseField name="data.updated" type="number">
+  Quantas linhas de sync pendentes foram finalizadas. Sem `eventId`, pode ser qualquer quantidade entre as linhas pendentes do vendor; `0` em um no-op idempotente. Com `eventId`, é `0` ou `1`: no máximo a única linha de assignment que correspondeu.
 </ResponseField>
 
 <ResponseExample>
 ```json 200 — processado (linhas finalizadas)
 {
-  "ok": true,
-  "updated": 2
+  "success": true,
+  "data": { "ok": true, "updated": 2 }
 }
 ```
 
 ```json 200 — no-op idempotente (não havia nada pendente)
 {
-  "ok": true,
-  "updated": 0
+  "success": true,
+  "data": { "ok": true, "updated": 0 }
 }
 ```
 
@@ -146,14 +162,26 @@ No sucesso o endpoint retorna **`200 OK`** com a quantidade de linhas de sync qu
 }
 ```
 
-```json 500 — erro inesperado ao finalizar / recalcular
+```json 400 — falha ao finalizar ou recalcular (server-side, mas retornado como 4xx)
 {
   "success": false,
-  "error": "INTERNAL_ERROR",
+  "error": "DOMAIN_ERROR",
+  "message": "Failed to finalize sync logs for vendor 100.6.1350"
+}
+```
+
+```json 500 — erro não tratado, incluindo JSON malformado
+{
+  "success": false,
+  "error": "INTERNAL_SERVER_ERROR",
   "message": "An unexpected error occurred. Retry the request."
 }
 ```
 </ResponseExample>
+
+<Note>
+  Uma falha ao finalizar linhas ou recalcular o status do menu volta como **`400 DOMAIN_ERROR`**, não `500`, mesmo sendo uma falha do lado servidor (ex. um erro transitório de banco de dados). Veja [Idempotência e retentativas](#idempotência-e-retentativas): uma política ingênua de "retentar somente diante de `5xx`" **não** vai retentar esse caso.
+</Note>
 
 ## Idempotência e retentativas
 
@@ -161,20 +189,27 @@ O callback é **seguro para reexecutar**. Ele se chaveia sobre as linhas **pende
 
 | Cenário | Resultado |
 |---|---|
-| Primeira entrega — havia linhas pendentes | `200` com `updated: N` (linhas finalizadas) |
+| Primeira entrega, havia linhas pendentes | `200` com `updated: N` (linhas finalizadas) |
 | Mesmo callback reenviado após já ter finalizado | `200` com `updated: 0` (no-op idempotente) |
-| Falta `vendorId` / `type` / `status`, ou `status` fora do enum | `400` |
+| Falta `vendorId` / `type` / `status`, ou `status` fora do enum | `400 VALIDATION_ERROR`, não retentável, o body está malformado |
+| Falha ao finalizar ou recalcular (ex. erro transitório de banco de dados) | `400 DOMAIN_ERROR`, **retentável** |
 | Key sem `webhooks:xmart`, ou `vendorId` não é o vendor desta key | `403` |
-| Erro inesperado do servidor | `500` — transitório, **tente novamente** |
+| Erro não tratado | `500 INTERNAL_SERVER_ERROR`, retentável |
 
-Seu integrador pode tentar novamente com segurança diante de `5xx`; uma retentativa após uma finalização bem-sucedida é um no-op limpo.
+<Warning>
+  Retentar somente diante de `5xx` **não é suficiente**. A falha transitória mais provável, o Fire falhar ao finalizar as linhas, volta como `400 DOMAIN_ERROR`, não `500`. Retente também diante desse código. `400 VALIDATION_ERROR` é o único 400 que você **não** deve retentar: significa que o body em si é inválido.
+</Warning>
+
+O endpoint é seguro de reexecutar em todos esses casos: uma retentativa após uma finalização bem-sucedida é um no-op limpo (`updated: 0`), e uma retentativa após `DOMAIN_ERROR` tenta novamente a mesma finalização.
 
 ## Correlação e o lock do vendor
 
-**Não há id de requisição** neste callback — a única chave é `vendorId`. O Fire se apoia em um **lock por vendor**: enquanto uma leva de publicação está em andamento, as linhas do vendor ficam pendentes e nenhuma segunda leva pode começar, então **todas** as linhas pendentes do vendor pertencem à leva que este callback finaliza.
+**Com `eventId`** (canais agregador): o Fire faz o match da linha diretamente por esse id, com `vendorId` como guard. Sem ambiguidade: o callback fecha exatamente o assignment ao qual se refere.
+
+**Sem `eventId`**: a única chave é `vendorId`. O Fire se apoia em um **lock por vendor**: enquanto uma leva de publicação está em andamento, as linhas do vendor ficam pendentes e nenhuma segunda leva pode começar, então **todas** as linhas pendentes do vendor pertencem à leva que este callback finaliza.
 
 <Warning>
-  O lock é **indefinido** — apenas este callback o libera. Se o callback nunca chegar, o vendor fica bloqueado (sua próxima publicação não pode começar) até intervenção manual. Sempre envie o callback, mesmo diante de `FAILED`.
+  O lock é **indefinido**: apenas um callback que finalize o libera. Se o callback nunca chegar, o vendor fica bloqueado (sua próxima publicação não pode começar) até intervenção manual. Sempre envie o callback, mesmo diante de `FAILED`.
 </Warning>
 
 ## Relação com o fluxo de publicação
@@ -185,10 +220,10 @@ Este callback é a contraparte da flag **`autoPublish`** que o Fire define no **
 
 <CardGroup cols={2}>
   <Card title="Publicação de menu" icon="book-open" href="/pt/guides/menu-publication">
-    O fluxo de publicação que este callback fecha — como o Fire emite o menu/produtos que um vendor deve publicar.
+    O fluxo de publicação que este callback fecha: como o Fire emite o menu/produtos que um vendor deve publicar.
   </Card>
   <Card title="Status do pedido do agregador" icon="truck" href="/pt/api-reference/aggregator-order-status">
-    O webhook de entrada irmão para o status de entrega — mesmo modelo de auth, mas assíncrono (fila + polling).
+    O webhook de entrada irmão para o status de entrega, mesmo modelo de auth, mas assíncrono (fila + polling).
   </Card>
   <Card title="Menu atualizado" icon="utensils" href="/pt/webhook-reference/menu-updated">
     O evento de saída de publicação de menu que carrega o catálogo a publicar.
