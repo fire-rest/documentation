@@ -1,29 +1,31 @@
 ---
 title: "Motivos de recusa"
 api: "GET https://app.fire.rest/api/v1/adapters/xmart/payment-decline-reasons"
-description: "Catálogo agrupado de motivos de recusa de pagamento, com os códigos crus de adquirente que mapeiam para cada um."
+description: "Catálogo agrupado de motivos de recusa de pagamento. Mapeie os códigos do seu adquirente para estes e envie o nosso."
 authMethod: "bearer"
 ---
 
 Retorna o catálogo com que o Fire classifica os pagamentos recusados que você envia em
 [Confirmar pagamento](/pt/api-reference/confirm-payment).
 
-## Por que existe
+## Como usar
 
-Cada adquirente escreve o mesmo fato à sua maneira. Estes quatro valores são **a mesma recusa**:
+Seu adquirente (Rede, Cielo, Stone…) devolve **o código dele** quando um cartão é recusado: `51`,
+`insufficient_funds`, `NSF`. Cada um escreve à sua maneira.
+
+Este catálogo é o vocabulário do Fire. **Você faz o mapeamento do seu lado, uma vez**, e envia o
+código do Fire em `decline_reason`:
 
 ```
-51        insufficient_funds        NSF        INSUFFICIENT FUNDS
+seu adquirente diz  "51"   →   você envia  "INSUFFICIENT_FUNDS"
 ```
-
-Se você agrupasse suas métricas por esse texto cru, teria tantos motivos quantas formas de
-escrevê-los. O catálogo os une sob um código do Fire por meio da lista `aliases`, e é isso que faz
-o agrupamento valer alguma coisa.
 
 <Note>
-  Diferente dos motivos de cancelamento, isto **não é uma lista para escolher**: o motivo da recusa é
-  reportado pelo seu adquirente. O catálogo é a tabela que traduz o que ele diz para o vocabulário do
-  Fire. Por isso este endpoint não fica pendurado num pedido — é o mesmo para toda a sua conta.
+  Funciona como os motivos de cancelamento: você baixa o catálogo e envia um dos códigos dele. O Fire
+  não guarda os códigos de cada adquirente — você tem a documentação da Rede ou da Cielo, e manter o
+  vocabulário de cada provedor em cada país não seria sustentável.
+
+  É também por isso que este endpoint não fica pendurado num pedido: é o mesmo para toda a sua conta.
 </Note>
 
 ## Autenticação
@@ -47,9 +49,8 @@ Grupos ordenados, cada um com seus motivos. Grupos sem motivos ativos não são 
 
 | campo | o que significa |
 | --- | --- |
-| `code` | o código canônico do Fire. **É o que convém enviar** em `decline_reason` |
+| `code` | o código do Fire. **É o que você deve enviar** em `decline_reason` |
 | `label` | texto em `en`, `es` e `pt` |
-| `aliases` | os códigos crus de adquirente que mapeiam para este motivo |
 | `retryable` | se faz sentido tentar de novo **com o mesmo meio**. Saldo insuficiente: não, peça outro cartão. Timeout do emissor: sim, é transitório |
 | `actor` | quem precisa fazer algo: `customer`, `merchant`, `acquirer` ou `system` |
 
@@ -74,7 +75,6 @@ Grupos disponíveis: `funds`, `card`, `security`, `technical`, `operational`.
               "es": "Fondos insuficientes",
               "pt": "Saldo insuficiente"
             },
-            "aliases": ["51", "insufficient_funds", "nsf", "saldo_insuficiente"],
             "retryable": false,
             "actor": "customer",
             "displayOrder": 1
@@ -94,7 +94,6 @@ Grupos disponíveis: `funds`, `card`, `security`, `technical`, `operational`.
               "es": "Emisor no disponible",
               "pt": "Emissor indisponível"
             },
-            "aliases": ["91", "issuer_unavailable", "issuer_or_switch_inoperative"],
             "retryable": true,
             "actor": "acquirer",
             "displayOrder": 1
@@ -123,28 +122,28 @@ Grupos disponíveis: `funds`, `card`, `security`, `technical`, `operational`.
 ```
 </ResponseExample>
 
-## Como o Fire usa isso
+## O que o Fire guarda
 
-Quando você envia um pagamento recusado, o Fire traduz o seu `decline_reason` **no momento em que o
-registra** e guarda as duas coisas: o texto original e a classificação.
+Quando você envia um pagamento recusado, o Fire procura esse código no catálogo e guarda o grupo e o
+`retryable` junto com o que você mandou:
 
 ```jsonc
-"declineReason":     "do_not_honor",   // o que você mandou, intacto
-"declineReasonCode": "DO_NOT_HONOR",   // o código canônico
+"declineReason":     "DO_NOT_HONOR",   // o que você mandou
+"declineReasonCode": "DO_NOT_HONOR",   // encontrado no catálogo
 "declineGroup":      "security",
 "declineRetryable":  true
 ```
 
-A classificação acontece na escrita e não na leitura, então suas métricas históricas não mudam
-sozinhas quando o catálogo cresce. E como o texto original fica guardado, sempre dá para remapear se
-mais adiante adicionarmos o alias que faltava.
+É guardado na escrita e nunca recalculado na leitura, então suas métricas históricas não mudam
+sozinhas quando o catálogo cresce.
 
 <Warning>
-  **Um motivo que não está no catálogo não faz a cobrança falhar.** Ele é guardado sem classificar, e
-  esses registros ficam de fora de qualquer agrupamento por `declineGroup`. Preferimos uma métrica
-  incompleta a uma que arquiva recusas no grupo errado.
+  **Um código que não está no catálogo não faz a cobrança falhar.** É guardado como está, sem grupo, e
+  esses registros ficam de fora de qualquer agrupamento por motivo.
 
-  Se o seu adquirente usa códigos que você não vê aqui, peça para adicionarmos como aliases.
+  [Confirmar pagamento](/pt/api-reference/confirm-payment) avisa na resposta com `resolvedTo: null`.
+  **Confira na primeira integração**: se o seu mapeamento tiver um código errado, todas as recusas
+  entram sem classificação e nada falha.
 </Warning>
 
 ## Relacionado

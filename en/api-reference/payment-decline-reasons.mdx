@@ -1,29 +1,31 @@
 ---
 title: "Decline reasons"
 api: "GET https://app.fire.rest/api/v1/adapters/xmart/payment-decline-reasons"
-description: "Grouped catalog of payment decline reasons, with the raw acquirer codes that map to each one."
+description: "Grouped catalog of payment decline reasons. Map your acquirer codes to these and send ours."
 authMethod: "bearer"
 ---
 
 Returns the catalog Fire uses to classify the declined payments you send to
 [Confirm payment](/en/api-reference/confirm-payment).
 
-## Why it exists
+## How to use it
 
-Every acquirer spells the same fact its own way. These four values are **the same decline**:
+Your acquirer (Rede, Cielo, Stone…) returns **its own** code when a card is declined: `51`,
+`insufficient_funds`, `NSF`. Each one spells it differently.
+
+This catalog is Fire's vocabulary. **You do the mapping on your side, once**, and send Fire's code in
+`decline_reason`:
 
 ```
-51        insufficient_funds        NSF        INSUFFICIENT FUNDS
+your acquirer says  "51"   →   you send  "INSUFFICIENT_FUNDS"
 ```
-
-If you grouped your metrics by that raw text you would get as many reasons as ways of writing them.
-The catalog unifies them under a Fire code through the `aliases` list, and that is what makes
-grouping worth anything.
 
 <Note>
-  Unlike cancellation reasons, this is **not a list to pick from**: the decline reason is reported by
-  your acquirer. The catalog is the table that translates what it says into Fire's vocabulary. That
-  is why this endpoint does not hang off an order — it is the same for your whole account.
+  It works like cancellation reasons: you download the catalog and send one of its codes. Fire does
+  not store each acquirer's codes — you have the Rede or Cielo documentation, and keeping every
+  provider's vocabulary for every country would not be sustainable.
+
+  That is also why this endpoint does not hang off an order: it is the same for your whole account.
 </Note>
 
 ## Authentication
@@ -47,9 +49,8 @@ Ordered groups, each with its reasons. Groups with no active reasons are not ret
 
 | field | what it means |
 | --- | --- |
-| `code` | Fire's canonical code. **This is the one to send** in `decline_reason` |
+| `code` | Fire's code. **This is the one you must send** in `decline_reason` |
 | `label` | text in `en`, `es` and `pt` |
-| `aliases` | the raw acquirer codes that map to this reason |
 | `retryable` | whether retrying **with the same tender** makes sense. Insufficient funds: no, ask for another card. Issuer timeout: yes, it is transient |
 | `actor` | who has to do something: `customer`, `merchant`, `acquirer` or `system` |
 
@@ -74,7 +75,6 @@ Available groups: `funds`, `card`, `security`, `technical`, `operational`.
               "es": "Fondos insuficientes",
               "pt": "Saldo insuficiente"
             },
-            "aliases": ["51", "insufficient_funds", "nsf", "saldo_insuficiente"],
             "retryable": false,
             "actor": "customer",
             "displayOrder": 1
@@ -94,7 +94,6 @@ Available groups: `funds`, `card`, `security`, `technical`, `operational`.
               "es": "Emisor no disponible",
               "pt": "Emissor indisponível"
             },
-            "aliases": ["91", "issuer_unavailable", "issuer_or_switch_inoperative"],
             "retryable": true,
             "actor": "acquirer",
             "displayOrder": 1
@@ -123,28 +122,28 @@ Available groups: `funds`, `card`, `security`, `technical`, `operational`.
 ```
 </ResponseExample>
 
-## How Fire uses it
+## What Fire stores
 
-When you send a declined payment, Fire translates your `decline_reason` **at the moment it records
-it** and stores both things: the original text and the classification.
+When you send a declined payment, Fire looks that code up in the catalog and stores the group and
+`retryable` alongside what you sent:
 
 ```jsonc
-"declineReason":     "do_not_honor",   // what you sent, untouched
-"declineReasonCode": "DO_NOT_HONOR",   // the canonical code
+"declineReason":     "DO_NOT_HONOR",   // what you sent
+"declineReasonCode": "DO_NOT_HONOR",   // found in the catalog
 "declineGroup":      "security",
 "declineRetryable":  true
 ```
 
-Classification happens on write rather than on read, so your historical metrics do not shift on
-their own when the catalog grows. And because the original text is kept, it can always be re-mapped
-if we later add the alias that was missing.
+It is stored on write and never recomputed on read, so your historical metrics do not shift on their
+own when the catalog grows.
 
 <Warning>
-  **A reason that is not in the catalog does not fail the charge.** It is stored unclassified, and
-  those records fall outside anything grouped by `declineGroup`. We prefer an incomplete metric over
-  one that files declines under the wrong group.
+  **A code that is not in the catalog does not fail the charge.** It is stored as-is, with no group,
+  and those records fall outside anything grouped by reason.
 
-  If your acquirer uses codes you do not see here, ask us to add them as aliases.
+  [Confirm payment](/en/api-reference/confirm-payment) tells you in the response with
+  `resolvedTo: null`. **Check it on your first integration**: if your mapping has a typo, every
+  decline lands unclassified and nothing fails.
 </Warning>
 
 ## Related

@@ -67,9 +67,12 @@ starts.
 </ParamField>
 
 <ParamField body="payments[].details.decline_reason" type="string">
-  Reason for the decline. Only applies when `transaction_status` is not approved. The recognised
-  codes are in [Decline reasons](/en/api-reference/payment-decline-reasons) — your acquirer's raw
-  codes (`51`, `do_not_honor`, …) are accepted too.
+  Reason for the decline, using a code from [Decline reasons](/en/api-reference/payment-decline-reasons).
+  Only applies when `transaction_status` is not approved.
+
+  Your acquirer's code (`51`, `do_not_honor`) must be translated **on your side** to the catalog's:
+  Fire does not store each provider's codes. If you send one that is not there it is accepted and
+  stored, but it comes back with `resolvedTo: null` and stays out of your grouped metrics.
 </ParamField>
 
 <ParamField body="payments[].method" type="string">
@@ -137,23 +140,24 @@ add up and never block the charge.
 
 ## What happened to each decline
 
-Every declined tender comes back in `declines[]`, with the reason exactly as you sent it and the
-catalog code it resolved to.
+Every declined tender comes back in `declines[]`, with what you sent and whether we found it in the
+catalog.
 
 ```jsonc
 "declines": [
-  { "sent": "51",     "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "retryable": false },
-  { "sent": "XYZ-99", "resolvedTo": null,                 "group": null,    "retryable": null }
+  { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "retryable": false },
+  { "sent": "51",                 "resolvedTo": null,                 "group": null,    "retryable": null }
 ]
 ```
 
-`resolvedTo: null` means that code **matched no alias** in the catalog. The decline was still
-recorded and the original text is kept, but those records show up in nothing grouped by reason.
+`resolvedTo: null` means that code **does not exist in the catalog** — in the example, the acquirer's
+raw code was sent instead of Fire's. The decline was still recorded and the value is kept, but it
+shows up in nothing grouped by reason.
 
 <Warning>
-  Check this block the first time you integrate. If your acquirer uses codes we do not recognise,
-  every decline will land unclassified and your reasons dashboard will stay empty — with nothing
-  failing. When you see a recurring `resolvedTo: null`, ask us to add that alias.
+  Check this block on your first integration. A mistranslated code breaks nothing: the charge works,
+  the response is `200`, and your declines land unclassified. You would find out months later with an
+  empty reasons dashboard.
 </Warning>
 
 ## Idempotency
@@ -222,8 +226,8 @@ not add up.
     "declinedCount": 2,
     "amountMismatch": false,
     "declines": [
-      { "sent": "51", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "retryable": false },
-      { "sent": "XYZ-99", "resolvedTo": null, "group": null, "retryable": null }
+      { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "retryable": false },
+      { "sent": "51", "resolvedTo": null, "group": null, "retryable": null }
     ]
   }
 }
