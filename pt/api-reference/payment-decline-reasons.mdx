@@ -1,0 +1,159 @@
+---
+title: "Motivos de recusa"
+api: "GET https://app.fire.rest/api/v1/adapters/xmart/payment-decline-reasons"
+description: "Catálogo agrupado de motivos de recusa de pagamento, com os códigos crus de adquirente que mapeiam para cada um."
+authMethod: "bearer"
+---
+
+Retorna o catálogo com que o Fire classifica os pagamentos recusados que você envia em
+[Confirmar pagamento](/pt/api-reference/confirm-payment).
+
+## Por que existe
+
+Cada adquirente escreve o mesmo fato à sua maneira. Estes quatro valores são **a mesma recusa**:
+
+```
+51        insufficient_funds        NSF        INSUFFICIENT FUNDS
+```
+
+Se você agrupasse suas métricas por esse texto cru, teria tantos motivos quantas formas de
+escrevê-los. O catálogo os une sob um código do Fire por meio da lista `aliases`, e é isso que faz
+o agrupamento valer alguma coisa.
+
+<Note>
+  Diferente dos motivos de cancelamento, isto **não é uma lista para escolher**: o motivo da recusa é
+  reportado pelo seu adquirente. O catálogo é a tabela que traduz o que ele diz para o vocabulário do
+  Fire. Por isso este endpoint não fica pendurado num pedido — é o mesmo para toda a sua conta.
+</Note>
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `orders:read`.
+</ParamField>
+
+## Requisição
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/adapters/xmart/payment-decline-reasons
+x-api-key: <sua_api_key>
+```
+</RequestExample>
+
+## Resposta
+
+Grupos ordenados, cada um com seus motivos. Grupos sem motivos ativos não são retornados.
+
+| campo | o que significa |
+| --- | --- |
+| `code` | o código canônico do Fire. **É o que convém enviar** em `decline_reason` |
+| `label` | texto em `en`, `es` e `pt` |
+| `aliases` | os códigos crus de adquirente que mapeiam para este motivo |
+| `retryable` | se faz sentido tentar de novo **com o mesmo meio**. Saldo insuficiente: não, peça outro cartão. Timeout do emissor: sim, é transitório |
+| `actor` | quem precisa fazer algo: `customer`, `merchant`, `acquirer` ou `system` |
+
+Grupos disponíveis: `funds`, `card`, `security`, `technical`, `operational`.
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "groups": [
+      {
+        "code": "funds",
+        "label": { "en": "Funds", "es": "Fondos", "pt": "Fundos" },
+        "displayOrder": 1,
+        "reasons": [
+          {
+            "code": "INSUFFICIENT_FUNDS",
+            "groupCode": "funds",
+            "label": {
+              "en": "Insufficient funds",
+              "es": "Fondos insuficientes",
+              "pt": "Saldo insuficiente"
+            },
+            "aliases": ["51", "insufficient_funds", "nsf", "saldo_insuficiente"],
+            "retryable": false,
+            "actor": "customer",
+            "displayOrder": 1
+          }
+        ]
+      },
+      {
+        "code": "technical",
+        "label": { "en": "Technical", "es": "Técnico", "pt": "Técnico" },
+        "displayOrder": 4,
+        "reasons": [
+          {
+            "code": "ISSUER_UNAVAILABLE",
+            "groupCode": "technical",
+            "label": {
+              "en": "Issuer unavailable",
+              "es": "Emisor no disponible",
+              "pt": "Emissor indisponível"
+            },
+            "aliases": ["91", "issuer_unavailable", "issuer_or_switch_inoperative"],
+            "retryable": true,
+            "actor": "acquirer",
+            "displayOrder": 1
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+```json 401 — API key inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — a key não tem o scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have the required scope: orders:read"
+}
+```
+</ResponseExample>
+
+## Como o Fire usa isso
+
+Quando você envia um pagamento recusado, o Fire traduz o seu `decline_reason` **no momento em que o
+registra** e guarda as duas coisas: o texto original e a classificação.
+
+```jsonc
+"declineReason":     "do_not_honor",   // o que você mandou, intacto
+"declineReasonCode": "DO_NOT_HONOR",   // o código canônico
+"declineGroup":      "security",
+"declineRetryable":  true
+```
+
+A classificação acontece na escrita e não na leitura, então suas métricas históricas não mudam
+sozinhas quando o catálogo cresce. E como o texto original fica guardado, sempre dá para remapear se
+mais adiante adicionarmos o alias que faltava.
+
+<Warning>
+  **Um motivo que não está no catálogo não faz a cobrança falhar.** Ele é guardado sem classificar, e
+  esses registros ficam de fora de qualquer agrupamento por `declineGroup`. Preferimos uma métrica
+  incompleta a uma que arquiva recusas no grupo errado.
+
+  Se o seu adquirente usa códigos que você não vê aqui, peça para adicionarmos como aliases.
+</Warning>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Confirmar pagamento" icon="credit-card" href="/pt/api-reference/confirm-payment">
+    Registre a cobrança, com os meios aprovados e os recusados.
+  </Card>
+  <Card title="Obter pedido" icon="receipt" href="/pt/api-reference/get-order">
+    Consulte o status do pedido e o seu total.
+  </Card>
+</CardGroup>

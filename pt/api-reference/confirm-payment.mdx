@@ -1,0 +1,306 @@
+---
+title: "Confirmar pagamento"
+api: "POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders/{orderId}/confirm-payment"
+description: "Registra a cobrança de um pedido aberto e o liquida. Aceita vários meios de pagamento numa mesma cobrança, e também as tentativas recusadas."
+authMethod: "bearer"
+---
+
+Fecha o ciclo do **pagamento diferido**: o pedido nasceu aberto, a cozinha já trabalhou, e a
+cobrança chega aqui. Se houver ao menos um meio aprovado, o pedido passa a `COMPLETED` e o
+faturamento começa.
+
+<Note>
+  **Uma cobrança com vários meios, não pagamentos parciais.** Se você dividir a conta entre dinheiro
+  e cartão, envie as duas peças **na mesma chamada**. O Fire não acumula pagamentos ao longo do
+  tempo: a cobrança chega inteira ou não chega. Consolide os parciais do seu lado antes de enviar.
+</Note>
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `orders:write`. A key **deve ser vendor-scoped** — keys sem
+  `vendorId` são rejeitadas com `403`.
+</ParamField>
+
+## Path params
+
+<ParamField path="orderId" type="string" required>
+  Qualquer uma das três referências públicas do pedido:
+
+  | referência | o que é |
+  | --- | --- |
+  | `orders.id` | o UUID interno do Fire |
+  | `order_external` | o id que você atribuiu ao criar o pedido |
+  | `metadata.order_id` | cópia do id externo dentro do pedido |
+
+  É o mesmo conjunto aceito por [Obter pedido](/pt/api-reference/get-order) e
+  [Cancelar pedido](/pt/api-reference/cancel-order).
+</ParamField>
+
+## Corpo
+
+<ParamField body="payments" type="object[]" required>
+  Os meios com os quais você cobrou o pedido. Entre 1 e 20 peças. Cada objeto é guardado exatamente
+  como você enviou; abaixo estão apenas os campos que o Fire lê.
+</ParamField>
+
+<ParamField body="payments[].details.transaction_status" type="string" required>
+  Resultado da tentativa. Contam como **cobrado**: `APPROVED`, `AUTHORIZED`, `CAPTURED`, `PAID`,
+  `SUCCESS`, `SUCCEEDED` (sem diferenciar maiúsculas).
+
+  Qualquer outro valor é tratado como **recusa**, mesmo um que não reconheçamos. É deliberado:
+  faturar uma cobrança que não aconteceu não tem volta, enquanto deixar de liquidar uma que
+  aconteceu se resolve enviando de novo.
+</ParamField>
+
+<ParamField body="payments[].details.transaction_id" type="string" required>
+  Identificador da transação. **É a chave de idempotência**: reenviar o mesmo não cobra nem fatura
+  duas vezes. Se o seu meio não gerar um, o Fire usa `payments[].uid`.
+</ParamField>
+
+<ParamField body="payments[].details.total_bill" type="number" required>
+  Valor desta peça, decimal. Deve ser maior que zero.
+</ParamField>
+
+<ParamField body="payments[].details.currency_code" type="string" required>
+  Moeda da peça. Todas as peças **aprovadas** devem compartilhar a mesma.
+</ParamField>
+
+<ParamField body="payments[].details.decline_reason" type="string">
+  Motivo da recusa. Só se aplica quando `transaction_status` não é aprovado. Os códigos reconhecidos
+  estão em [Motivos de recusa](/pt/api-reference/payment-decline-reasons) — os códigos crus do seu
+  adquirente (`51`, `do_not_honor`, …) também são aceitos.
+</ParamField>
+
+<ParamField body="payments[].method" type="string">
+  Meio de pagamento (`CASH`, `CREDIT`, `DEBIT`, `PIX`…). Usado para o faturamento e as métricas.
+</ParamField>
+
+## Requisição
+
+<RequestExample>
+```http
+POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders/ORD-77/confirm-payment
+x-api-key: <sua_api_key>
+Content-Type: application/json
+
+{
+  "payments": [
+    {
+      "uid": "9b1c...",
+      "total": "20",
+      "method": "CASH",
+      "currency_code": "BRL",
+      "details": {
+        "total_bill": 20,
+        "currency_code": "BRL",
+        "transaction_id": "BR-K000-POS-38-1785258648480",
+        "transaction_status": "APPROVED",
+        "transaction_date": { "date": "2026-07-28T17:10:48.000Z" }
+      }
+    },
+    {
+      "uid": "7d3a...",
+      "total": "15.90",
+      "method": "CREDIT",
+      "currency_code": "BRL",
+      "details": {
+        "total_bill": 15.90,
+        "currency_code": "BRL",
+        "transaction_id": "BR-K000-POS-38-1785258648999",
+        "transaction_status": "APPROVED",
+        "transaction_date": { "date": "2026-07-28T17:11:02.000Z" }
+      }
+    }
+  ]
+}
+```
+</RequestExample>
+
+## O que o Fire faz com isso
+
+Só as peças **aprovadas** somam e liquidam. As recusadas são registradas para suas métricas; nunca
+somam e nunca bloqueiam a cobrança.
+
+| situação | `outcome` | liquida? |
+| --- | --- | --- |
+| há aprovadas e o pedido está aberto | `settled` | sim — vira `COMPLETED` e o faturamento começa |
+| há aprovadas e o pedido **não** está aberto | `recorded` | não — registradas sem alterar o pedido |
+| nenhuma peça aprovada | `declined` | não — o pedido continua aberto |
+| nenhuma peça nova (você já as enviou) | `duplicate` | não — repetição idempotente |
+
+<Warning>
+  **Se a soma não bate com o total do pedido, o Fire liquida mesmo assim** e marca a diferença na
+  resposta (`amountMismatch`). Recusar deixaria o pedido aberto para sempre e a nota nunca sairia:
+  você é a autoridade sobre o que cobrou. Verifique essa marca na sua conciliação.
+</Warning>
+
+## Idempotência
+
+Cada peça é identificada pelo seu `transaction_id` dentro do pedido. Pode repetir sem medo:
+
+- **Reenviar a cobrança completa** → `duplicate`. Nada é liquidado nem faturado de novo.
+- **Reenviar após um timeout** que deixou a cobrança pela metade → entra só o que faltava.
+
+## Validações
+
+Todas retornam `400`, salvo indicação em contrário.
+
+| regra | código |
+| --- | --- |
+| `payments` com ao menos uma peça | `400` |
+| no máximo 20 peças | `400` |
+| `details.transaction_status` presente | `400` |
+| `transaction_id` ou `uid` presente | `400` |
+| `transaction_id` sem repetição no mesmo envio | `400` |
+| valor maior que zero em cada peça | `400` |
+| uma única moeda entre as peças aprovadas | `400` |
+| API key válida | `401` |
+| scope `orders:write` e key vendor-scoped | `403` |
+| o pedido existe dentro do seu vendor | `404` |
+| a referência corresponde a mais de um pedido | `409` |
+
+Campos que o Fire não conhece **são aceitos e guardados**: você pode enviar seu objeto de pagamento
+completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, porque não soma.
+
+## Respostas
+
+<ResponseExample>
+```json 200 — liquidado
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "settled",
+    "settled": true,
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "completedAt": "2026-07-28T17:11:02.000Z",
+    "tenderCount": 2,
+    "declinedCount": 0,
+    "amountMismatch": false
+  }
+}
+```
+
+```json 200 — recusado, o pedido continua aberto
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "declined",
+    "settled": false,
+    "status": "OPEN",
+    "paymentStatus": "PENDING",
+    "completedAt": null,
+    "tenderCount": 0,
+    "declinedCount": 2,
+    "amountMismatch": false
+  }
+}
+```
+
+```json 200 — repetição da mesma cobrança
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "duplicate",
+    "settled": false,
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "completedAt": "2026-07-28T17:11:02.000Z",
+    "tenderCount": 0,
+    "declinedCount": 0,
+    "amountMismatch": false
+  }
+}
+```
+
+```json 200 — o valor não bate com o total
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "outcome": "settled",
+    "settled": true,
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "completedAt": "2026-07-28T17:11:02.000Z",
+    "tenderCount": 1,
+    "declinedCount": 0,
+    "amountMismatch": true
+  }
+}
+```
+
+```json 200 — o pedido não estava aberto
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "outcome": "recorded",
+    "settled": false,
+    "status": "CANCELLED",
+    "paymentStatus": "PENDING",
+    "completedAt": null,
+    "tenderCount": 1,
+    "declinedCount": 0,
+    "amountMismatch": false
+  }
+}
+```
+
+```json 400 — validação
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "code": "custom",
+      "path": ["payments", 1],
+      "message": "Duplicate transaction id \"BR-K000-POS-38-1785258648480\" within the same payment batch"
+    }
+  ]
+}
+```
+
+```json 403 — key sem vendor
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "Vendor-scoped API key required (accountId binding missing)"
+}
+```
+
+```json 404 — o pedido não existe no seu vendor
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "InjectedOrder not found with ID ORD-77"
+}
+```
+
+```json 409 — referência ambígua
+{
+  "success": false,
+  "error": "CONFLICT",
+  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate"
+}
+```
+</ResponseExample>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Motivos de recusa" icon="circle-xmark" href="/pt/api-reference/payment-decline-reasons">
+    Catálogo agrupado para classificar as tentativas recusadas.
+  </Card>
+  <Card title="Obter pedido" icon="receipt" href="/pt/api-reference/get-order">
+    Consulte o status e o total antes de cobrar.
+  </Card>
+</CardGroup>
