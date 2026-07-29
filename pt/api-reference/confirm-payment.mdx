@@ -127,15 +127,22 @@ somam e nunca bloqueiam a cobrança.
 
 | situação | `outcome` | liquida? |
 | --- | --- | --- |
-| há aprovadas e o pedido está aberto | `settled` | sim — vira `COMPLETED` e o faturamento começa |
+| a soma das aprovadas **é igual** ao total e o pedido está aberto | `settled` | sim — vira `COMPLETED` e o faturamento começa |
+| a soma é **menor** que o total (parte foi recusada) | `recorded` | não — o dinheiro que entrou é registrado e o pedido continua aberto |
 | há aprovadas e o pedido **não** está aberto | `recorded` | não — registradas sem alterar o pedido |
 | nenhuma peça aprovada | `declined` | não — o pedido continua aberto |
 | nenhuma peça nova (você já as enviou) | `duplicate` | não — repetição idempotente |
+| a soma **supera** o total | — | **`400`** — nada é registrado |
 
 <Warning>
-  **Se a soma não bate com o total do pedido, o Fire liquida mesmo assim** e marca a diferença na
-  resposta (`amountMismatch`). Recusar deixaria o pedido aberto para sempre e a nota nunca sairia:
-  você é a autoridade sobre o que cobrou. Verifique essa marca na sua conciliação.
+  **O pedido liquida somente com a soma exata.**
+
+  Se você cobrar **menos** que o total, o que entrou é registrado e o pedido continua aberto
+  esperando o resto — acontece quando parte das peças é recusada. Liquidar com menos faturaria o
+  total tendo cobrado uma parte, e uma nota emitida errada não se corrige.
+
+  Se cobrar **mais**, a chamada falha com `400` e **nada é registrado**, então você corrige e reenvia
+  sem deixar linhas sobrando. A mensagem traz os dois valores.
 </Warning>
 
 ## O que aconteceu com cada recusa
@@ -184,6 +191,7 @@ Todas retornam `400`, salvo indicação em contrário.
 | `transaction_id` sem repetição no mesmo envio | `400` |
 | valor maior que zero em cada peça | `400` |
 | uma única moeda entre as peças aprovadas | `400` |
+| a soma das aprovadas não supera o total do pedido | `400` |
 | API key válida | `401` |
 | scope `orders:write` e key vendor-scoped | `403` |
 | o pedido existe dentro do seu vendor | `404` |
@@ -254,20 +262,11 @@ completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, por
 }
 ```
 
-```json 200 — o valor não bate com o total
+```json 400 — você cobrou mais que o total
 {
-  "success": true,
-  "data": {
-    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-    "outcome": "settled",
-    "settled": true,
-    "status": "COMPLETED",
-    "paymentStatus": "SUCCEEDED",
-    "completedAt": "2026-07-28T17:11:02.000Z",
-    "tenderCount": 1,
-    "declinedCount": 0,
-    "amountMismatch": true
-  }
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "message": "Approved tenders total 500000 exceeds the order total 359000"
 }
 ```
 

@@ -126,15 +126,22 @@ suman y nunca bloquean el cobro.
 
 | situación | `outcome` | ¿salda? |
 | --- | --- | --- |
-| hay aprobadas y la orden está abierta | `settled` | sí — pasa a `COMPLETED` y arranca la facturación |
+| la suma de las aprobadas **es igual** al total y la orden está abierta | `settled` | sí — pasa a `COMPLETED` y arranca la facturación |
+| la suma **es menor** al total (parte se rechazó) | `recorded` | no — se registra la plata que entró y la orden sigue abierta |
 | hay aprobadas y la orden **no** está abierta | `recorded` | no — se registran sin cambiar la orden |
 | ninguna pieza aprobada | `declined` | no — la orden sigue abierta |
 | ninguna pieza nueva (ya las habías enviado) | `duplicate` | no — reintento idempotente |
+| la suma **supera** el total | — | **`400`** — no se registra nada |
 
 <Warning>
-  **Si la suma no coincide con el total de la orden, Fire salda igual** y marca la diferencia en la
-  respuesta (`amountMismatch`). Rechazar dejaría la orden abierta para siempre y la factura no
-  saldría nunca: vos sos la autoridad sobre lo que cobraste. Revisá esa bandera en tu conciliación.
+  **La orden salda solo con la suma exacta.**
+
+  Si cobrás **menos** que el total, se registra lo que entró y la orden queda abierta esperando el
+  resto — pasa cuando parte de las piezas se rechaza. Saldar con menos facturaría el total habiendo
+  cobrado una parte, y una factura mal emitida no se corrige.
+
+  Si cobrás **más**, la llamada falla con `400` y **no se registra nada**, así corregís y reenviás
+  sin dejar filas de más. El mensaje te dice los dos montos.
 </Warning>
 
 ## Qué pasó con cada rechazo
@@ -184,6 +191,7 @@ Todas devuelven `400` salvo donde se indique.
 | `transaction_id` sin repetir dentro del mismo envío | `400` |
 | monto mayor que cero en cada pieza | `400` |
 | una sola moneda entre las piezas aprobadas | `400` |
+| la suma de las aprobadas no supera el total de la orden | `400` |
 | API key válida | `401` |
 | scope `orders:write` y key vendor-scoped | `403` |
 | la orden existe dentro de tu vendor | `404` |
@@ -254,20 +262,11 @@ sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque n
 }
 ```
 
-```json 200 — el monto no coincide con el total
+```json 400 — cobraste más que el total
 {
-  "success": true,
-  "data": {
-    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-    "outcome": "settled",
-    "settled": true,
-    "status": "COMPLETED",
-    "paymentStatus": "SUCCEEDED",
-    "completedAt": "2026-07-28T17:11:02.000Z",
-    "tenderCount": 1,
-    "declinedCount": 0,
-    "amountMismatch": true
-  }
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "message": "Approved tenders total 500000 exceeds the order total 359000"
 }
 ```
 
