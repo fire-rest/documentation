@@ -1,40 +1,89 @@
 ---
-title: "Charge from a channel (proposal)"
-description: "Proposed endpoints for a channel (POS, kiosk, web, app) to create and manage a charge through PayBridge."
+title: "Charge from a channel"
+description: "Endpoints for a channel (POS, kiosk, web, or app) to create and manage a charge through PayBridge."
 ---
 
 <Info>
-**Draft for review.** These endpoints are the **proposal** for PayBridge's transaction plane; the
-exact routes and fields are settled together with the runtime (still under construction). The
-merchant configuration (credentials, methods, terminals) already lives in DSI via the
-[config sync](/en/webhook-reference/dsi-config-sync), which is why the charge travels *lean*.
+These endpoints are **implemented** and verified against the DSI sandbox (payment created with a real
+link, and status closed by webhook). The final public callback host is still pending for production,
+which is why the group is still tagged *Coming soon*.
 </Info>
 
-A channel (POS, kiosk, web, or app) uses these endpoints to **charge** through PayBridge. The
-channel only sends the transaction data (order, amount, method, `storeId`, `terminalId`); PayBridge
-resolves the provider and returns a **payment link** (redirect, QR, or iframe) that the channel
-shows to the customer. The final status arrives via notification (webhook) or by polling the status.
+A channel (POS, kiosk, web, or app) uses these endpoints to **charge** through PayBridge. The channel
+only sends the transaction data (order, amount, method, `storeId`, `terminalId`); PayBridge resolves
+the provider, creates the payment, and returns a **payment link** for the channel to show the
+customer.
+
+The final status arrives through the [status webhook](/en/webhook-reference/dsi-payment-status). The
+merchant configuration (credentials, methods, terminals) already lives in the provider via the
+[config sync](/en/webhook-reference/dsi-config-sync), which is why the charge travels *lean*.
 
 ## Authentication
 
 <ParamField header="x-api-key" type="string" required>
-  A **vendor-scoped** Fire API key. `accountId` and `vendorId` are derived from the key.
+  A **vendor-scoped** Fire API key with the `paybridge:charge` scope. `accountId` and `vendorId` are
+  derived from the key; a key without a vendor returns `403`.
 </ParamField>
+
+Every response is wrapped in `{ "success": true, "data": { … } }`.
+
+## Charges and attempts
+
+<CardGroup cols={2}>
+  <Card title="Charge (intent)" icon="receipt">
+    The charge for **one order**: total amount, currency, store, terminal, and channel. The channel
+    creates it once.
+  </Card>
+  <Card title="Attempt" icon="arrow-right-arrow-left">
+    Each **payment attempt** inside the charge. It takes a **slot**: one slot per method in a split
+    payment, and a new attempt in the **same** slot when you retry.
+  </Card>
+</CardGroup>
+
+Charge statuses:
+
+| Status | Meaning |
+|---|---|
+| `processing` | An attempt is under way, with no link for the customer yet. |
+| `requires_action` | A payment link is waiting for the customer. |
+| `partially_paid` | Part of the total was collected (split payment in progress). |
+| `succeeded` | The full amount was collected. |
+| `failed` | Every attempt failed and none is active. |
+| `canceled` | Every attempt was canceled. |
+| `pending` / `reversed` | Reserved (no attempts yet / full reversal). |
+
+Attempt statuses:
+
+| Status | Meaning |
+|---|---|
+| `created` | Recorded in Fire, not sent to the provider yet. |
+| `requires_redirect` | The provider returned the `paymentLink`: show it to the customer. |
+| `succeeded` | Payment approved (confirmed by the webhook). |
+| `failed` | The payment could not be created or the provider rejected it; the reason is in `errorDescription`. |
+| `canceled` | The attempt was canceled (unpaid or expired link). |
+| `solving` | Refund in progress, waiting for the provider to confirm. |
+| `refunded` | Refund confirmed. |
+| `processing` / `requires_action` | Reserved. |
 
 ## Flow
 
 <Steps>
   <Step title="Create the charge">
     The channel calls `POST /intents` with the order, amount, method, and its `storeId`/`terminalId`.
-    PayBridge returns a `paymentLink`.
+    PayBridge creates the payment at the provider and returns the `paymentLink` in the first attempt.
   </Step>
   <Step title="Show the link">
-    The channel shows the `paymentLink` (redirect / QR / iframe) for the customer to pay.
+    The channel shows the `paymentLink` (redirect, QR, or iframe) for the customer to pay.
   </Step>
   <Step title="Learn the result">
-    The status arrives via [notification](/en/webhook-reference/overview) or by querying
-    `GET /intents/{intentId}`. If the customer doesn't pay, you can **cancel**; if they already paid,
-    you can **refund**.
+    Fire receives the provider status through the
+    [webhook](/en/webhook-reference/dsi-payment-status) and updates the attempt and the charge. The
+    channel reads it with `GET /intents/{intentId}`.
+  </Step>
+  <Step title="Close the case">
+    If the customer doesn't pay, **cancel** the attempt. If the payment is already approved,
+    **refund** it. If it fails or money is missing, add another attempt with
+    `POST /intents/{intentId}/pay`.
   </Step>
 </Steps>
 
@@ -42,63 +91,97 @@ shows to the customer. The final status arrives via notification (webhook) or by
 
 | Operation | Method | Endpoint |
 |---|---|---|
-| Create charge | `POST` | `/api/v1/paybridge/intents` |
-| Get status | `GET` | `/api/v1/paybridge/intents/{intentId}` |
-| Cancel (unpaid link) | `POST` | `/api/v1/paybridge/attempts/{attemptId}/cancel` |
-| Refund (approved payment) | `POST` | `/api/v1/paybridge/attempts/{attemptId}/refund` |
+| Create charge | `POST` | `/api/v1/external/paybridge/intents` |
+| Get charge | `GET` | `/api/v1/external/paybridge/intents/{intentId}` |
+| Add attempt (split or retry) | `POST` | `/api/v1/external/paybridge/intents/{intentId}/pay` |
+| Cancel attempt | `POST` | `/api/v1/external/paybridge/attempts/{attemptId}/cancel` |
+| Refund attempt | `POST` | `/api/v1/external/paybridge/attempts/{attemptId}/refund` |
 
 ---
 
 ## Create charge
 
-`POST /api/v1/paybridge/intents`
+`POST /api/v1/external/paybridge/intents`
 
 <ParamField body="externalOrderId" type="string" required>
-  The order identifier in the channel's system. Unique per transaction.
+  The order id in the channel's system (max. 80 characters). **This is the idempotency key**: sending
+  the same value again returns the existing charge instead of duplicating it.
 </ParamField>
 <ParamField body="methodCode" type="string" required>
-  The payment method code in Fire (e.g. `deuna_pichincha`, `rutpay`).
+  Payment method code in Fire (for example `deuna`, `rutpay`). It must be **active** in the catalog,
+  otherwise the call returns `400`.
 </ParamField>
 <ParamField body="amount" type="number" required>
-  Total to charge, in the currency's major unit (e.g. `19.90`).
+  Total amount to charge, in the currency's major unit (for example `19.90`).
 </ParamField>
 <ParamField body="currency" type="string" required>
-  ISO 4217 currency (`USD`, `CLP`, `COP`, `ARS`, `VES`, `BRL`).
+  Three-letter ISO 4217 currency (`USD`, `CLP`, `COP`, `ARS`, `VES`, `BRL`).
 </ParamField>
 <ParamField body="storeId" type="string" required>
-  Store UUID in Fire (maps to `branchOffice` in DSI).
+  UUID of the store in Fire. It travels to the provider as `branchOffice`.
 </ParamField>
 <ParamField body="terminalId" type="string" required>
-  POS terminal id or kiosk device id (maps to `pointOfSale` in DSI).
+  Id of the POS terminal or the kiosk device. It travels to the provider as `pointOfSale`.
 </ParamField>
 <ParamField body="channel" type="string" required>
-  Channel originating the charge: `POS`, `KIOSK`, `WEB`, or `APP`.
+  Channel that originates the charge: `POS`, `KIOSK`, `WEB`, or `APP`.
+</ParamField>
+<ParamField body="country" type="string">
+  Country of the charge (ISO alpha-2). You can omit it when the method belongs to **a single**
+  country: Fire derives it. For multi-country methods it is **required**; without it the attempt ends
+  up `failed` because the country connection can't be resolved.
 </ParamField>
 <ParamField body="customer" type="object">
-  Optional payer data.
+  Optional payer data. It is forwarded to the provider when required.
   <Expandable title="customer">
-    <ParamField body="name" type="string" />
+    <ParamField body="name" type="string">Full name; it is split into first and last name.</ParamField>
     <ParamField body="email" type="string" />
-    <ParamField body="document" type="string">Tax identification, per country.</ParamField>
+    <ParamField body="document" type="string">Tax id, depending on the country.</ParamField>
+    <ParamField body="phone" type="string" />
   </Expandable>
 </ParamField>
 
-<ResponseField name="intentId" type="string">Payment intent UUID in Fire.</ResponseField>
-<ResponseField name="status" type="string">Intent status: `requires_action`, `processing`, `succeeded`, `partially_paid`, `failed`, `canceled`.</ResponseField>
-<ResponseField name="paymentLink" type="string">Payment link to show the customer (redirect / QR / iframe).</ResponseField>
-<ResponseField name="expiresAt" type="string">ISO expiration date of the link.</ResponseField>
+<ResponseField name="intent" type="object">
+  The charge with all its attempts.
+  <Expandable title="intent">
+    <ResponseField name="intentId" type="string">UUID of the charge in Fire.</ResponseField>
+    <ResponseField name="externalOrderId" type="string" />
+    <ResponseField name="status" type="string">Charge status.</ResponseField>
+    <ResponseField name="amountTotal" type="number" />
+    <ResponseField name="amountPaid" type="number">Sum of the approved attempts.</ResponseField>
+    <ResponseField name="currency" type="string" />
+    <ResponseField name="storeId" type="string" />
+    <ResponseField name="terminalId" type="string | null" />
+    <ResponseField name="channel" type="string" />
+    <ResponseField name="expiresAt" type="string | null">Reserved; always `null` today.</ResponseField>
+    <ResponseField name="attempts" type="object[]">
+      <Expandable title="attempt">
+        <ResponseField name="attemptId" type="string" />
+        <ResponseField name="slot" type="number">Split-payment slot (1, 2, 3…).</ResponseField>
+        <ResponseField name="attemptNumber" type="number">Retry number inside the slot.</ResponseField>
+        <ResponseField name="methodCode" type="string" />
+        <ResponseField name="status" type="string">Attempt status.</ResponseField>
+        <ResponseField name="amount" type="number" />
+        <ResponseField name="currency" type="string" />
+        <ResponseField name="paymentLink" type="string | null">Link to show the customer.</ResponseField>
+        <ResponseField name="errorDescription" type="string | null">Failure reason, if any.</ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
 
 <RequestExample>
 ```json Request
 {
   "externalOrderId": "ORD-2026-001234",
-  "methodCode": "deuna_pichincha",
+  "methodCode": "deuna",
   "amount": 19.90,
   "currency": "USD",
-  "storeId": "store-uuid",
-  "terminalId": "term-uuid-1",
+  "storeId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40",
+  "terminalId": "EC-D0123-POS-1",
   "channel": "KIOSK",
-  "customer": { "name": "Ada Lovelace", "email": "ada@example.com" }
+  "country": "EC",
+  "customer": { "name": "Ada Lovelace", "email": "ada@example.com", "document": "0912345678" }
 }
 ```
 </RequestExample>
@@ -106,106 +189,211 @@ shows to the customer. The final status arrives via notification (webhook) or by
 <ResponseExample>
 ```json 201
 {
-  "intentId": "intent-uuid",
-  "status": "requires_action",
-  "paymentLink": "https://pay.dsi.example.com/t/abc123",
-  "expiresAt": "2026-07-20T15:05:00Z"
+  "success": true,
+  "data": {
+    "intent": {
+      "intentId": "9d1f0b62-3c77-4a1e-9f2b-11a0d8c4e5aa",
+      "externalOrderId": "ORD-2026-001234",
+      "status": "requires_action",
+      "amountTotal": 19.90,
+      "amountPaid": 0,
+      "currency": "USD",
+      "storeId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40",
+      "terminalId": "EC-D0123-POS-1",
+      "channel": "KIOSK",
+      "expiresAt": null,
+      "attempts": [
+        {
+          "attemptId": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+          "slot": 1,
+          "attemptNumber": 1,
+          "methodCode": "deuna",
+          "status": "requires_redirect",
+          "amount": 19.90,
+          "currency": "USD",
+          "paymentLink": "https://checkout.example.com/deuna/9f8e7d6c",
+          "errorDescription": null
+        }
+      ]
+    }
+  }
 }
 ```
 </ResponseExample>
 
 <Note>
-**Mixed payments and retries:** to add a second method to the same order (e.g. cash + digital) or
-retry after a failure, the channel calls `POST /api/v1/paybridge/intents/{intentId}/pay` with
-`methodCode` and `amount`.
+If the provider rejects the payment creation, the response is **still `201`**: the charge exists and
+its attempt is `failed` with the reason in `errorDescription`. Check the attempt status, not just the
+HTTP code.
 </Note>
 
 ---
 
-## Get status
+## Get charge
 
-`GET /api/v1/paybridge/intents/{intentId}`
+`GET /api/v1/external/paybridge/intents/{intentId}`
+
+Returns the local status of the charge and all its attempts. It does not call the provider: the
+status is kept up to date by the [webhook](/en/webhook-reference/dsi-payment-status).
 
 <ParamField path="intentId" type="string" required>
-  The intent UUID returned when creating the charge.
+  UUID of the charge returned when it was created. You only see charges of the API key's account; a
+  charge from another account returns `404`.
 </ParamField>
 
-<ResponseField name="intentId" type="string" />
-<ResponseField name="status" type="string">Intent status.</ResponseField>
-<ResponseField name="amountTotal" type="number">Order total.</ResponseField>
-<ResponseField name="amountPaid" type="number">Amount already charged (sum of approved attempts).</ResponseField>
-<ResponseField name="currency" type="string" />
-<ResponseField name="attempts" type="object[]">
-  <Expandable title="attempt">
-    <ResponseField name="attemptId" type="string" />
-    <ResponseField name="methodCode" type="string" />
-    <ResponseField name="status" type="string">`requires_redirect`, `succeeded`, `failed`, `canceled`, `refunded`.</ResponseField>
-    <ResponseField name="paymentLink" type="string | null" />
-  </Expandable>
+<ResponseField name="intent" type="object">
+  The same object returned by the creation call.
 </ResponseField>
 
 <ResponseExample>
 ```json 200
 {
-  "intentId": "intent-uuid",
-  "status": "succeeded",
-  "amountTotal": 19.90,
-  "amountPaid": 19.90,
-  "currency": "USD",
-  "attempts": [
-    { "attemptId": "att-1", "methodCode": "deuna_pichincha", "status": "succeeded", "paymentLink": null }
-  ]
+  "success": true,
+  "data": {
+    "intent": {
+      "intentId": "9d1f0b62-3c77-4a1e-9f2b-11a0d8c4e5aa",
+      "externalOrderId": "ORD-2026-001234",
+      "status": "succeeded",
+      "amountTotal": 19.90,
+      "amountPaid": 19.90,
+      "currency": "USD",
+      "storeId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40",
+      "terminalId": "EC-D0123-POS-1",
+      "channel": "KIOSK",
+      "expiresAt": null,
+      "attempts": [
+        {
+          "attemptId": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+          "slot": 1,
+          "attemptNumber": 1,
+          "methodCode": "deuna",
+          "status": "succeeded",
+          "amount": 19.90,
+          "currency": "USD",
+          "paymentLink": "https://checkout.example.com/deuna/9f8e7d6c",
+          "errorDescription": null
+        }
+      ]
+    }
+  }
 }
 ```
 </ResponseExample>
 
+---
+
+## Add an attempt
+
+`POST /api/v1/external/paybridge/intents/{intentId}/pay`
+
+It covers two cases: **retrying** a method that failed and **split payments** (several methods on the
+same order).
+
+<ParamField path="intentId" type="string" required>
+  UUID of the charge.
+</ParamField>
+<ParamField body="methodCode" type="string" required>
+  Method for the new attempt.
+</ParamField>
+<ParamField body="amount" type="number">
+  Amount of the attempt. If omitted, it uses **what's left** (`amountTotal - amountPaid`).
+</ParamField>
+<ParamField body="slot" type="number">
+  Slot the attempt belongs to. If omitted, a new slot is opened (split payment). To **retry**, send
+  the `slot` of the attempt that failed. A slot with an active attempt returns `400`.
+</ParamField>
+
+<ResponseField name="intent" type="object">
+  The updated charge, with the new attempt inside `attempts`.
+</ResponseField>
+
+<RequestExample>
+```json Retry in the same slot
+{ "methodCode": "deuna", "slot": 1 }
+```
+
+```json Split payment (new slot)
+{ "methodCode": "rutpay", "amount": 5.00 }
+```
+</RequestExample>
+
 <Note>
-Querying the local status doesn't call DSI. The status stays up to date with the
-[notifications](/en/webhook-reference/overview) Fire receives from the provider.
+A closed charge (`succeeded`, `canceled`, or `reversed`) doesn't accept new attempts: it returns
+`400`.
 </Note>
 
 ---
 
-## Cancel charge
+## Cancel attempt
 
-`POST /api/v1/paybridge/attempts/{attemptId}/cancel`
+`POST /api/v1/external/paybridge/attempts/{attemptId}/cancel`
 
-Cancels an attempt whose link has **not** been paid (or has expired).
+Cancels an **active** attempt whose link hasn't been paid yet (or expired).
 
 <ParamField path="attemptId" type="string" required>
   Id of the attempt to cancel.
 </ParamField>
 
-<ResponseField name="attemptId" type="string" />
-<ResponseField name="status" type="string">`canceled`.</ResponseField>
+<ResponseField name="intent" type="object">
+  The updated charge; the attempt becomes `canceled`.
+</ResponseField>
+
+<Warning>
+The provider only accepts the cancellation once the link is already **waiting for payment**
+(`waitingPayment`). A freshly created attempt usually answers *"cancellation does not apply"*: in
+that case Fire does **not** mark the attempt as canceled and returns the error, so a payment that is
+still alive on the provider side isn't treated as canceled.
+</Warning>
 
 ---
 
-## Refund charge
+## Refund attempt
 
-`POST /api/v1/paybridge/attempts/{attemptId}/refund`
+`POST /api/v1/external/paybridge/attempts/{attemptId}/refund`
 
-Refunds an **already approved** attempt. Supports partial refunds.
+Refunds an **already approved** attempt (`succeeded`).
 
 <ParamField path="attemptId" type="string" required>
-  Id of the approved attempt to refund.
-</ParamField>
-<ParamField body="amount" type="number">
-  Amount to return. If omitted, the full attempt is refunded.
+  Id of the approved attempt.
 </ParamField>
 
-<ResponseField name="attemptId" type="string" />
-<ResponseField name="status" type="string">`solving` (in progress) → `refunded` when the provider confirms.</ResponseField>
+<ResponseField name="intent" type="object">
+  The updated charge; the attempt moves to `solving` until the provider confirms.
+</ResponseField>
+
+<Warning>
+**Full refunds only.** The provider doesn't support partial amounts: sending `amount` in the body
+returns `400`. The refund is asynchronous — the attempt stays in `solving` and becomes `refunded`
+when the `refundPayment` webhook arrives (or stays in `solving` with the reason if `refundFailed`
+arrives).
+</Warning>
 
 ---
+
+## Errors
+
+| HTTP | `error` | When |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Invalid body (missing field, `storeId` is not a UUID, 4-letter currency…). |
+| `400` | `DOMAIN_ERROR` | Inactive method, closed charge, slot with an active attempt, partial refund, attempt that can't be canceled. |
+| `403` | `FORBIDDEN` | API key without the `paybridge:charge` scope or without a vendor. |
+| `404` | `NOT_FOUND` | The charge or the attempt doesn't exist, or belongs to another account. |
+
+Every error carries `{ "success": false, "error": "…", "message": "…" }`.
 
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Config sync to DSI" icon="arrows-rotate" href="/en/webhook-reference/dsi-config-sync">
-    How the merchant config reaches DSI so the charge stays lean.
+  <Card title="Status webhook" icon="bell" href="/en/webhook-reference/dsi-payment-status">
+    How the provider tells Fire that the payment was approved, canceled, or refunded.
   </Card>
-  <Card title="Supported methods by country" icon="globe" href="/en/manuals/paybridge/supported-methods">
-    Which methods each country can charge.
+  <Card title="Config sync to DSI" icon="arrows-rotate" href="/en/webhook-reference/dsi-config-sync">
+    How the merchant configuration reaches the provider so the charge stays lean.
+  </Card>
+  <Card title="Methods supported per country" icon="globe" href="/en/manuals/paybridge/supported-methods">
+    Which methods each country can charge, and with which code.
+  </Card>
+  <Card title="Method availability" icon="table-cells" href="/en/manuals/paybridge/availability">
+    Which method is on in each store, device, and channel.
   </Card>
 </CardGroup>

@@ -1,0 +1,172 @@
+---
+title: "Payment status notification (DSI → Fire)"
+description: "The Fire endpoint that receives the final status of a PayBridge payment: HMAC signature, payload, statuses, response, and idempotency."
+---
+
+<Info>
+**Implemented in Fire** and verified against the DSI sandbox. The final public host is still to be
+fixed; until then the URL is coordinated per environment.
+</Info>
+
+When a payment created by [PayBridge](/en/api-reference/paybridge-charge) changes status — approved,
+canceled, or refunded — DSI sends a `POST` to this Fire endpoint. It is the **primary path** to close
+the charge: without this notification, the charge stays waiting for the customer.
+
+## Endpoint
+
+```http
+POST https://{fire-host}/api/v1/webhooks/dsi/payment-status/{country}
+Content-Type: application/json
+X-Hmac-Signature: {signature}
+```
+
+<ParamField path="country" type="string" required>
+  Country of the DSI connection in ISO alpha-2 (`EC`, `CL`, `CO`, `AR`, `VE`, `BR`). It defines
+  **which connection and which secret** are used to validate the signature. Lowercase is accepted.
+</ParamField>
+
+Fire sends this URL in every payment request, inside `settings.callbacks.status`, so there is nothing
+to configure separately: each payment already travels with its country's callback.
+
+## Authentication: HMAC signature
+
+This endpoint uses **no API key and no bearer token**. Authenticity comes from the signature.
+
+<ParamField header="X-Hmac-Signature" type="string" required>
+  Hex-encoded HMAC-SHA256 of the **raw request body**, computed with the secret of the country
+  connection (the *Webhook HMAC secret* field in
+  [DSI connections](/en/manuals/paybridge/dsi-connections)).
+</ParamField>
+
+```js Signature calculation
+import { createHmac } from 'node:crypto'
+
+const signature = createHmac('sha256', webhookHmacSecret)
+  .update(rawBody, 'utf8')   // the EXACT body you send, not re-serialized
+  .digest('hex')
+```
+
+- The **raw body** is signed, not a rebuilt JSON: reordering keys or changing whitespace invalidates
+  the signature.
+- The comparison runs in constant time.
+- A missing or invalid signature returns `400`, and **nothing** is processed.
+
+<Warning>
+If the country connection has no secret loaded yet, Fire **accepts the notification without
+validating** the signature and logs a warning. Load the secret in the connection before going to
+production.
+</Warning>
+
+## Payload
+
+<ParamField body="externalReference" type="string" required>
+  The reference Fire sent when creating the payment. It is the **correlation key**: it identifies the
+  exact attempt the notification belongs to.
+</ParamField>
+<ParamField body="transactionId" type="string" required>
+  Transaction id in DSI. Fire uses it as the event id for deduplication.
+</ParamField>
+<ParamField body="status" type="string" required>
+  Status reached: `approved`, `cancelled`, `waitingPayment`, `refundPayment`, or `refundFailed`.
+</ParamField>
+<ParamField body="paidPrice" type="integer" required>
+  Amount paid in **cents** (integer). `1990` = 19.90.
+</ParamField>
+<ParamField body="messages" type="string">
+  Provider message (rejection reason, refund detail).
+</ParamField>
+<ParamField body="branchId" type="string" required>
+  Branch of the payment (the `branchOffice` Fire sent when creating it).
+</ParamField>
+
+<RequestExample>
+```json Approved payment
+{
+  "externalReference": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+  "transactionId": "9f8e7d6c5b4a",
+  "status": "approved",
+  "paidPrice": 1990,
+  "messages": "Payment approved",
+  "branchId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40"
+}
+```
+
+```json Confirmed refund
+{
+  "externalReference": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+  "transactionId": "9f8e7d6c5b4a",
+  "status": "refundPayment",
+  "paidPrice": 1990,
+  "messages": "Refund processed",
+  "branchId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40"
+}
+```
+</RequestExample>
+
+## What Fire does with each status
+
+| `status` | Attempt in Fire | Effect |
+|---|---|---|
+| `approved` | `succeeded` | Adds to the collected amount and recomputes the charge (`succeeded`, or `partially_paid` when split). |
+| `cancelled` | `canceled` | Closes the attempt; the charge becomes `canceled` if none is left alive. |
+| `refundPayment` | `refunded` | Closes the refund (it applies even on an already approved attempt). |
+| `refundFailed` | `solving` | The refund is still in progress; the reason is stored on the attempt. |
+| `waitingPayment` | *(no change)* | Informational: the link is waiting for the customer. |
+
+`paidPrice` is stored as the provider's reference; the amount Fire credits is the attempt's amount.
+
+## Response
+
+Fire returns **`200`** as soon as it validates the signature and **enqueues** the notification. A
+worker applies the status transition seconds later.
+
+```json 200
+{
+  "message": "received",
+  "duplicate": false,
+  "webhookEventId": "7c1e9a02-4b56-4c3d-8a1f-0d2b6e9f3a55"
+}
+```
+
+| HTTP | When |
+|---|---|
+| `200` | Received and enqueued. Includes duplicates (`duplicate: true`) and unknown references. |
+| `400` | Invalid signature or a payload that doesn't match the contract. Nothing is enqueued. |
+| `5xx` | Unexpected Fire error. **Retry.** |
+
+<Note>
+A `200` means *received*, not *applied*. To learn the final outcome, read the charge with
+`GET /api/v1/external/paybridge/intents/{intentId}`.
+</Note>
+
+## Idempotency and retries
+
+<CardGroup cols={2}>
+  <Card title="Deduplication" icon="copy">
+    Fire deduplicates by the triple **`externalReference` + `transactionId` + `status`**. Resending the
+    same notification returns `200` with `duplicate: true` and is not processed again.
+  </Card>
+  <Card title="No rollbacks" icon="lock">
+    An attempt already in a terminal status is not moved back by a late notification. The only
+    exception is refunds, which do apply on an approved payment.
+  </Card>
+  <Card title="Unknown reference" icon="circle-question">
+    If `externalReference` matches no attempt, Fire returns `200` and discards it, so DSI doesn't retry
+    forever.
+  </Card>
+  <Card title="Safe retries" icon="rotate">
+    Processing is idempotent: you can retry after a `5xx` with no risk of applying the same status
+    twice.
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Charge from a channel" icon="credit-card" href="/en/api-reference/paybridge-charge">
+    How the charge that this notification closes is created.
+  </Card>
+  <Card title="DSI connections" icon="plug" href="/en/manuals/paybridge/dsi-connections">
+    Where the HMAC secret of each country is loaded.
+  </Card>
+</CardGroup>
