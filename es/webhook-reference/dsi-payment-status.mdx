@@ -1,0 +1,172 @@
+---
+title: "Notificación de estado de pago (DSI → Fire)"
+description: "Endpoint de Fire que recibe el estado final de un pago de PayBridge: firma HMAC, payload, estados, respuesta e idempotencia."
+---
+
+<Info>
+**Implementado en Fire** y verificado contra el sandbox de DSI. Falta fijar el host público
+definitivo; hasta entonces la URL se coordina por ambiente.
+</Info>
+
+Cuando un pago creado por [PayBridge](/es/api-reference/paybridge-charge) cambia de estado —se
+aprueba, se cancela o se reembolsa— DSI hace un `POST` a este endpoint de Fire. Es el **camino
+primario** para cerrar el ciclo del cobro: sin esta notificación, el cobro se queda esperando al
+cliente.
+
+## Endpoint
+
+```http
+POST https://{host-de-fire}/api/v1/webhooks/dsi/payment-status/{country}
+Content-Type: application/json
+X-Hmac-Signature: {firma}
+```
+
+<ParamField path="country" type="string" required>
+  País de la conexión DSI en ISO alpha-2 (`EC`, `CL`, `CO`, `AR`, `VE`, `BR`). Define **qué conexión y
+  qué secreto** se usan para validar la firma. Se acepta en minúsculas.
+</ParamField>
+
+Fire manda esta URL en cada solicitud de pago, dentro de `settings.callbacks.status`, así que no hay
+que configurarla por fuera: cada pago ya viaja con el callback de su país.
+
+## Autenticación: firma HMAC
+
+Este endpoint **no usa API key ni bearer**. La autenticidad la da la firma.
+
+<ParamField header="X-Hmac-Signature" type="string" required>
+  HMAC-SHA256 en hexadecimal del **cuerpo crudo** de la petición, calculado con el secreto de la
+  conexión del país (campo *Secreto HMAC del webhook* en
+  [Conexiones DSI](/es/manuals/paybridge/dsi-connections)).
+</ParamField>
+
+```js Cálculo de la firma
+import { createHmac } from 'node:crypto'
+
+const signature = createHmac('sha256', webhookHmacSecret)
+  .update(rawBody, 'utf8')   // el body EXACTO que se envía, sin re-serializar
+  .digest('hex')
+```
+
+- Se firma el **body crudo**, no un JSON reconstruido: cualquier reordenamiento de claves o cambio de
+  espacios invalida la firma.
+- La comparación se hace en tiempo constante.
+- Firma ausente o inválida → `400`, y **nada** se procesa.
+
+<Warning>
+Si la conexión del país todavía no tiene secreto cargado, Fire **acepta la notificación sin validar**
+la firma y lo registra como advertencia. Cargá el secreto en la conexión antes de salir a producción.
+</Warning>
+
+## Payload
+
+<ParamField body="externalReference" type="string" required>
+  Referencia que Fire envió al crear el pago. Es la **clave de correlación**: identifica el intento
+  (`attempt`) exacto al que pertenece la notificación.
+</ParamField>
+<ParamField body="transactionId" type="string" required>
+  Id de la transacción en DSI. Fire lo usa como id de evento para deduplicar.
+</ParamField>
+<ParamField body="status" type="string" required>
+  Estado alcanzado: `approved`, `cancelled`, `waitingPayment`, `refundPayment` o `refundFailed`.
+</ParamField>
+<ParamField body="paidPrice" type="integer" required>
+  Monto pagado en **céntimos** (entero). `1990` = 19,90.
+</ParamField>
+<ParamField body="messages" type="string">
+  Mensaje del proveedor (motivo del rechazo, detalle del reembolso).
+</ParamField>
+<ParamField body="branchId" type="string" required>
+  Sucursal del pago (el `branchOffice` que Fire envió al crearlo).
+</ParamField>
+
+<RequestExample>
+```json Pago aprobado
+{
+  "externalReference": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+  "transactionId": "9f8e7d6c5b4a",
+  "status": "approved",
+  "paidPrice": 1990,
+  "messages": "Pago aprobado",
+  "branchId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40"
+}
+```
+
+```json Reembolso confirmado
+{
+  "externalReference": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+  "transactionId": "9f8e7d6c5b4a",
+  "status": "refundPayment",
+  "paidPrice": 1990,
+  "messages": "Reembolso procesado",
+  "branchId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40"
+}
+```
+</RequestExample>
+
+## Qué hace Fire con cada estado
+
+| `status` | Intento en Fire | Efecto |
+|---|---|---|
+| `approved` | `succeeded` | Suma al monto cobrado y recalcula el cobro (`succeeded` o `partially_paid` si es mixto). |
+| `cancelled` | `canceled` | Cierra el intento; el cobro pasa a `canceled` si no queda ninguno vivo. |
+| `refundPayment` | `refunded` | Cierra el reembolso (aplica incluso sobre un intento ya aprobado). |
+| `refundFailed` | `solving` | El reembolso sigue en curso; se guarda el motivo en el intento. |
+| `waitingPayment` | *(sin cambio)* | Informativo: el link está esperando al cliente. |
+
+`paidPrice` se guarda como referencia del proveedor; el monto que Fire acredita es el del intento.
+
+## Respuesta
+
+Fire responde **`200`** en cuanto valida la firma y **encola** la notificación. La transición de
+estado la aplica un worker segundos después.
+
+```json 200
+{
+  "message": "received",
+  "duplicate": false,
+  "webhookEventId": "7c1e9a02-4b56-4c3d-8a1f-0d2b6e9f3a55"
+}
+```
+
+| HTTP | Cuándo |
+|---|---|
+| `200` | Recibida y encolada. Incluye duplicados (`duplicate: true`) y referencias desconocidas. |
+| `400` | Firma inválida o payload que no cumple el contrato. No se encola nada. |
+| `5xx` | Error inesperado de Fire. **Reintentar.** |
+
+<Note>
+Un `200` significa *recibida*, no *aplicada*. Para saber el resultado final, consultá el cobro con
+`GET /api/v1/external/paybridge/intents/{intentId}`.
+</Note>
+
+## Idempotencia y reintentos
+
+<CardGroup cols={2}>
+  <Card title="Deduplicación" icon="copy">
+    Fire deduplica por la terna **`externalReference` + `transactionId` + `status`**. Reenviar la
+    misma notificación devuelve `200` con `duplicate: true` y no la vuelve a procesar.
+  </Card>
+  <Card title="Sin retrocesos" icon="lock">
+    Un intento que ya está en estado terminal no vuelve atrás por una notificación tardía. La única
+    excepción son los reembolsos, que sí se aplican sobre un pago aprobado.
+  </Card>
+  <Card title="Referencia desconocida" icon="circle-question">
+    Si el `externalReference` no corresponde a ningún intento, Fire responde `200` y la descarta, para
+    no dejar a DSI reintentando para siempre.
+  </Card>
+  <Card title="Reintentos seguros" icon="rotate">
+    El procesamiento es idempotente: se puede reintentar ante `5xx` sin riesgo de aplicar dos veces el
+    mismo estado.
+  </Card>
+</CardGroup>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Cobrar desde un canal" icon="credit-card" href="/es/api-reference/paybridge-charge">
+    Cómo se crea el cobro que después cierra esta notificación.
+  </Card>
+  <Card title="Conexiones DSI" icon="plug" href="/es/manuals/paybridge/dsi-connections">
+    Dónde se carga el secreto HMAC de cada país.
+  </Card>
+</CardGroup>

@@ -1,0 +1,153 @@
+---
+title: "Config sync para a DSI (proposta)"
+description: "Proposta do Fire para o endpoint que envia a configuração do merchant à DSI de forma antecipada, para que o pagamento fique lean."
+---
+
+<Info>
+**Rascunho para co-definir com a DSI (Canales Digitales).** O Fire propõe este contrato com base em
+sua arquitetura; as rotas e o schema exatos são fechados com a DSI. Acompanha o *dry-run* que já
+produz este mesmo payload: `GET /api/v1/admin/paybridge/dsi-config-sync/preview`.
+
+A autenticação é a **mesma usada pelas notificações (webhooks)** — não se repete aqui.
+</Info>
+
+O Fire é a **fonte de verdade** da configuração de pagamentos. Este contrato pertence ao **plano de
+configuração**: o Fire envia à DSI a configuração do merchant de forma antecipada para que a
+**solicitação de pagamento** viaje *lean* (a DSI já conhece o merchant e só recebe o `storeId`, o
+`terminalId`, o valor e a referência).
+
+Os atributos usam os nomes do XMART (`accountId`, `vendorId`, `store`, `storeId`, `terminals`,
+`terminalId`).
+
+## Princípios
+
+1. **Dois planos, separados.** Configuração (este contrato, async por eventos) vs transação (a
+   solicitação de pagamento não muda).
+2. **Dois níveis, como a DSI já modela.** Config no nível **organização** (por conta) e no nível
+   **loja** (por loja / terminal — o que a DSI chama de "aplicação"), como nas guias de
+   Pluxee/Amipass.
+3. **Idempotente e versionado.** Cada escopo leva um `version` monotônico; reenviar o mesmo
+   `version` não duplica.
+4. **`active`, nunca apagar.** Ao desligar algo, envia-se `active: false`.
+5. **Os canais não viajam.** POS/Quiosque/Web/App são roteamento interno do Fire.
+6. **Identificadores compartilhados.** O `storeId`/`terminalId` sincronizado é o mesmo que depois
+   chega na solicitação de pagamento.
+
+## Endpoints propostos
+
+| Nível | Método | Endpoint proposto | Quando o Fire chama |
+|---|---|---|---|
+| Organização | `PUT` | `/api/paybridge/v1/config/organizations/{accountId}` | muda config no nível marca (conta/vendor) |
+| Loja | `PUT` | `/api/paybridge/v1/config/stores/{storeId}` | muda disponibilidade ou config de loja; alta/baixa de loja ou terminal |
+
+`{accountId}` = UUID da conta no Fire. `{storeId}` = UUID da loja no Fire.
+
+### Nível organização
+
+```json
+PUT /api/paybridge/v1/config/organizations/{accountId}
+Authorization: Bearer <jwt>
+Idempotency-Key: org:{accountId}:{version}
+
+{
+  "version": 142,
+  "accountId": "acc-uuid",
+  "vendorId": "ven-id",
+  "providers": [
+    { "provider": "pluxee", "config": { "basicAuth": "••••••", "accountNo": "12345678" } },
+    { "provider": "deuna",  "config": { "codigo_unico": "987654321" } }
+  ]
+}
+```
+
+`providers[].config` é **livre por provedor**: o Fire envia as chaves que o admin carregou no nível
+marca. A DSI define quais chaves cada provedor espera (já estão em suas guias).
+
+### Nível loja
+
+```json
+PUT /api/paybridge/v1/config/stores/{storeId}
+Authorization: Bearer <jwt>
+Idempotency-Key: store:{storeId}:{version}
+
+{
+  "version": 87,
+  "accountId": "acc-uuid",
+  "vendorId": "ven-id",
+  "store": {
+    "storeId": "store-uuid",
+    "storeCode": "K000",
+    "terminals": [
+      { "terminalId": "term-uuid-1", "code": "EC-K000-POS-1", "type": "POS", "active": true },
+      { "terminalId": "kiosk-hex-id", "code": "kiosk-lab", "type": "KIOSK", "active": true }
+    ]
+  },
+  "providers": [
+    {
+      "provider": "pluxee",
+      "active": true,
+      "config": { "merchantId": "76.543.210-9", "commerceCode": "CC-001", "branchCode": "BR-017" },
+      "paymentMethods": [ { "paymentMethod": "DIGITAL", "code": "pluxee", "active": true } ]
+    },
+    {
+      "provider": "deuna",
+      "active": true,
+      "config": {},
+      "paymentMethods": [ { "paymentMethod": "DEUNA-BANCO-PICHINCHA", "code": "deuna_pichincha", "active": true } ]
+    }
+  ]
+}
+```
+
+## Semântica
+
+| Caso | O que o Fire envia |
+|---|---|
+| Um método é habilitado numa loja | `paymentMethods[].active: true` no store |
+| Um método é desligado | `active: false` (a DSI marca inativo, não apaga) |
+| Alta/baixa de loja ou terminal | o Fire reenvia o `store` completo atualizado |
+| Mudam credenciais do provedor (marca) | `PUT organizations/{accountId}` com o novo `config` |
+| Reenvio com o mesmo `version` | idempotente — a DSI não duplica |
+
+## Respostas esperadas
+
+```json
+200 OK
+{ "accountId": "acc-uuid", "version": 142, "appliedAt": "2026-07-20T14:32:10Z" }
+```
+
+| Código | Significado |
+|---|---|
+| `200` | Config aplicada (ou já estava nesse `version`) |
+| `400` | Payload inválido |
+| `401` | Token inválido |
+| `409` | `version` menor que o já aplicado — o Fire ignora |
+| `5xx` | Erro da DSI — o Fire tenta de novo com backoff |
+
+## Mapeamento das tabelas do Fire
+
+| Campo do contrato | Origem no Fire |
+|---|---|
+| `accountId` / `vendorId` | contexto da conta/vendor |
+| `store.storeId` / `store.storeCode` | `stores.id` / `stores.store_code` |
+| `store.terminals[]` | `ter_terminals` (POS) + devices de quiosque |
+| `providers[].provider` / `paymentMethod` | `definition.dsi.{provider, payment_method}` do método |
+| `active` (provedor e método) | `enabled` efetivo (marca → loja) da matriz de disponibilidade |
+| organização → `config` | campos de config no nível **marca** |
+| loja → `config` | campos de config no nível **loja** |
+
+<Note>
+A UI do Fire (matriz de disponibilidade + editor de campos por nível) é o que popula essas linhas.
+O admin nunca escreve o payload à mão.
+</Note>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Conexões DSI" icon="plug" href="/pt/manuals/paybridge/dsi-connections">
+    A conexão (base URL + credenciais) com a qual o Fire se autentica na DSI.
+  </Card>
+  <Card title="Configuração por nível" icon="sliders" href="/pt/manuals/paybridge/configuration">
+    Onde o admin carrega os campos que alimentam este sync.
+  </Card>
+</CardGroup>

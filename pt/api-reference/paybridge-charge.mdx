@@ -1,0 +1,395 @@
+---
+title: "Cobrar a partir de um canal"
+description: "Endpoints para que um canal (POS, quiosque, web ou app) crie e gerencie uma cobrança pelo PayBridge."
+---
+
+<Info>
+Estes endpoints já estão **implementados** e verificados contra o sandbox da DSI (criação do pagamento
+com link real e fechamento do status por webhook). Falta o host público definitivo dos callbacks para
+operar em produção; por isso o grupo continua marcado como *Em breve*.
+</Info>
+
+Um canal (POS, quiosque, web ou app) usa estes endpoints para **cobrar** pelo PayBridge. O canal envia
+apenas os dados da transação (pedido, valor, método, `storeId`, `terminalId`); o PayBridge resolve o
+provedor, cria o pagamento e devolve um **link de pagamento** que o canal mostra ao cliente.
+
+O status final chega pelo [webhook de status](/pt/webhook-reference/dsi-payment-status). A
+configuração do comércio (credenciais, métodos, terminais) já vive no provedor via o
+[config sync](/pt/webhook-reference/dsi-config-sync), por isso a cobrança viaja *lean*.
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  API key do Fire **vendor-scoped** com o scope `paybridge:charge`. O `accountId` e o `vendorId` são
+  derivados da key; uma key sem vendor responde `403`.
+</ParamField>
+
+Todas as respostas vêm envolvidas em `{ "success": true, "data": { … } }`.
+
+## Cobrança e tentativas
+
+<CardGroup cols={2}>
+  <Card title="Cobrança (intent)" icon="receipt">
+    A cobrança de **um pedido**: valor total, moeda, loja, terminal e canal. O canal cria uma só vez.
+  </Card>
+  <Card title="Tentativa (attempt)" icon="arrow-right-arrow-left">
+    Cada **tentativa de pagamento** dentro da cobrança. Ocupa uma **vaga** (`slot`): uma vaga por
+    método no pagamento misto, e uma tentativa nova na **mesma** vaga quando se repete.
+  </Card>
+</CardGroup>
+
+Status da cobrança:
+
+| Status | Significado |
+|---|---|
+| `processing` | Há uma tentativa em andamento, ainda sem link para o cliente. |
+| `requires_action` | Há um link de pagamento esperando o cliente. |
+| `partially_paid` | Parte do total foi cobrada (pagamento misto em andamento). |
+| `succeeded` | O total foi cobrado. |
+| `failed` | Todas as tentativas falharam e nenhuma está ativa. |
+| `canceled` | Todas as tentativas foram canceladas. |
+| `pending` / `reversed` | Reservados (sem tentativas ainda / reversão total). |
+
+Status da tentativa:
+
+| Status | Significado |
+|---|---|
+| `created` | Registrada no Fire, ainda sem envio ao provedor. |
+| `requires_redirect` | O provedor devolveu o `paymentLink`: é preciso mostrá-lo ao cliente. |
+| `succeeded` | Pagamento aprovado (confirmado pelo webhook). |
+| `failed` | Não foi possível criar o pagamento ou o provedor recusou; o motivo vai em `errorDescription`. |
+| `canceled` | A tentativa foi cancelada (link sem pagar ou vencido). |
+| `solving` | Reembolso em andamento, aguardando a confirmação do provedor. |
+| `refunded` | Reembolso confirmado. |
+| `processing` / `requires_action` | Reservados. |
+
+## Fluxo
+
+<Steps>
+  <Step title="Criar a cobrança">
+    O canal chama `POST /intents` com o pedido, o valor, o método e seu `storeId`/`terminalId`. O
+    PayBridge cria o pagamento no provedor e devolve o `paymentLink` na primeira tentativa.
+  </Step>
+  <Step title="Mostrar o link">
+    O canal mostra o `paymentLink` (redirect, QR ou iframe) para o cliente pagar.
+  </Step>
+  <Step title="Saber o resultado">
+    O Fire recebe o status do provedor por
+    [webhook](/pt/webhook-reference/dsi-payment-status) e atualiza a tentativa e a cobrança. O canal
+    consulta com `GET /intents/{intentId}`.
+  </Step>
+  <Step title="Fechar o caso">
+    Se o cliente não pagar, **cancele** a tentativa. Se o pagamento já está aprovado, **reembolse**.
+    Se falhar ou faltar valor, adicione outra tentativa com `POST /intents/{intentId}/pay`.
+  </Step>
+</Steps>
+
+## Endpoints
+
+| Operação | Método | Endpoint |
+|---|---|---|
+| Criar cobrança | `POST` | `/api/v1/external/paybridge/intents` |
+| Consultar cobrança | `GET` | `/api/v1/external/paybridge/intents/{intentId}` |
+| Adicionar tentativa (misto ou repetição) | `POST` | `/api/v1/external/paybridge/intents/{intentId}/pay` |
+| Cancelar tentativa | `POST` | `/api/v1/external/paybridge/attempts/{attemptId}/cancel` |
+| Reembolsar tentativa | `POST` | `/api/v1/external/paybridge/attempts/{attemptId}/refund` |
+
+---
+
+## Criar cobrança
+
+`POST /api/v1/external/paybridge/intents`
+
+<ParamField body="externalOrderId" type="string" required>
+  Identificador do pedido no sistema do canal (máx. 80 caracteres). **É a chave de idempotência**:
+  repetir o mesmo valor devolve a cobrança já criada, sem duplicá-la.
+</ParamField>
+<ParamField body="methodCode" type="string" required>
+  Código do método de pagamento no Fire (por exemplo `deuna`, `rutpay`). Precisa estar **ativo** no
+  catálogo; caso contrário responde `400`.
+</ParamField>
+<ParamField body="amount" type="number" required>
+  Valor total a cobrar, na unidade maior da moeda (por exemplo `19.90`).
+</ParamField>
+<ParamField body="currency" type="string" required>
+  Moeda ISO 4217 de 3 letras (`USD`, `CLP`, `COP`, `ARS`, `VES`, `BRL`).
+</ParamField>
+<ParamField body="storeId" type="string" required>
+  UUID da loja no Fire. Viaja ao provedor como `branchOffice`.
+</ParamField>
+<ParamField body="terminalId" type="string" required>
+  Id do terminal POS ou do dispositivo de quiosque. Viaja ao provedor como `pointOfSale`.
+</ParamField>
+<ParamField body="channel" type="string" required>
+  Canal que origina a cobrança: `POS`, `KIOSK`, `WEB` ou `APP`.
+</ParamField>
+<ParamField body="country" type="string">
+  País da cobrança (ISO alpha-2). Pode ser omitido quando o método pertence a **um só** país: nesse
+  caso o Fire deriva. Em métodos multipaís é **obrigatório**; sem ele a tentativa fica `failed`
+  porque não é possível resolver a conexão do país.
+</ParamField>
+<ParamField body="customer" type="object">
+  Dados opcionais do pagador. São repassados ao provedor quando ele exige.
+  <Expandable title="customer">
+    <ParamField body="name" type="string">Nome completo; é dividido em nome e sobrenome.</ParamField>
+    <ParamField body="email" type="string" />
+    <ParamField body="document" type="string">Identificação fiscal, conforme o país.</ParamField>
+    <ParamField body="phone" type="string" />
+  </Expandable>
+</ParamField>
+
+<ResponseField name="intent" type="object">
+  A cobrança com todas as suas tentativas.
+  <Expandable title="intent">
+    <ResponseField name="intentId" type="string">UUID da cobrança no Fire.</ResponseField>
+    <ResponseField name="externalOrderId" type="string" />
+    <ResponseField name="status" type="string">Status da cobrança.</ResponseField>
+    <ResponseField name="amountTotal" type="number" />
+    <ResponseField name="amountPaid" type="number">Soma das tentativas aprovadas.</ResponseField>
+    <ResponseField name="currency" type="string" />
+    <ResponseField name="storeId" type="string" />
+    <ResponseField name="terminalId" type="string | null" />
+    <ResponseField name="channel" type="string" />
+    <ResponseField name="expiresAt" type="string | null">Reservado; hoje sempre `null`.</ResponseField>
+    <ResponseField name="attempts" type="object[]">
+      <Expandable title="attempt">
+        <ResponseField name="attemptId" type="string" />
+        <ResponseField name="slot" type="number">Vaga do pagamento misto (1, 2, 3…).</ResponseField>
+        <ResponseField name="attemptNumber" type="number">Nº da repetição dentro da vaga.</ResponseField>
+        <ResponseField name="methodCode" type="string" />
+        <ResponseField name="status" type="string">Status da tentativa.</ResponseField>
+        <ResponseField name="amount" type="number" />
+        <ResponseField name="currency" type="string" />
+        <ResponseField name="paymentLink" type="string | null">Link para mostrar ao cliente.</ResponseField>
+        <ResponseField name="errorDescription" type="string | null">Motivo da falha, se houver.</ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<RequestExample>
+```json Requisição
+{
+  "externalOrderId": "ORD-2026-001234",
+  "methodCode": "deuna",
+  "amount": 19.90,
+  "currency": "USD",
+  "storeId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40",
+  "terminalId": "EC-D0123-POS-1",
+  "channel": "KIOSK",
+  "country": "EC",
+  "customer": { "name": "Ada Lovelace", "email": "ada@example.com", "document": "0912345678" }
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "intent": {
+      "intentId": "9d1f0b62-3c77-4a1e-9f2b-11a0d8c4e5aa",
+      "externalOrderId": "ORD-2026-001234",
+      "status": "requires_action",
+      "amountTotal": 19.90,
+      "amountPaid": 0,
+      "currency": "USD",
+      "storeId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40",
+      "terminalId": "EC-D0123-POS-1",
+      "channel": "KIOSK",
+      "expiresAt": null,
+      "attempts": [
+        {
+          "attemptId": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+          "slot": 1,
+          "attemptNumber": 1,
+          "methodCode": "deuna",
+          "status": "requires_redirect",
+          "amount": 19.90,
+          "currency": "USD",
+          "paymentLink": "https://checkout.example.com/deuna/9f8e7d6c",
+          "errorDescription": null
+        }
+      ]
+    }
+  }
+}
+```
+</ResponseExample>
+
+<Note>
+Se o provedor recusar a criação do pagamento, a resposta **continua sendo `201`**: a cobrança existe e
+a tentativa fica em `failed` com o motivo em `errorDescription`. Verifique o status da tentativa, não
+apenas o código HTTP.
+</Note>
+
+---
+
+## Consultar cobrança
+
+`GET /api/v1/external/paybridge/intents/{intentId}`
+
+Devolve o status local da cobrança e todas as suas tentativas. Não chama o provedor: o status é
+mantido em dia pelo [webhook](/pt/webhook-reference/dsi-payment-status).
+
+<ParamField path="intentId" type="string" required>
+  UUID da cobrança devolvido na criação. Só aparecem as cobranças da conta da API key; a de outra
+  conta responde `404`.
+</ParamField>
+
+<ResponseField name="intent" type="object">
+  O mesmo objeto devolvido pela criação.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "intent": {
+      "intentId": "9d1f0b62-3c77-4a1e-9f2b-11a0d8c4e5aa",
+      "externalOrderId": "ORD-2026-001234",
+      "status": "succeeded",
+      "amountTotal": 19.90,
+      "amountPaid": 19.90,
+      "currency": "USD",
+      "storeId": "3f6c1b6e-52b1-4f0e-9c2a-2b7d5e8a1c40",
+      "terminalId": "EC-D0123-POS-1",
+      "channel": "KIOSK",
+      "expiresAt": null,
+      "attempts": [
+        {
+          "attemptId": "6b2c9a54-8d31-4f77-b0c6-9e3a1f5d2b88",
+          "slot": 1,
+          "attemptNumber": 1,
+          "methodCode": "deuna",
+          "status": "succeeded",
+          "amount": 19.90,
+          "currency": "USD",
+          "paymentLink": "https://checkout.example.com/deuna/9f8e7d6c",
+          "errorDescription": null
+        }
+      ]
+    }
+  }
+}
+```
+</ResponseExample>
+
+---
+
+## Adicionar uma tentativa
+
+`POST /api/v1/external/paybridge/intents/{intentId}/pay`
+
+Serve para dois casos: **repetir** um método que falhou e **pagamento misto** (vários métodos no
+mesmo pedido).
+
+<ParamField path="intentId" type="string" required>
+  UUID da cobrança.
+</ParamField>
+<ParamField body="methodCode" type="string" required>
+  Método da nova tentativa.
+</ParamField>
+<ParamField body="amount" type="number">
+  Valor da tentativa. Se omitido, usa **o que falta** (`amountTotal - amountPaid`).
+</ParamField>
+<ParamField body="slot" type="number">
+  Vaga à qual a tentativa pertence. Se omitido, abre-se uma vaga nova (pagamento misto). Para
+  **repetir**, envie o `slot` da tentativa que falhou. Uma vaga com tentativa ativa responde `400`.
+</ParamField>
+
+<ResponseField name="intent" type="object">
+  A cobrança atualizada, com a nova tentativa dentro de `attempts`.
+</ResponseField>
+
+<RequestExample>
+```json Repetição na mesma vaga
+{ "methodCode": "deuna", "slot": 1 }
+```
+
+```json Pagamento misto (vaga nova)
+{ "methodCode": "rutpay", "amount": 5.00 }
+```
+</RequestExample>
+
+<Note>
+Uma cobrança já fechada (`succeeded`, `canceled` ou `reversed`) não aceita tentativas novas: responde
+`400`.
+</Note>
+
+---
+
+## Cancelar tentativa
+
+`POST /api/v1/external/paybridge/attempts/{attemptId}/cancel`
+
+Cancela uma tentativa **ativa** cujo link ainda não foi pago (ou venceu).
+
+<ParamField path="attemptId" type="string" required>
+  Id da tentativa a cancelar.
+</ParamField>
+
+<ResponseField name="intent" type="object">
+  A cobrança atualizada; a tentativa fica em `canceled`.
+</ResponseField>
+
+<Warning>
+O provedor só aceita o cancelamento quando o link já está **aguardando o pagamento**
+(`waitingPayment`). Uma tentativa recém-criada normalmente responde *"não se aplica ao
+cancelamento"*: nesse caso o Fire **não** marca a tentativa como cancelada e devolve o erro, para não
+dar como cancelado um pagamento que segue vivo do outro lado.
+</Warning>
+
+---
+
+## Reembolsar tentativa
+
+`POST /api/v1/external/paybridge/attempts/{attemptId}/refund`
+
+Reembolsa uma tentativa **já aprovada** (`succeeded`).
+
+<ParamField path="attemptId" type="string" required>
+  Id da tentativa aprovada.
+</ParamField>
+
+<ResponseField name="intent" type="object">
+  A cobrança atualizada; a tentativa passa a `solving` até o provedor confirmar.
+</ResponseField>
+
+<Warning>
+**Apenas reembolso total.** O provedor não admite valores parciais: se você enviar `amount` no body, a
+resposta é `400`. O reembolso é assíncrono — a tentativa fica em `solving` e passa a `refunded` quando
+chega o webhook `refundPayment` (ou volta a `solving` com o motivo se chegar `refundFailed`).
+</Warning>
+
+---
+
+## Erros
+
+| HTTP | `error` | Quando |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Body inválido (falta um campo, `storeId` não é UUID, moeda com 4 letras…). |
+| `400` | `DOMAIN_ERROR` | Método inativo, cobrança fechada, vaga com tentativa ativa, reembolso parcial, tentativa não cancelável. |
+| `403` | `FORBIDDEN` | API key sem o scope `paybridge:charge` ou sem vendor. |
+| `404` | `NOT_FOUND` | A cobrança ou a tentativa não existe, ou é de outra conta. |
+
+Todos os erros trazem `{ "success": false, "error": "…", "message": "…" }`.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Webhook de status" icon="bell" href="/pt/webhook-reference/dsi-payment-status">
+    Como o provedor avisa o Fire que o pagamento foi aprovado, cancelado ou reembolsado.
+  </Card>
+  <Card title="Config sync para a DSI" icon="arrows-rotate" href="/pt/webhook-reference/dsi-config-sync">
+    Como a configuração do comércio chega ao provedor para a cobrança ser lean.
+  </Card>
+  <Card title="Métodos suportados por país" icon="globe" href="/pt/manuals/paybridge/supported-methods">
+    Quais métodos cada país pode cobrar e com qual código.
+  </Card>
+  <Card title="Disponibilidade de métodos" icon="table-cells" href="/pt/manuals/paybridge/availability">
+    Qual método está ligado em cada loja, dispositivo e canal.
+  </Card>
+</CardGroup>
