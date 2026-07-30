@@ -10,13 +10,13 @@ cobro. La orden pasa a `COMPLETED` y arranca la facturación cuando lo aprobado 
 total de la orden.
 
 <Note>
-  **Un cobro puede llegar en varias piezas, y en varias llamadas.** Si repartís la cuenta entre
-  efectivo y tarjeta podés mandar las dos piezas juntas, o cada una cuando ocurra. Fire lleva la
-  cuenta: suma lo aprobado y salda la orden cuando la suma llega exacta al total. Mientras no
-  llegue, la orden queda abierta y `settlement.paidSoFar` te dice cuánto lleva cobrado — ver
-  [Progreso del cobro](/es/api-reference/list-orders#progreso-del-cobro-settlement-y-payments).
+  **Un cobro con varias piezas, en una sola llamada.** Si repartís la cuenta entre efectivo y
+  tarjeta, mandá las dos piezas **en la misma llamada**: las piezas aprobadas tienen que sumar
+  exacto el total de la orden. Un cobro que no cuadra se rechaza entero y no se registra nada —
+  consolidá tus parciales antes de mandarlos.
 
-  Dentro de **una misma llamada** el envío es atómico: entran todas las piezas o ninguna.
+  Reintentar es seguro y esperado: reenviá el envío **completo** y la idempotencia por
+  `transaction_id` se encarga del resto.
 </Note>
 
 ## Autenticación
@@ -134,22 +134,27 @@ suman y nunca bloquean el cobro.
 
 | situación | `outcome` | ¿salda? |
 | --- | --- | --- |
-| la suma de las aprobadas **es igual** al total y la orden está abierta | `settled` | sí — pasa a `COMPLETED` y arranca la facturación |
-| la suma **es menor** al total (parte se rechazó) | `recorded` | no — se registra la plata que entró y la orden sigue abierta |
-| ninguna pieza aprobada | `declined` | no — la orden sigue abierta |
+| la suma de las aprobadas **es igual** al total | `settled` | sí — pasa a `COMPLETED` y arranca la facturación |
+| ninguna pieza aprobada, solo rechazos | `declined` | no — se registra y la orden sigue abierta |
 | ninguna pieza nueva (ya las habías enviado) | `duplicate` | no — reintento idempotente |
+| la suma de las aprobadas **no es igual** al total | — | **`400`** — no se registra nada |
 | una pieza **nueva** sobre una orden **cerrada** (saldada, cancelada o forzada) | — | **`409`** — no se registra nada |
-| la suma **supera** el total | — | **`400`** — no se registra nada |
 
 <Warning>
-  **La orden salda solo con la suma exacta.**
+  **Todo o nada.** Un cobro cuyas piezas aprobadas no suman el total de la orden se rechaza entero —
+  ni siquiera se guarda un rechazo que viniera en el mismo envío.
 
-  Si cobrás **menos** que el total, se registra lo que entró y la orden queda abierta esperando el
-  resto — pasa cuando parte de las piezas se rechaza. Saldar con menos facturaría el total habiendo
-  cobrado una parte, y una factura mal emitida no se corrige.
+  El motivo no es contable, es operativo: aceptar plata en una orden que no salda la deja con dinero
+  adentro y sin salida. Fire no procesa devoluciones y no hay forma de que nos avises que
+  devolviste. Consolidar los cobros parciales te toca a vos — y sos el único que puede devolver, así
+  que ese estado ya lo cargás igual.
 
-  Si cobrás **más**, la llamada falla con `400` y **no se registra nada**, así corregís y reenviás
-  sin dejar filas de más. El mensaje te dice los dos montos.
+  Cobrar **más** que el total se rechaza por otra razón: facturaría un monto que no es el que se
+  cobró, y una factura no se puede desemitir. Los dos mensajes te dan los dos montos para que
+  corrijas y reenvíes.
+
+  Los rechazos son la excepción: un envío **sin** piezas aprobadas se registra y la orden sigue
+  abierta. Sin plata no hay estado que resolver, y ahí viven tus métricas de rechazo.
 </Warning>
 
 ## Qué pasó con cada rechazo
@@ -211,7 +216,8 @@ Lo que separa un rechazo de un reintento es el `transaction_id`, no el estado de
 Cada pieza se identifica por su `transaction_id` dentro de la orden. Podés reintentar sin miedo:
 
 - **Reenviar el cobro completo** → `duplicate`. No se vuelve a saldar ni a facturar.
-- **Reenviar después de un timeout** que dejó el cobro a medias → entra solo lo que falta.
+- **Reenviar después de un timeout** → reenviá el envío **entero**. Un cobro incompleto nunca se
+  registró, y cualquier pieza que sí haya entrado se ignora por su `transaction_id`.
 
 ## Validaciones
 
@@ -226,7 +232,8 @@ Todas devuelven `400` salvo donde se indique.
 | `transaction_id` sin repetir dentro del mismo envío | `400` |
 | monto mayor que cero en cada pieza | `400` |
 | una sola moneda entre las piezas aprobadas | `400` |
-| la suma de las aprobadas no supera el total de la orden | `400` |
+| la suma de las aprobadas es igual al total de la orden, exacto (todo o nada) | `400` |
+| el total de la orden se puede resolver en la moneda de las piezas | `400` |
 | API key válida | `401` |
 | scope `orders:write` y key vendor-scoped | `403` |
 | la orden existe dentro de tu vendor | `404` |
@@ -304,23 +311,6 @@ sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque n
   "success": false,
   "error": "BUSINESS_ERROR",
   "message": "Approved tenders total 500000 exceeds the order total 359000"
-}
-```
-
-```json 200 — la orden no estaba abierta
-{
-  "success": true,
-  "data": {
-    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-    "outcome": "recorded",
-    "settled": false,
-    "status": "CANCELLED",
-    "paymentStatus": "PENDING",
-    "completedAt": null,
-    "tenderCount": 1,
-    "declinedCount": 0,
-    "amountMismatch": false
-  }
 }
 ```
 

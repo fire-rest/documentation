@@ -82,18 +82,20 @@ Elasticsearch `_source` parameter.
 
 ## Payment progress: `settlement` and `payments`
 
-When an order is charged **after** it opens, the money can arrive in parts — cash now, the card when
-the customer comes back. `status` and `paymentStatus` cannot express that: they say `OPEN` and
-`PENDING` both for an order that paid nothing and for one that still owes 15.90 of 35.90.
+When an order is charged **after** it opens, `status` and `paymentStatus` only tell you whether it
+was charged. They say `OPEN` and `PENDING` both for an order nobody has tried to charge and for one
+whose card was declined twice — and those are very different situations for whoever is watching.
 
 | the order | `status` | `paymentStatus` | `settlement.status` |
 | --- | --- | --- | --- |
-| opened, nothing charged | `OPEN` | `PENDING` | `pending` |
-| **charged 20.00 of 35.90** | `OPEN` | `PENDING` | **`recorded`** |
-| a tender was declined | `OPEN` | `PENDING` | `declined` |
+| opened, nothing attempted | `OPEN` | `PENDING` | `pending` |
+| **a tender was declined** | `OPEN` | `PENDING` | **`declined`** |
 | fully charged | `COMPLETED` | `SUCCEEDED` | `settled` |
 
-Read `settlement` to know **how much** has been collected, and `payments` to know **with what**.
+Read `settlement` to know **whether and how** it was charged, and `payments` to know **with what**.
+
+The charge is all or nothing (see [Confirm payment](/en/api-reference/confirm-payment)), so
+`paidSoFar` is either `0` or the full total — never something in between.
 
 <Warning>
   While an order is open, `paymentMethods` is what the POS **declared** when the order was created —
@@ -104,25 +106,25 @@ Read `settlement` to know **how much** has been collected, and `payments` to kno
 ```json order.settlement (shape)
 {
   "settlement": {
-    "status": "recorded",
+    "status": "settled",
     "origin": "ledger",
-    "paidSoFar": "200000",
+    "paidSoFar": "359000",
     "total": "359000",
     "currencyCode": "BRL",
-    "tenderCount": 1,
+    "tenderCount": 2,
     "declinedCount": 1,
-    "amountMismatch": true,
+    "amountMismatch": false,
     "declaredMethods": ["IFOOD"]
   }
 }
 ```
 
-`status` is one of `pending`, `recorded`, `declined`, `settled`. `paidSoFar` and `total` use the same
-×10000 scale as `totals` — above, 20.00 collected of 35.90. `tenderCount` counts approved tenders
-only; declined ones are in `declinedCount`.
+`status` is one of `pending`, `declined`, `settled`. `paidSoFar` and `total` use the same ×10000
+scale as `totals` — above, 35.90 collected in two tenders, after one earlier decline. `tenderCount`
+counts approved tenders only; declined ones are in `declinedCount`.
 
-`amountMismatch: true` means **what has been collected has not reached the total yet**. On a deferred
-order that is the normal mid-collection state, not an error.
+`amountMismatch` is always `false`: a charge that does not add up to the total is rejected outright,
+so a settled order always matches. The field is kept for compatibility.
 
 `origin` tells you where `paidSoFar` comes from, and the two are not equally backed: `ledger` means
 the tenders were counted one by one as they arrived; `intake` means the order was created already
@@ -148,7 +150,7 @@ says how many there were, `payments` says which ones and why.
     "status": "approved",           // only approved tenders add to paidSoFar
     "amount": "200000",             // ×10000, same scale as totals
     "currencyCode": "BRL",
-    "method": "CASH",
+    "method": "CASH",               // one of the two tenders of a split charge
     "transactionId": "POS-0001",    // the POS idempotency key
     "occurredAt": "2026-07-30T16:20:04.000Z"
   },

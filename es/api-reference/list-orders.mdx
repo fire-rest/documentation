@@ -82,19 +82,20 @@ El consumidor decide qué campos devuelve cada orden, similar al projection de M
 
 ## Progreso del cobro: `settlement` y `payments`
 
-Cuando una orden se cobra **después** de abrirse, la plata puede entrar por partes — el efectivo
-ahora, la tarjeta cuando el cliente vuelve. `status` y `paymentStatus` no pueden expresar eso: dicen
-`OPEN` y `PENDING` tanto para una orden que no pagó nada como para una que todavía debe 15,90 de
-35,90.
+Cuando una orden se cobra **después** de abrirse, `status` y `paymentStatus` solo te dicen si se
+cobró. Dicen `OPEN` y `PENDING` tanto para una orden que nadie intentó cobrar como para una a la que
+le rechazaron la tarjeta dos veces — y son situaciones muy distintas para quien está mirando.
 
 | la orden | `status` | `paymentStatus` | `settlement.status` |
 | --- | --- | --- | --- |
-| abierta, sin cobrar nada | `OPEN` | `PENDING` | `pending` |
-| **cobrados 20,00 de 35,90** | `OPEN` | `PENDING` | **`recorded`** |
-| una pieza se rechazó | `OPEN` | `PENDING` | `declined` |
+| abierta, sin intentar nada | `OPEN` | `PENDING` | `pending` |
+| **una pieza se rechazó** | `OPEN` | `PENDING` | **`declined`** |
 | cobrada por completo | `COMPLETED` | `SUCCEEDED` | `settled` |
 
-Leé `settlement` para saber **cuánto** se cobró, y `payments` para saber **con qué**.
+Leé `settlement` para saber **si y cómo** se cobró, y `payments` para saber **con qué**.
+
+El cobro es todo o nada (ver [Confirmar pago](/es/api-reference/confirm-payment)), así que
+`paidSoFar` vale `0` o el total completo — nunca algo intermedio.
 
 <Warning>
   Mientras la orden está abierta, `paymentMethods` es lo que el POS **declaró** al crearla — no lo que
@@ -105,25 +106,25 @@ Leé `settlement` para saber **cuánto** se cobró, y `payments` para saber **co
 ```json order.settlement (shape)
 {
   "settlement": {
-    "status": "recorded",
+    "status": "settled",
     "origin": "ledger",
-    "paidSoFar": "200000",
+    "paidSoFar": "359000",
     "total": "359000",
     "currencyCode": "BRL",
-    "tenderCount": 1,
+    "tenderCount": 2,
     "declinedCount": 1,
-    "amountMismatch": true,
+    "amountMismatch": false,
     "declaredMethods": ["IFOOD"]
   }
 }
 ```
 
-`status` es uno de `pending`, `recorded`, `declined`, `settled`. `paidSoFar` y `total` usan la misma
-escala ×10000 que `totals` — arriba, 20,00 cobrados de 35,90. `tenderCount` cuenta solo las piezas
-aprobadas; las rechazadas van en `declinedCount`.
+`status` es uno de `pending`, `declined`, `settled`. `paidSoFar` y `total` usan la misma escala
+×10000 que `totals` — arriba, 35,90 cobrados en dos piezas, después de un rechazo anterior.
+`tenderCount` cuenta solo las piezas aprobadas; las rechazadas van en `declinedCount`.
 
-`amountMismatch: true` quiere decir que **lo cobrado todavía no llegó al total**. En una orden de pago
-diferido ese es el estado normal a mitad del cobro, no un error.
+`amountMismatch` es siempre `false`: un cobro que no suma el total se rechaza de entrada, así que una
+orden saldada siempre cuadra. El campo se mantiene por compatibilidad.
 
 `origin` te dice de dónde sale `paidSoFar`, y los dos no tienen el mismo respaldo: `ledger` significa
 que las piezas se contaron una por una a medida que llegaron; `intake` significa que la orden se creó
@@ -148,7 +149,7 @@ Los pedazos del cobro, del más viejo al más nuevo. Las piezas rechazadas se in
     "status": "approved",           // solo las piezas aprobadas suman a paidSoFar
     "amount": "200000",             // ×10000, la misma escala que totals
     "currencyCode": "BRL",
-    "method": "CASH",
+    "method": "CASH",               // una de las dos piezas de un cobro repartido
     "transactionId": "POS-0001",    // la clave de idempotencia del POS
     "occurredAt": "2026-07-30T16:20:04.000Z"
   },

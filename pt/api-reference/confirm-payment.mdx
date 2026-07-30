@@ -10,13 +10,13 @@ cobrança chega aqui. O pedido passa a `COMPLETED` e o faturamento começa quand
 atinge **exatamente** o total do pedido.
 
 <Note>
-  **Uma cobrança pode chegar em várias peças, e em várias chamadas.** Se você dividir a conta entre
-  dinheiro e cartão, pode enviar as duas peças juntas ou cada uma quando acontecer. O Fire mantém a
-  conta: soma o que foi aprovado e liquida o pedido quando a soma atinge exatamente o total. Até lá
-  o pedido fica aberto, e `settlement.paidSoFar` informa quanto já foi cobrado — veja
-  [Progresso da cobrança](/pt/api-reference/list-orders#progresso-da-cobranca-settlement-e-payments).
+  **Uma cobrança com várias peças, numa única chamada.** Se você dividir a conta entre dinheiro e
+  cartão, envie as duas peças **na mesma chamada**: as peças aprovadas devem somar exatamente o total
+  do pedido. Uma cobrança que não fecha a conta é rejeitada por inteiro e nada é registrado —
+  consolide os seus parciais antes de enviá-los.
 
-  Dentro de **uma mesma chamada** o envio é atômico: entram todas as peças ou nenhuma.
+  Repetir é seguro e esperado: reenvie o envio **inteiro** e a idempotência por `transaction_id`
+  cuida do resto.
 </Note>
 
 ## Autenticação
@@ -133,22 +133,27 @@ somam e nunca bloqueiam a cobrança.
 
 | situação | `outcome` | liquida? |
 | --- | --- | --- |
-| a soma das aprovadas **é igual** ao total e o pedido está aberto | `settled` | sim — vira `COMPLETED` e o faturamento começa |
-| a soma é **menor** que o total (parte foi recusada) | `recorded` | não — o dinheiro que entrou é registrado e o pedido continua aberto |
-| nenhuma peça aprovada | `declined` | não — o pedido continua aberto |
+| a soma das aprovadas **é igual** ao total | `settled` | sim — vira `COMPLETED` e o faturamento começa |
+| nenhuma peça aprovada, só recusas | `declined` | não — é registrado e o pedido continua aberto |
 | nenhuma peça nova (você já as enviou) | `duplicate` | não — repetição idempotente |
+| a soma das aprovadas **não é igual** ao total | — | **`400`** — nada é registrado |
 | uma peça **nova** num pedido **fechado** (liquidado, cancelado ou forçado) | — | **`409`** — nada é registrado |
-| a soma **supera** o total | — | **`400`** — nada é registrado |
 
 <Warning>
-  **O pedido liquida somente com a soma exata.**
+  **Tudo ou nada.** Uma cobrança cujas peças aprovadas não somam o total do pedido é rejeitada por
+  inteiro — nem sequer uma recusa que viajava no mesmo envio é guardada.
 
-  Se você cobrar **menos** que o total, o que entrou é registrado e o pedido continua aberto
-  esperando o resto — acontece quando parte das peças é recusada. Liquidar com menos faturaria o
-  total tendo cobrado uma parte, e uma nota emitida errada não se corrige.
+  O motivo não é contábil, é operacional: dinheiro aceito num pedido que não liquida deixa o pedido
+  com dinheiro dentro e sem saída. O Fire não processa devoluções e não existe forma de você nos
+  avisar que devolveu. Consolidar as cobranças parciais é tarefa sua — e você é o único que pode
+  devolver, então esse estado é seu de qualquer jeito.
 
-  Se cobrar **mais**, a chamada falha com `400` e **nada é registrado**, então você corrige e reenvia
-  sem deixar linhas sobrando. A mensagem traz os dois valores.
+  Cobrar **mais** que o total é rejeitado por outro motivo: faturaria um valor que não foi o cobrado,
+  e uma nota emitida não se desfaz. As duas mensagens trazem os dois valores para você corrigir e
+  reenviar.
+
+  As recusas são a exceção: um envio **sem** nenhuma peça aprovada é registrado e o pedido continua
+  aberto. Sem dinheiro não há estado a resolver, e é ali que vivem as suas métricas de recusa.
 </Warning>
 
 ## O que aconteceu com cada recusa
@@ -209,7 +214,8 @@ O que separa uma rejeição de uma repetição é o `transaction_id`, não o est
 Cada peça é identificada pelo seu `transaction_id` dentro do pedido. Pode repetir sem medo:
 
 - **Reenviar a cobrança completa** → `duplicate`. Nada é liquidado nem faturado de novo.
-- **Reenviar após um timeout** que deixou a cobrança pela metade → entra só o que faltava.
+- **Reenviar após um timeout** → reenvie o envio **inteiro**. Uma cobrança incompleta nunca foi
+  registrada, e qualquer peça que tenha entrado é ignorada pelo seu `transaction_id`.
 
 ## Validações
 
@@ -224,7 +230,8 @@ Todas retornam `400`, salvo indicação em contrário.
 | `transaction_id` sem repetição no mesmo envio | `400` |
 | valor maior que zero em cada peça | `400` |
 | uma única moeda entre as peças aprovadas | `400` |
-| a soma das aprovadas não supera o total do pedido | `400` |
+| a soma das aprovadas é exatamente igual ao total do pedido (tudo ou nada) | `400` |
+| o total do pedido pode ser resolvido na moeda das peças | `400` |
 | API key válida | `401` |
 | scope `orders:write` e key vendor-scoped | `403` |
 | o pedido existe dentro do seu vendor | `404` |
@@ -302,23 +309,6 @@ completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, por
   "success": false,
   "error": "BUSINESS_ERROR",
   "message": "Approved tenders total 500000 exceeds the order total 359000"
-}
-```
-
-```json 200 — o pedido não estava aberto
-{
-  "success": true,
-  "data": {
-    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-    "outcome": "recorded",
-    "settled": false,
-    "status": "CANCELLED",
-    "paymentStatus": "PENDING",
-    "completedAt": null,
-    "tenderCount": 1,
-    "declinedCount": 0,
-    "amountMismatch": false
-  }
 }
 ```
 
