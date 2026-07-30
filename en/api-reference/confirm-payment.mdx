@@ -6,13 +6,17 @@ authMethod: "bearer"
 ---
 
 Closes the **deferred payment** cycle: the order was born open, the kitchen already worked, and the
-payment arrives here. If at least one tender is approved the order becomes `COMPLETED` and invoicing
-starts.
+payment arrives here. The order becomes `COMPLETED` and invoicing starts when the approved amount
+reaches the order total **exactly**.
 
 <Note>
-  **One charge with several tenders, not partial payments.** If you split the bill between cash and
-  card, send both pieces **in the same call**. Fire does not accumulate payments over time: the
-  charge arrives whole or it does not arrive. Consolidate partials on your side before sending them.
+  **A charge can arrive in several tenders, and in several calls.** If you split the bill between
+  cash and card you may send both pieces together, or each one as it happens. Fire keeps the count:
+  it adds up what has been approved and settles the order when the sum reaches the total exactly.
+  Until then the order stays open, and `settlement.paidSoFar` tells you how much it has collected —
+  see [Payment progress](/en/api-reference/list-orders#payment-progress-settlement-and-payments).
+
+  Within **a single call** the batch is atomic: either every tender is recorded, or none is.
 </Note>
 
 ## Authentication
@@ -59,11 +63,14 @@ starts.
 </ParamField>
 
 <ParamField body="payments[].details.total_bill" type="number" required>
-  Amount for this tender, decimal. Must be greater than zero.
+  Amount for this tender, decimal. Must be greater than zero. If it is absent, Fire falls back to
+  the top-level `payments[].total`.
 </ParamField>
 
 <ParamField body="payments[].details.currency_code" type="string" required>
-  Currency of the tender. All **approved** tenders must share the same one.
+  Currency of the tender. All **approved** tenders must share the same one — including tenders sent
+  in earlier calls for the same order. If it is absent, Fire falls back to the top-level
+  `payments[].currency_code`.
 </ParamField>
 
 <ParamField body="payments[].details.decline_reason" type="string">
@@ -129,9 +136,9 @@ add up and never block the charge.
 | --- | --- | --- |
 | the approved sum **equals** the total and the order is open | `settled` | yes — becomes `COMPLETED` and invoicing starts |
 | the sum is **less** than the total (some tenders declined) | `recorded` | no — the money collected is recorded and the order stays open |
-| approved tenders and the order is **not** open | `recorded` | no — recorded without changing the order |
 | no approved tender | `declined` | no — the order stays open |
 | no new tender (you already sent them) | `duplicate` | no — idempotent retry |
+| a **new** tender on a **closed** order (settled, cancelled or force-closed) | — | **`409`** — nothing is recorded |
 | the sum **exceeds** the total | — | **`400`** — nothing is recorded |
 
 <Warning>
@@ -172,6 +179,31 @@ shows up in nothing grouped by reason.
   empty reasons dashboard.
 </Warning>
 
+## A closed order takes nothing else
+
+An order takes tenders **while it is open**. Once closed it is closed, however it got there. A tender
+it has never seen is **rejected** and nothing is recorded — approved or declined alike.
+
+The error code tells you *why* it is closed, and the two call for different actions:
+
+| code | the order | what it means for you |
+| --- | --- | --- |
+| `ORDER_ALREADY_SETTLED` | already charged in full | the money is in. If you charged again, refund it |
+| `ORDER_NOT_OPEN` | closed without being charged (cancelled, force-closed) | this money does not belong to this order |
+
+What separates a rejection from a retry is the `transaction_id`, not the state of the order:
+
+| you send | what it is | response |
+| --- | --- | --- |
+| a `transaction_id` Fire already has | a retry after a network timeout | `200`, `outcome: duplicate` |
+| a `transaction_id` Fire has never seen | a report on a closed order | `409` |
+
+<Warning>
+  A retry is never rejected, on purpose. You charged once and our answer never reached you; replying
+  with an error there would push the operator to run the card again — the double charge we are trying
+  to prevent. Send the same `transaction_id` and you get the original outcome back.
+</Warning>
+
 ## Idempotency
 
 Each tender is identified by its `transaction_id` within the order. Retry without fear:
@@ -197,6 +229,8 @@ All return `400` unless stated otherwise.
 | `orders:write` scope and vendor-scoped key | `403` |
 | the order exists within your vendor | `404` |
 | the reference matches more than one order | `409` |
+| a new tender on an already settled order | `409 ORDER_ALREADY_SETTLED` |
+| a new tender on an order closed without being charged | `409 ORDER_NOT_OPEN` |
 
 Fields Fire does not know about **are accepted and stored**: you can send your full payment object
 without trimming it. The currency of a declined tender never invalidates the batch, because it does
@@ -285,6 +319,35 @@ not add up.
     "tenderCount": 1,
     "declinedCount": 0,
     "amountMismatch": false
+  }
+}
+```
+
+```json 409 — the order was already settled
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_ALREADY_SETTLED",
+  "message": "Order is already settled and does not accept new payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "completedAt": "2026-07-30T16:24:11.802Z"
+  }
+}
+```
+
+```json 409 — the order is closed (cancelled)
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_NOT_OPEN",
+  "message": "Order is closed and does not accept payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "orderStatus": "CANCELLED",
+    "completedAt": null
   }
 }
 ```

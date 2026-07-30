@@ -66,9 +66,9 @@ O consumidor decide quais campos cada pedido retorna, similar à projeção do M
 
 **Campos disponíveis**: `id`, `orderCode`, `orderExternal`, `accountId`, `vendorId`, `storeId`,
 `stationId`, `anonymousCustomerId`, `customerId`, `billingId`, `status`, `paymentStatus`, `channel`,
-`businessDayDate`, `createdAt`, `updatedAt`, `deletedAt`, `store`, `customer`, `billing`,
-`fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `kitchen`, `aggregator`,
-`fiscal`.
+`businessDayDate`, `createdAt`, `updatedAt`, `completedAt`, `deletedAt`, `store`, `customer`,
+`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `settlement`, `payments`,
+`metadata`, `kitchen`, `aggregator`, `fiscal`.
 
 <Note>
   `channel` é o id de catálogo do pedido (`orders.catalog_id`), exposto sob o nome `channel`.
@@ -79,6 +79,97 @@ O consumidor decide quais campos cada pedido retorna, similar à projeção do M
   `metadata`, `fiscal`) são retornados no formato de persistência interno do Fire (por exemplo, os
   valores de `totals` estão em escala ×10000).
 </Note>
+
+## Progresso da cobrança: `settlement` e `payments`
+
+Quando um pedido é cobrado **depois** de aberto, o dinheiro pode chegar em partes — o dinheiro agora,
+o cartão quando o cliente voltar. `status` e `paymentStatus` não conseguem expressar isso: dizem
+`OPEN` e `PENDING` tanto para um pedido que não pagou nada quanto para um que ainda deve 15,90 de
+35,90.
+
+| o pedido | `status` | `paymentStatus` | `settlement.status` |
+| --- | --- | --- | --- |
+| aberto, nada cobrado | `OPEN` | `PENDING` | `pending` |
+| **cobrados 20,00 de 35,90** | `OPEN` | `PENDING` | **`recorded`** |
+| uma peça foi recusada | `OPEN` | `PENDING` | `declined` |
+| cobrado por completo | `COMPLETED` | `SUCCEEDED` | `settled` |
+
+Leia `settlement` para saber **quanto** entrou, e `payments` para saber **com o quê**.
+
+<Warning>
+  Enquanto o pedido está aberto, `paymentMethods` é o que o POS **declarou** na criação do pedido —
+  não o que foi cobrado. Só é sobrescrito com as peças reais quando o pedido liquida. Somá-lo para
+  calcular o progresso dá o número errado. Use `settlement.paidSoFar`.
+</Warning>
+
+```json order.settlement (shape)
+{
+  "settlement": {
+    "status": "recorded",
+    "origin": "ledger",
+    "paidSoFar": "200000",
+    "total": "359000",
+    "currencyCode": "BRL",
+    "tenderCount": 1,
+    "declinedCount": 1,
+    "amountMismatch": true,
+    "declaredMethods": ["IFOOD"]
+  }
+}
+```
+
+`status` é um de `pending`, `recorded`, `declined`, `settled`. `paidSoFar` e `total` usam a mesma
+escala ×10000 de `totals` — acima, 20,00 cobrados de 35,90. `tenderCount` conta apenas as peças
+aprovadas; as recusadas estão em `declinedCount`.
+
+`amountMismatch: true` significa que **o que entrou ainda não alcançou o total**. Num pedido diferido
+esse é o estado normal no meio da cobrança, não um erro.
+
+`origin` informa de onde vem `paidSoFar`, e os dois não têm o mesmo respaldo: `ledger` significa que
+as peças foram contadas uma a uma conforme chegaram; `intake` significa que o pedido foi criado já se
+declarando pago e o Fire acreditou. `settlement` é `null` nos pedidos criados antes de este campo
+existir.
+
+`declaredMethods` é com o que o pedido **disse** que seria pago, quando foi criado. Compare com
+`paymentMethods` para ver se pagaram com o que anunciaram: um pedido criado como `IFOOD` e cobrado
+com `CREDIT` mostra `declaredMethods: ["IFOOD"]` e `paymentMethods` com `CREDIT`. É o único lugar
+onde o meio declarado sobrevive, porque ao liquidar o `paymentMethods` é sobrescrito com as peças
+reais. Só os códigos viajam: os valores declarados vêm do POS em unidades (`"35.9"`) enquanto
+`paidSoFar` vai ×10000, e misturar as duas escalas no mesmo objeto convida ao erro.
+
+### `payments` — as peças uma a uma
+
+Os pedaços da cobrança, do mais antigo ao mais recente. As peças recusadas entram também:
+`settlement.declinedCount` diz quantas foram, `payments` diz quais e por quê.
+
+```jsonc
+"payments": [
+  {
+    "status": "approved",           // só as peças aprovadas somam em paidSoFar
+    "amount": "200000",             // ×10000, a mesma escala de totals
+    "currencyCode": "BRL",
+    "method": "CASH",
+    "transactionId": "POS-0001",    // a chave de idempotência do POS
+    "occurredAt": "2026-07-30T16:20:04.000Z"
+  },
+  {
+    "status": "declined",
+    "amount": "159000",
+    "currencyCode": "BRL",
+    "method": "CREDIT",
+    "transactionId": "POS-0002",
+    "declineReason": "51",                      // código cru do adquirente
+    "declineReasonCode": "INSUFFICIENT_FUNDS",  // ausente quando não bateu com o catálogo
+    "declineGroup": "FUNDS",
+    "occurredAt": "2026-07-30T16:22:47.000Z"
+  }
+]
+```
+
+Um pedido que nunca passou por [Confirmar pagamento](/pt/api-reference/confirm-payment) — um pré-pago,
+por exemplo — retorna `payments: []`, nunca `null`.
+
+`completedAt` é o momento em que a cobrança fechou o pedido, e é `null` enquanto ele continua aberto.
 
 ## O bloco `fiscal` por país
 
@@ -282,7 +373,7 @@ dados de autorização de um documento que depois foi cancelado: eles vivem na e
 {
   "success": false,
   "error": "VALIDATION_ERROR",
-  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, kitchen, aggregator, fiscal"
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, completedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, settlement, payments, metadata, kitchen, aggregator, fiscal"
 }
 ```
 

@@ -66,9 +66,9 @@ Elasticsearch `_source` parameter.
 
 **Available fields**: `id`, `orderCode`, `orderExternal`, `accountId`, `vendorId`, `storeId`,
 `stationId`, `anonymousCustomerId`, `customerId`, `billingId`, `status`, `paymentStatus`, `channel`,
-`businessDayDate`, `createdAt`, `updatedAt`, `deletedAt`, `store`, `customer`, `billing`,
-`fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `kitchen`, `aggregator`,
-`fiscal`.
+`businessDayDate`, `createdAt`, `updatedAt`, `completedAt`, `deletedAt`, `store`, `customer`,
+`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `settlement`, `payments`,
+`metadata`, `kitchen`, `aggregator`, `fiscal`.
 
 <Note>
   `channel` is the order's catalog id (`orders.catalog_id`), exposed under the `channel` name.
@@ -79,6 +79,97 @@ Elasticsearch `_source` parameter.
   `metadata`, `fiscal`) are returned in Fire's internal persistence format (for example, `totals`
   amounts are scaled ×10000).
 </Note>
+
+## Payment progress: `settlement` and `payments`
+
+When an order is charged **after** it opens, the money can arrive in parts — cash now, the card when
+the customer comes back. `status` and `paymentStatus` cannot express that: they say `OPEN` and
+`PENDING` both for an order that paid nothing and for one that still owes 15.90 of 35.90.
+
+| the order | `status` | `paymentStatus` | `settlement.status` |
+| --- | --- | --- | --- |
+| opened, nothing charged | `OPEN` | `PENDING` | `pending` |
+| **charged 20.00 of 35.90** | `OPEN` | `PENDING` | **`recorded`** |
+| a tender was declined | `OPEN` | `PENDING` | `declined` |
+| fully charged | `COMPLETED` | `SUCCEEDED` | `settled` |
+
+Read `settlement` to know **how much** has been collected, and `payments` to know **with what**.
+
+<Warning>
+  While an order is open, `paymentMethods` is what the POS **declared** when the order was created —
+  not what has been charged. It is overwritten with the real tenders only when the order settles.
+  Summing it to compute progress gives the wrong number. Use `settlement.paidSoFar`.
+</Warning>
+
+```json order.settlement (shape)
+{
+  "settlement": {
+    "status": "recorded",
+    "origin": "ledger",
+    "paidSoFar": "200000",
+    "total": "359000",
+    "currencyCode": "BRL",
+    "tenderCount": 1,
+    "declinedCount": 1,
+    "amountMismatch": true,
+    "declaredMethods": ["IFOOD"]
+  }
+}
+```
+
+`status` is one of `pending`, `recorded`, `declined`, `settled`. `paidSoFar` and `total` use the same
+×10000 scale as `totals` — above, 20.00 collected of 35.90. `tenderCount` counts approved tenders
+only; declined ones are in `declinedCount`.
+
+`amountMismatch: true` means **what has been collected has not reached the total yet**. On a deferred
+order that is the normal mid-collection state, not an error.
+
+`origin` tells you where `paidSoFar` comes from, and the two are not equally backed: `ledger` means
+the tenders were counted one by one as they arrived; `intake` means the order was created already
+declaring itself paid and Fire took its word. `settlement` is `null` on orders created before this
+field existed.
+
+`declaredMethods` is what the order **said** it would be paid with, when it was created. Compare it
+with `paymentMethods` to see whether the customer paid with what they announced: an order created as
+`IFOOD` and charged with `CREDIT` shows `declaredMethods: ["IFOOD"]` and `paymentMethods` with
+`CREDIT`. It is the only place the declared method survives, because settling overwrites
+`paymentMethods` with the real tenders. Only the codes travel — the declared amounts come from the
+POS in units (`"35.9"`) while `paidSoFar` is ×10000, and mixing both scales in one object invites
+mistakes.
+
+### `payments` — the tenders one by one
+
+The pieces of the collection, oldest first. Declined tenders are included: `settlement.declinedCount`
+says how many there were, `payments` says which ones and why.
+
+```jsonc
+"payments": [
+  {
+    "status": "approved",           // only approved tenders add to paidSoFar
+    "amount": "200000",             // ×10000, same scale as totals
+    "currencyCode": "BRL",
+    "method": "CASH",
+    "transactionId": "POS-0001",    // the POS idempotency key
+    "occurredAt": "2026-07-30T16:20:04.000Z"
+  },
+  {
+    "status": "declined",
+    "amount": "159000",
+    "currencyCode": "BRL",
+    "method": "CREDIT",
+    "transactionId": "POS-0002",
+    "declineReason": "51",                      // raw code from the acquirer
+    "declineReasonCode": "INSUFFICIENT_FUNDS",  // absent when it did not match the catalog
+    "declineGroup": "FUNDS",
+    "occurredAt": "2026-07-30T16:22:47.000Z"
+  }
+]
+```
+
+An order that never went through [Confirm payment](/en/api-reference/confirm-payment) — a pre-paid
+one, for example — returns `payments: []`, never `null`.
+
+`completedAt` is the moment the collection closed the order, and is `null` while it stays open.
 
 ## The `fiscal` block by country
 
@@ -281,7 +372,7 @@ the authorization data of a document that was later cancelled: it lives in the `
 {
   "success": false,
   "error": "VALIDATION_ERROR",
-  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, kitchen, aggregator, fiscal"
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, completedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, settlement, payments, metadata, kitchen, aggregator, fiscal"
 }
 ```
 

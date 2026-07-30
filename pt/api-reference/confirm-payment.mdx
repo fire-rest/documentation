@@ -6,13 +6,17 @@ authMethod: "bearer"
 ---
 
 Fecha o ciclo do **pagamento diferido**: o pedido nasceu aberto, a cozinha já trabalhou, e a
-cobrança chega aqui. Se houver ao menos um meio aprovado, o pedido passa a `COMPLETED` e o
-faturamento começa.
+cobrança chega aqui. O pedido passa a `COMPLETED` e o faturamento começa quando o valor aprovado
+atinge **exatamente** o total do pedido.
 
 <Note>
-  **Uma cobrança com vários meios, não pagamentos parciais.** Se você dividir a conta entre dinheiro
-  e cartão, envie as duas peças **na mesma chamada**. O Fire não acumula pagamentos ao longo do
-  tempo: a cobrança chega inteira ou não chega. Consolide os parciais do seu lado antes de enviar.
+  **Uma cobrança pode chegar em várias peças, e em várias chamadas.** Se você dividir a conta entre
+  dinheiro e cartão, pode enviar as duas peças juntas ou cada uma quando acontecer. O Fire mantém a
+  conta: soma o que foi aprovado e liquida o pedido quando a soma atinge exatamente o total. Até lá
+  o pedido fica aberto, e `settlement.paidSoFar` informa quanto já foi cobrado — veja
+  [Progresso da cobrança](/pt/api-reference/list-orders#progresso-da-cobranca-settlement-e-payments).
+
+  Dentro de **uma mesma chamada** o envio é atômico: entram todas as peças ou nenhuma.
 </Note>
 
 ## Autenticação
@@ -59,11 +63,13 @@ faturamento começa.
 </ParamField>
 
 <ParamField body="payments[].details.total_bill" type="number" required>
-  Valor desta peça, decimal. Deve ser maior que zero.
+  Valor desta peça, decimal. Deve ser maior que zero. Se não vier, o Fire usa o `payments[].total`
+  do nível superior.
 </ParamField>
 
 <ParamField body="payments[].details.currency_code" type="string" required>
-  Moeda da peça. Todas as peças **aprovadas** devem compartilhar a mesma.
+  Moeda da peça. Todas as peças **aprovadas** devem compartilhar a mesma — incluindo as de chamadas
+  anteriores do mesmo pedido. Se não vier, o Fire usa o `payments[].currency_code` do nível superior.
 </ParamField>
 
 <ParamField body="payments[].details.decline_reason" type="string">
@@ -129,9 +135,9 @@ somam e nunca bloqueiam a cobrança.
 | --- | --- | --- |
 | a soma das aprovadas **é igual** ao total e o pedido está aberto | `settled` | sim — vira `COMPLETED` e o faturamento começa |
 | a soma é **menor** que o total (parte foi recusada) | `recorded` | não — o dinheiro que entrou é registrado e o pedido continua aberto |
-| há aprovadas e o pedido **não** está aberto | `recorded` | não — registradas sem alterar o pedido |
 | nenhuma peça aprovada | `declined` | não — o pedido continua aberto |
 | nenhuma peça nova (você já as enviou) | `duplicate` | não — repetição idempotente |
+| uma peça **nova** num pedido **fechado** (liquidado, cancelado ou forçado) | — | **`409`** — nada é registrado |
 | a soma **supera** o total | — | **`400`** — nada é registrado |
 
 <Warning>
@@ -171,6 +177,33 @@ guardado, mas não aparece em nada agrupado por motivo.
   depois com o painel de motivos vazio.
 </Warning>
 
+## Um pedido fechado não aceita mais nada
+
+Um pedido recebe cobranças **enquanto está aberto**. Uma vez fechado está fechado, não importa como
+chegou lá. Uma peça que ele nunca viu é **rejeitada** e nada é registrado — aprovada ou recusada, dá
+no mesmo.
+
+O código de erro informa *por que* está fechado, e os dois pedem ações diferentes:
+
+| código | o pedido | o que significa para você |
+| --- | --- | --- |
+| `ORDER_ALREADY_SETTLED` | já foi cobrado por completo | o dinheiro entrou. Se você cobrou de novo, é preciso devolver |
+| `ORDER_NOT_OPEN` | fechou sem ser cobrado (cancelado, forçado) | esse dinheiro não corresponde a este pedido |
+
+O que separa uma rejeição de uma repetição é o `transaction_id`, não o estado do pedido:
+
+| você envia | o que é | resposta |
+| --- | --- | --- |
+| um `transaction_id` que o Fire já tem | uma repetição após um timeout de rede | `200`, `outcome: duplicate` |
+| um `transaction_id` que o Fire nunca viu | um aviso sobre um pedido fechado | `409` |
+
+<Warning>
+  Uma repetição nunca é rejeitada, de propósito. Você cobrou uma vez e a nossa resposta não chegou até
+  você; responder com um erro ali empurraria o operador a passar o cartão de novo — a cobrança dupla
+  que estamos tentando evitar. Envie o mesmo `transaction_id` e você recebe de volta o resultado
+  original.
+</Warning>
+
 ## Idempotência
 
 Cada peça é identificada pelo seu `transaction_id` dentro do pedido. Pode repetir sem medo:
@@ -196,6 +229,8 @@ Todas retornam `400`, salvo indicação em contrário.
 | scope `orders:write` e key vendor-scoped | `403` |
 | o pedido existe dentro do seu vendor | `404` |
 | a referência corresponde a mais de um pedido | `409` |
+| uma peça nova num pedido já liquidado | `409 ORDER_ALREADY_SETTLED` |
+| uma peça nova num pedido fechado sem ter sido cobrado | `409 ORDER_NOT_OPEN` |
 
 Campos que o Fire não conhece **são aceitos e guardados**: você pode enviar seu objeto de pagamento
 completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, porque não soma.
@@ -283,6 +318,35 @@ completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, por
     "tenderCount": 1,
     "declinedCount": 0,
     "amountMismatch": false
+  }
+}
+```
+
+```json 409 — o pedido já estava liquidado
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_ALREADY_SETTLED",
+  "message": "Order is already settled and does not accept new payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "completedAt": "2026-07-30T16:24:11.802Z"
+  }
+}
+```
+
+```json 409 — o pedido está fechado (cancelado)
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_NOT_OPEN",
+  "message": "Order is closed and does not accept payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "orderStatus": "CANCELLED",
+    "completedAt": null
   }
 }
 ```
