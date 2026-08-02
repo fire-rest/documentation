@@ -209,6 +209,30 @@ O que separa uma rejeição de uma repetição é o `transaction_id`, não o est
   original.
 </Warning>
 
+## Quando a cobrança quita
+
+Quitar é o que completa o pedido, então é aí que o Fire emite
+[`order.completed`](/pt/events/order-completed) — o pedido nasceu `OPEN` e só agora
+terminou. A resposta informa isso como `flowsTriggered`.
+
+`flowsTriggered: 0` **não** é um erro de cobrança. Significa uma de três coisas:
+
+| Caso | Por quê |
+|---|---|
+| A cobrança não quitou | O pedido continua aberto; nada foi completado. |
+| `outcome: "duplicate"` | O evento já saiu na chamada original. |
+| A enfileiração falhou | O pagamento fica registrado de todo jeito. O incidente fica do lado do Fire para um operador reprocessar. |
+
+Essa última linha é deliberada. Se o Fire respondesse com erro porque não conseguiu
+enfileirar um evento, você tentaria de novo uma cobrança que já entrou. O dinheiro
+manda sobre o aviso.
+
+<Note>
+Um pedido com pagamento diferido já emitiu seu documento fiscal ao abrir, e passa de
+novo pela etapa fiscal em `order.completed`. O Fire detecta o documento existente e
+pula a segunda emissão — você não recebe duas notas.
+</Note>
+
 ## Idempotência
 
 Cada peça é identificada pelo seu `transaction_id` dentro do pedido. Pode repetir sem medo:
@@ -262,7 +286,8 @@ completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, por
     "tenderCount": 2,
     "declinedCount": 0,
     "amountMismatch": false,
-    "declines": []
+    "declines": [],
+    "flowsTriggered": 1
   }
 }
 ```
@@ -284,7 +309,8 @@ completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, por
     "declines": [
       { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "exceedsOrderTotal": false },
       { "sent": "51", "resolvedTo": null, "group": null, "exceedsOrderTotal": true }
-    ]
+    ],
+    "flowsTriggered": 0
   }
 }
 ```
@@ -302,7 +328,8 @@ completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, por
     "completedAt": "2026-07-28T17:11:02.000Z",
     "tenderCount": 0,
     "declinedCount": 0,
-    "amountMismatch": false
+    "amountMismatch": false,
+    "flowsTriggered": 0
   }
 }
 ```

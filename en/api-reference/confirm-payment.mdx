@@ -209,6 +209,30 @@ What separates a rejection from a retry is the `transaction_id`, not the state o
   to prevent. Send the same `transaction_id` and you get the original outcome back.
 </Warning>
 
+## When the charge settles
+
+Settling is what completes the order, so that is when Fire emits
+[`order.completed`](/en/events/order-completed) — the order was born `OPEN` and only
+now has it finished. The response reports it as `flowsTriggered`.
+
+`flowsTriggered: 0` is **not** a payment error. It means one of three things:
+
+| Case | Why |
+|---|---|
+| The charge did not settle | The order is still open; nothing completed. |
+| `outcome: "duplicate"` | The event already went out with the original call. |
+| Enqueueing failed | The payment is recorded either way. The incident is kept on Fire's side for an operator to replay. |
+
+That last row is deliberate. If Fire answered with an error because an event could not
+be queued, you would retry a charge that already went through. The money wins over the
+notification.
+
+<Note>
+An order with deferred payment already issued its fiscal document when it opened, and
+it passes through the fiscal step again on `order.completed`. Fire detects the
+existing document and skips the second issuance — you do not get two invoices.
+</Note>
+
 ## Idempotency
 
 Each tender is identified by its `transaction_id` within the order. Retry without fear:
@@ -263,7 +287,8 @@ not add up.
     "tenderCount": 2,
     "declinedCount": 0,
     "amountMismatch": false,
-    "declines": []
+    "declines": [],
+    "flowsTriggered": 1
   }
 }
 ```
@@ -285,7 +310,8 @@ not add up.
     "declines": [
       { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "exceedsOrderTotal": false },
       { "sent": "51", "resolvedTo": null, "group": null, "exceedsOrderTotal": true }
-    ]
+    ],
+    "flowsTriggered": 0
   }
 }
 ```
@@ -303,7 +329,8 @@ not add up.
     "completedAt": "2026-07-28T17:11:02.000Z",
     "tenderCount": 0,
     "declinedCount": 0,
-    "amountMismatch": false
+    "amountMismatch": false,
+    "flowsTriggered": 0
   }
 }
 ```

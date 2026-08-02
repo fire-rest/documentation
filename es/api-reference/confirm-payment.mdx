@@ -211,6 +211,29 @@ Lo que separa un rechazo de un reintento es el `transaction_id`, no el estado de
   original.
 </Warning>
 
+## Cuando el cobro salda
+
+Saldar es lo que completa la orden, así que ahí es cuando Fire emite
+[`order.completed`](/es/events/order-completed) — la orden nació `OPEN` y recién ahora
+terminó. La respuesta lo informa como `flowsTriggered`.
+
+`flowsTriggered: 0` **no** es un error de cobro. Significa una de tres cosas:
+
+| Caso | Por qué |
+|---|---|
+| El cobro no saldó | La orden sigue abierta; no se completó nada. |
+| `outcome: "duplicate"` | El evento ya salió con la llamada original. |
+| Falló el encolado | El pago quedó registrado igual. El incidente queda del lado de Fire para que un operador lo re-dispare. |
+
+Esa última fila es deliberada. Si Fire respondiera con error porque no pudo encolar un
+evento, reintentarías un cobro que ya entró. El dinero manda sobre el aviso.
+
+<Note>
+Una orden con pago diferido ya emitió su documento fiscal al abrirse, y vuelve a pasar
+por el paso fiscal en `order.completed`. Fire detecta el documento existente y saltea
+la segunda emisión — no te llegan dos facturas.
+</Note>
+
 ## Idempotencia
 
 Cada pieza se identifica por su `transaction_id` dentro de la orden. Podés reintentar sin miedo:
@@ -264,7 +287,8 @@ sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque n
     "tenderCount": 2,
     "declinedCount": 0,
     "amountMismatch": false,
-    "declines": []
+    "declines": [],
+    "flowsTriggered": 1
   }
 }
 ```
@@ -286,7 +310,8 @@ sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque n
     "declines": [
       { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "exceedsOrderTotal": false },
       { "sent": "51", "resolvedTo": null, "group": null, "exceedsOrderTotal": true }
-    ]
+    ],
+    "flowsTriggered": 0
   }
 }
 ```
@@ -304,7 +329,8 @@ sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque n
     "completedAt": "2026-07-28T17:11:02.000Z",
     "tenderCount": 0,
     "declinedCount": 0,
-    "amountMismatch": false
+    "amountMismatch": false,
+    "flowsTriggered": 0
   }
 }
 ```
