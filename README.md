@@ -58,6 +58,41 @@ mint broken-links
 
 Con el repositorio conectado a Mintlify, los cambios en la rama por defecto suelen desplegarse al hacer push. Ajustes de dominio e integración GitHub se gestionan en el [dashboard](https://dashboard.mintlify.com) de Mintlify.
 
+## Suscripción al changelog
+
+Los lectores pueden suscribirse desde el botón **Subscribe to updates** de la barra
+superior o desde la tarjeta al inicio de `*/changelog.mdx`. El alta, el captcha, el
+doble opt-in y la baja los gestiona [Buttondown](https://buttondown.com); este
+repositorio no almacena ningún correo.
+
+Cuando una entrada nueva llega a `main`, el workflow
+[`changelog-newsletter.yml`](.github/workflows/changelog-newsletter.yml) toma la
+sección `##` más reciente de `en/changelog.mdx` y la envía a la lista.
+
+**Solo se envía si el título `##` más nuevo cambió.** Editar una entrada ya publicada
+(una errata, un enlace roto) no vuelve a enviar el correo.
+
+### Configuración necesaria
+
+En **Settings** del repositorio en GitHub:
+
+| Tipo | Nombre | Valor |
+| --- | --- | --- |
+| Secret | `BUTTONDOWN_API_KEY` | Clave de API de Buttondown (Settings → Programming) |
+| Variable | `DOCS_BASE_URL` | URL pública de la doc, p. ej. `https://docs.fire.rest` |
+
+Además, sustituye el marcador `https://buttondown.com/fire-docs` por la URL real del
+boletín en `docs.json` y en `en/changelog.mdx`, `es/changelog.mdx` y `pt/changelog.mdx`.
+
+### Probar sin enviar
+
+En la pestaña **Actions** → *Changelog newsletter* → **Run workflow**, con
+`dry_run` activado: imprime el correo en el log sin enviarlo. En local:
+
+```bash
+DRY_RUN=true DOCS_BASE_URL=https://docs.fire.rest node .github/scripts/send-changelog-email.mjs
+```
+
 ## Ayuda
 
 - [Documentación de Mintlify](https://mintlify.com/docs)
