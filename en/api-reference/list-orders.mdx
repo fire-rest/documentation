@@ -66,9 +66,9 @@ Elasticsearch `_source` parameter.
 
 **Available fields**: `id`, `orderCode`, `orderExternal`, `accountId`, `vendorId`, `storeId`,
 `stationId`, `anonymousCustomerId`, `customerId`, `billingId`, `status`, `paymentStatus`, `channel`,
-`businessDayDate`, `createdAt`, `updatedAt`, `deletedAt`, `store`, `customer`, `billing`,
-`fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `kitchen`, `aggregator`,
-`fiscal`.
+`businessDayDate`, `createdAt`, `updatedAt`, `completedAt`, `deletedAt`, `store`, `customer`,
+`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `settlement`, `payments`,
+`metadata`, `kitchen`, `aggregator`, `fiscal`.
 
 <Note>
   `channel` is the order's catalog id (`orders.catalog_id`), exposed under the `channel` name.
@@ -79,6 +79,99 @@ Elasticsearch `_source` parameter.
   `metadata`, `fiscal`) are returned in Fire's internal persistence format (for example, `totals`
   amounts are scaled ×10000).
 </Note>
+
+## Payment progress: `settlement` and `payments`
+
+When an order is charged **after** it opens, `status` and `paymentStatus` only tell you whether it
+was charged. They say `OPEN` and `PENDING` both for an order nobody has tried to charge and for one
+whose card was declined twice — and those are very different situations for whoever is watching.
+
+| the order | `status` | `paymentStatus` | `settlement.status` |
+| --- | --- | --- | --- |
+| opened, nothing attempted | `OPEN` | `PENDING` | `pending` |
+| **a tender was declined** | `OPEN` | `PENDING` | **`declined`** |
+| fully charged | `COMPLETED` | `SUCCEEDED` | `settled` |
+
+Read `settlement` to know **whether and how** it was charged, and `payments` to know **with what**.
+
+The charge is all or nothing (see [Confirm payment](/en/api-reference/confirm-payment)), so
+`paidSoFar` is either `0` or the full total — never something in between.
+
+<Warning>
+  While an order is open, `paymentMethods` is what the POS **declared** when the order was created —
+  not what has been charged. It is overwritten with the real tenders only when the order settles.
+  Summing it to compute progress gives the wrong number. Use `settlement.paidSoFar`.
+</Warning>
+
+```json order.settlement (shape)
+{
+  "settlement": {
+    "status": "settled",
+    "origin": "ledger",
+    "paidSoFar": "359000",
+    "total": "359000",
+    "currencyCode": "BRL",
+    "tenderCount": 2,
+    "declinedCount": 1,
+    "amountMismatch": false,
+    "declaredMethods": ["IFOOD"]
+  }
+}
+```
+
+`status` is one of `pending`, `declined`, `settled`. `paidSoFar` and `total` use the same ×10000
+scale as `totals` — above, 35.90 collected in two tenders, after one earlier decline. `tenderCount`
+counts approved tenders only; declined ones are in `declinedCount`.
+
+`amountMismatch` is always `false`: a charge that does not add up to the total is rejected outright,
+so a settled order always matches. The field is kept for compatibility.
+
+`origin` tells you where `paidSoFar` comes from, and the two are not equally backed: `ledger` means
+the tenders were counted one by one as they arrived; `intake` means the order was created already
+declaring itself paid and Fire took its word. `settlement` is `null` on orders created before this
+field existed.
+
+`declaredMethods` is what the order **said** it would be paid with, when it was created. Compare it
+with `paymentMethods` to see whether the customer paid with what they announced: an order created as
+`IFOOD` and charged with `CREDIT` shows `declaredMethods: ["IFOOD"]` and `paymentMethods` with
+`CREDIT`. It is the only place the declared method survives, because settling overwrites
+`paymentMethods` with the real tenders. Only the codes travel — the declared amounts come from the
+POS in units (`"35.9"`) while `paidSoFar` is ×10000, and mixing both scales in one object invites
+mistakes.
+
+### `payments` — the tenders one by one
+
+The pieces of the collection, oldest first. Declined tenders are included: `settlement.declinedCount`
+says how many there were, `payments` says which ones and why.
+
+```jsonc
+"payments": [
+  {
+    "status": "approved",           // only approved tenders add to paidSoFar
+    "amount": "200000",             // ×10000, same scale as totals
+    "currencyCode": "BRL",
+    "method": "CASH",               // one of the two tenders of a split charge
+    "transactionId": "POS-0001",    // the POS idempotency key
+    "occurredAt": "2026-07-30T16:20:04.000Z"
+  },
+  {
+    "status": "declined",
+    "amount": "159000",
+    "currencyCode": "BRL",
+    "method": "CREDIT",
+    "transactionId": "POS-0002",
+    "declineReason": "51",                      // raw code from the acquirer
+    "declineReasonCode": "INSUFFICIENT_FUNDS",  // absent when it did not match the catalog
+    "declineGroup": "FUNDS",
+    "occurredAt": "2026-07-30T16:22:47.000Z"
+  }
+]
+```
+
+An order that never went through [Confirm payment](/en/api-reference/confirm-payment) — a pre-paid
+one, for example — returns `payments: []`, never `null`.
+
+`completedAt` is the moment the collection closed the order, and is `null` while it stays open.
 
 ## The `fiscal` block by country
 
@@ -101,8 +194,19 @@ countries' identifiers are not included. Read `fiscal.countryCode` to know which
 }
 ```
 
-`status` is one of `processing`, `fiscal_graphic`, `authorized`, `cancelled`, `rejected`, `denied`,
-`error`. When negative, `fiscal.error` (`{ code, message }`) is also present.
+`status` tells you where the order stands fiscally. Group it by what you can do about it:
+
+| Group | Values | What it means |
+|---|---|---|
+| **No document** | `awaiting_payment`, `not_issued` | Nothing was ever issued. `awaiting_payment` = the order is open and unpaid, so no issuance is due yet. `not_issued` = the order closed without ever being invoiced (cancelled before payment). |
+| **In flight** | `pending`, `processing`, `contingency`, `cancelling` | An operation is under way and its outcome is unknown. Do not assume success or failure — wait. `contingency` is a legally issued document pending transmission. |
+| **Settled** | `authorized`, `cancelled` | Terminal. There is a valid document, or it was cancelled. |
+| **Failed** | `rejected`, `denied`, `error` | No valid document. `fiscal.error` (`{ code, message }`) is also present. |
+| **Delivery** | `fiscal_graphic` | The provider is delivering the printable artifact. Not an approval, not terminal. |
+
+<Note>
+`awaiting_payment` and `not_issued` describe the **order's** fiscal state, not a document's — there is no document in either case. They exist because `processing` used to mean two incompatible things: "an issuance is in flight" and "this order has not reached invoicing yet". They appear on orders that are open and unpaid, so they are most common alongside deferred payment. They are **not** sent in order events; there `lastKnown.fiscal` reports `null`.
+</Note>
 
 The `metadata` **common fields** (all countries): `docType`, `docSubtype`, `providerDocId`,
 `pdfUrl`, `xmlUrl`, `emittedAt`, `cancelledAt`, `totalAmount`, `taxAmount`, `currencyCode`. On top of
@@ -281,7 +385,7 @@ the authorization data of a document that was later cancelled: it lives in the `
 {
   "success": false,
   "error": "VALIDATION_ERROR",
-  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, kitchen, aggregator, fiscal"
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, completedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, settlement, payments, metadata, kitchen, aggregator, fiscal"
 }
 ```
 
