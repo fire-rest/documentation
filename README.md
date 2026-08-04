@@ -65,12 +65,21 @@ superior o desde el formulario al inicio de `*/changelog.mdx`. El alta, el captc
 doble opt-in y la baja los gestiona [Buttondown](https://buttondown.com); este
 repositorio no almacena ningún correo.
 
-El formulario está escrito como JSX plano dentro de cada `*/changelog.mdx`, arriba de la
-primera entrada. Se intentó factorizarlo a un snippet con props, pero el MDX de Mintlify
-no renderizaba el resto de la página: cualquier contenido debajo del componente
-importado desaparecía. Repetir el marcado en tres archivos es el precio de que funcione.
+El formulario es el de Buttondown, embebido en un `<iframe>` (`?as_embed=true`) dentro de
+cada `*/changelog.mdx`, arriba de la primera entrada. **No se estiliza como el resto de la
+página a propósito.**
 
-Al cambiar la URL de la lista hay que tocar los tres, más `docs.json`.
+La razón: Buttondown bloquea el AJAX cross-origin, así que un formulario propio solo
+puede enviarse llevándose al lector a buttondown.com. El iframe lo deja en la doc y
+además hereda el captcha (Cloudflare Turnstile) y el firewall de Buttondown, que un
+formulario a mano se saltearía. El captcha solo aparece cuando el firewall sospecha.
+
+El color del botón se cambia en Buttondown, en **Settings → Design** — no desde este
+repositorio.
+
+Tampoco se puede factorizar a un snippet: se intentó con un componente con props y el
+MDX de Mintlify dejaba de renderizar todo lo que viniera debajo. Se repite en los tres
+archivos, y al cambiar la lista hay que tocar los tres más `docs.json`.
 
 Cuando una entrada nueva llega a `main`, el workflow
 [`changelog-newsletter.yml`](.github/workflows/changelog-newsletter.yml) toma la
