@@ -112,7 +112,11 @@ if (isEdit && !dryRun && !draftOnly) {
   process.exit(0)
 }
 
-const body = `${toMarkdown(current)}\n\n---\n\n[Read the full changelog](${baseUrl}/en/changelog)`
+// Drop the `## ` line: Buttondown already renders the subject as the email's
+// heading, so keeping it here prints the same title twice.
+const withoutHeading = current.split('\n').slice(1).join('\n').trim()
+
+const body = `${toMarkdown(withoutHeading)}\n\n---\n\n[Read the full changelog](${baseUrl}/en/changelog)`
 
 if (dryRun) {
   if (isEdit) {
