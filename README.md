@@ -61,16 +61,28 @@ Con el repositorio conectado a Mintlify, los cambios en la rama por defecto suel
 ## Suscripción al changelog
 
 Los lectores pueden suscribirse desde el botón **Subscribe to updates** de la barra
-superior o desde la tarjeta al inicio de `*/changelog.mdx`. El alta, el captcha, el
+superior o desde el formulario al inicio de `*/changelog.mdx`. El alta, el captcha, el
 doble opt-in y la baja los gestiona [Buttondown](https://buttondown.com); este
 repositorio no almacena ningún correo.
+
+El formulario vive en un único snippet,
+[`snippets/changelog-subscribe.mdx`](snippets/changelog-subscribe.mdx): solo el marcado.
+Cada changelog lo importa y le pasa sus textos por props, así los tres idiomas comparten
+una sola URL de lista.
 
 Cuando una entrada nueva llega a `main`, el workflow
 [`changelog-newsletter.yml`](.github/workflows/changelog-newsletter.yml) toma la
 sección `##` más reciente de `en/changelog.mdx` y la envía a la lista.
 
+**EN es la fuente de disparo.** El workflow solo reacciona a cambios en
+`en/changelog.mdx`; publicar primero en ES o PT no envía nada. Escribí siempre la
+entrada en inglés en el mismo commit.
+
 **Solo se envía si el título `##` más nuevo cambió.** Editar una entrada ya publicada
 (una errata, un enlace roto) no vuelve a enviar el correo.
+
+El formulario de suscripción queda por encima del primer `##`, así que nunca entra en
+el cuerpo del correo.
 
 ### Configuración necesaria
 
@@ -81,13 +93,18 @@ En **Settings** del repositorio en GitHub:
 | Secret | `BUTTONDOWN_API_KEY` | Clave de API de Buttondown (Settings → Programming) |
 | Variable | `DOCS_BASE_URL` | URL pública de la doc, p. ej. `https://docs.fire.rest` |
 
-Además, sustituye el marcador `https://buttondown.com/fire-docs` por la URL real del
-boletín en `docs.json` y en `en/changelog.mdx`, `es/changelog.mdx` y `pt/changelog.mdx`.
+Además hay que reemplazar el marcador `fire-docs` por el usuario real de Buttondown en
+los **dos** únicos lugares donde aparece:
+
+- `snippets/changelog-subscribe.mdx` → constante `LIST_URL` (destino del formulario)
+- `docs.json` → link **Subscribe to updates** de la barra superior
 
 ### Probar sin enviar
 
 En la pestaña **Actions** → *Changelog newsletter* → **Run workflow**, con
-`dry_run` activado: imprime el correo en el log sin enviarlo. En local:
+`dry_run` activado: imprime el correo en el log sin enviarlo. El modo dry-run
+renderiza la entrada más reciente aunque un envío real no la mandaría (por ser una
+edición), para que siempre se pueda previsualizar. En local:
 
 ```bash
 DRY_RUN=true DOCS_BASE_URL=https://docs.fire.rest node .github/scripts/send-changelog-email.mjs

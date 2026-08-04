@@ -86,7 +86,12 @@ const previousFile = previousVersion()
 const previousHeading = previousFile ? heading(latestEntry(previousFile)) : null
 const subject = heading(current)
 
-if (previousHeading === subject) {
+const isEdit = previousHeading === subject
+
+// A dry run still renders the email even for an edit — otherwise the newest
+// entry could never be previewed, since by the time it is on main it always
+// looks like an edit to the next run.
+if (isEdit && !dryRun) {
   console.log(`• Newest entry is still "${subject}" — edit only, nothing sent.`)
   process.exit(0)
 }
@@ -94,6 +99,9 @@ if (previousHeading === subject) {
 const body = `${toMarkdown(current)}\n\n---\n\n[Read the full changelog](${baseUrl}/en/changelog)`
 
 if (dryRun) {
+  if (isEdit) {
+    console.log('• Preview only — a real run would send nothing (entry unchanged).\n')
+  }
   console.log(`Subject: ${subject}\n\n${body}`)
   process.exit(0)
 }
