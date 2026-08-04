@@ -60,9 +60,9 @@ El consumidor decide qué campos devuelve cada orden, similar al projection de M
 
 **Campos disponibles**: `id`, `orderCode`, `orderExternal`, `accountId`, `vendorId`, `storeId`,
 `stationId`, `anonymousCustomerId`, `customerId`, `billingId`, `status`, `paymentStatus`, `channel`,
-`businessDayDate`, `createdAt`, `updatedAt`, `deletedAt`, `store`, `customer`, `billing`,
-`fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `kitchen`, `aggregator`,
-`fiscal`.
+`businessDayDate`, `createdAt`, `updatedAt`, `completedAt`, `deletedAt`, `store`, `customer`,
+`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `settlement`, `payments`,
+`metadata`, `kitchen`, `aggregator`, `fiscal`.
 
 <Note>
   `channel` es el id de catálogo de la orden (`orders.catalog_id`), expuesto bajo el nombre `channel`.
@@ -73,6 +73,98 @@ El consumidor decide qué campos devuelve cada orden, similar al projection de M
   `metadata`, `fiscal`) se devuelven en el formato de persistencia interno de Fire (por ejemplo, los
   montos de `totals` van a escala ×10000).
 </Note>
+
+## Progreso del cobro: `settlement` y `payments`
+
+Cuando una orden se cobra **después** de abrirse, `status` y `paymentStatus` solo te dicen si se
+cobró. Dicen `OPEN` y `PENDING` tanto para una orden que nadie intentó cobrar como para una a la que
+le rechazaron la tarjeta dos veces — y son situaciones muy distintas para quien está mirando.
+
+| la orden | `status` | `paymentStatus` | `settlement.status` |
+| --- | --- | --- | --- |
+| abierta, sin intentar nada | `OPEN` | `PENDING` | `pending` |
+| **una pieza se rechazó** | `OPEN` | `PENDING` | **`declined`** |
+| cobrada por completo | `COMPLETED` | `SUCCEEDED` | `settled` |
+
+Leé `settlement` para saber **si y cómo** se cobró, y `payments` para saber **con qué**.
+
+El cobro es todo o nada (ver [Confirmar pago](/es/api-reference/confirm-payment)), así que
+`paidSoFar` vale `0` o el total completo — nunca algo intermedio.
+
+<Warning>
+  Mientras la orden está abierta, `paymentMethods` es lo que el POS **declaró** al crearla — no lo que
+  se cobró. Se sobrescribe con las piezas reales recién cuando la orden salda. Sumarlo para calcular
+  el progreso da un número equivocado. Usá `settlement.paidSoFar`.
+</Warning>
+
+```json order.settlement (shape)
+{
+  "settlement": {
+    "status": "settled",
+    "origin": "ledger",
+    "paidSoFar": "359000",
+    "total": "359000",
+    "currencyCode": "BRL",
+    "tenderCount": 2,
+    "declinedCount": 1,
+    "amountMismatch": false,
+    "declaredMethods": ["IFOOD"]
+  }
+}
+```
+
+`status` es uno de `pending`, `declined`, `settled`. `paidSoFar` y `total` usan la misma escala
+×10000 que `totals` — arriba, 35,90 cobrados en dos piezas, después de un rechazo anterior.
+`tenderCount` cuenta solo las piezas aprobadas; las rechazadas van en `declinedCount`.
+
+`amountMismatch` es siempre `false`: un cobro que no suma el total se rechaza de entrada, así que una
+orden saldada siempre cuadra. El campo se mantiene por compatibilidad.
+
+`origin` te dice de dónde sale `paidSoFar`, y los dos no tienen el mismo respaldo: `ledger` significa
+que las piezas se contaron una por una a medida que llegaron; `intake` significa que la orden se creó
+declarándose pagada y Fire le creyó. `settlement` es `null` en las órdenes creadas antes de que
+existiera este campo.
+
+`declaredMethods` es con qué **dijo** la orden que se iba a pagar, al crearse. Comparalo con
+`paymentMethods` para ver si pagaron con lo que anunciaron: una orden creada como `IFOOD` y cobrada
+con `CREDIT` muestra `declaredMethods: ["IFOOD"]` y `paymentMethods` con `CREDIT`. Es el único lugar
+donde sobrevive el medio declarado, porque al saldar se pisa `paymentMethods` con las piezas reales.
+Solo viajan los códigos: los montos declarados vienen del POS en unidades (`"35.9"`) mientras que
+`paidSoFar` va ×10000, y mezclar las dos escalas en un mismo objeto se presta a errores.
+
+### `payments` — las piezas, una por una
+
+Los pedazos del cobro, del más viejo al más nuevo. Las piezas rechazadas se incluyen:
+`settlement.declinedCount` dice cuántas hubo, `payments` dice cuáles y por qué.
+
+```jsonc
+"payments": [
+  {
+    "status": "approved",           // solo las piezas aprobadas suman a paidSoFar
+    "amount": "200000",             // ×10000, la misma escala que totals
+    "currencyCode": "BRL",
+    "method": "CASH",               // una de las dos piezas de un cobro repartido
+    "transactionId": "POS-0001",    // la clave de idempotencia del POS
+    "occurredAt": "2026-07-30T16:20:04.000Z"
+  },
+  {
+    "status": "declined",
+    "amount": "159000",
+    "currencyCode": "BRL",
+    "method": "CREDIT",
+    "transactionId": "POS-0002",
+    "declineReason": "51",                      // código crudo del adquirente
+    "declineReasonCode": "INSUFFICIENT_FUNDS",  // ausente cuando no matcheó el catálogo
+    "declineGroup": "FUNDS",
+    "occurredAt": "2026-07-30T16:22:47.000Z"
+  }
+]
+```
+
+Una orden que nunca pasó por [Confirmar pago](/es/api-reference/confirm-payment) — una prepaga, por
+ejemplo — devuelve `payments: []`, nunca `null`.
+
+`completedAt` es el momento en que el cobro cerró la orden, y es `null` mientras sigue abierta.
 
 ## El bloque `fiscal` por país
 
@@ -96,8 +188,19 @@ Cuando una orden tiene un documento fiscal, el campo `fiscal` lleva su estado ac
 }
 ```
 
-`status` es uno de `processing`, `fiscal_graphic`, `authorized`, `cancelled`, `rejected`, `denied`,
-`error`. Cuando es negativo, también está presente `fiscal.error` (`{ code, message }`).
+`status` te dice dónde está la orden fiscalmente. Agrupalo por lo que podés hacer al respecto:
+
+| Grupo | Valores | Qué significa |
+|---|---|---|
+| **Sin documento** | `awaiting_payment`, `not_issued` | Nunca se emitió nada. `awaiting_payment` = la orden está abierta y sin pagar, así que todavía no corresponde emitir. `not_issued` = la orden se cerró sin haberse facturado nunca (cancelada antes del pago). |
+| **En vuelo** | `pending`, `processing`, `contingency`, `cancelling` | Hay una operación en curso y no se conoce su desenlace. No asumas éxito ni fracaso — esperá. `contingency` es un documento legalmente emitido pendiente de transmitir. |
+| **Resuelto** | `authorized`, `cancelled` | Terminal. Hay documento válido, o fue cancelado. |
+| **Fallido** | `rejected`, `denied`, `error` | No hay documento válido. `fiscal.error` (`{ code, message }`) también está presente. |
+| **Entrega** | `fiscal_graphic` | El proveedor está entregando el artefacto imprimible. No es aprobación ni estado terminal. |
+
+<Note>
+`awaiting_payment` y `not_issued` describen el estado fiscal de la **orden**, no de un documento — en ninguno de los dos casos hay documento. Existen porque `processing` significaba dos cosas incompatibles: "hay una emisión en vuelo" y "esta orden todavía no llegó a facturarse". Aparecen en órdenes abiertas y sin pagar, así que son más frecuentes junto con el pago diferido. **No** viajan en los eventos de orden; ahí `lastKnown.fiscal` reporta `null`.
+</Note>
 
 Los **campos comunes** de `metadata` (todos los países): `docType`, `docSubtype`, `providerDocId`,
 `pdfUrl`, `xmlUrl`, `emittedAt`, `cancelledAt`, `totalAmount`, `taxAmount`, `currencyCode`. Los
@@ -277,7 +380,7 @@ necesitás los datos de autorización de un documento que después se canceló: 
 {
   "success": false,
   "error": "VALIDATION_ERROR",
-  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, kitchen, aggregator, fiscal"
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, completedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, settlement, payments, metadata, kitchen, aggregator, fiscal"
 }
 ```
 

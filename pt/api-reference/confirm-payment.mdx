@@ -1,0 +1,433 @@
+---
+title: "Confirmar pagamento"
+api: "POST https://api.fire.rest/api/v1/fire/external/orders/{orderId}/confirm-payment"
+description: "Registra a cobrança de um pedido aberto e o liquida. Aceita vários meios de pagamento numa mesma cobrança, e também as tentativas recusadas."
+authMethod: "bearer"
+---
+
+Fecha o ciclo do **pagamento diferido**: o pedido nasceu aberto, a cozinha já trabalhou, e a
+cobrança chega aqui. O pedido passa a `COMPLETED` e o faturamento começa quando o valor aprovado
+atinge **exatamente** o total do pedido.
+
+<Note>
+  **Uma cobrança com várias peças, numa única chamada.** Se você dividir a conta entre dinheiro e
+  cartão, envie as duas peças **na mesma chamada**: as peças aprovadas devem somar exatamente o total
+  do pedido. Uma cobrança que não fecha a conta é rejeitada por inteiro e nada é registrado —
+  consolide os seus parciais antes de enviá-los.
+
+  Repetir é seguro e esperado: reenvie o envio **inteiro** e a idempotência por `transaction_id`
+  cuida do resto.
+</Note>
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `orders:write`. A key **deve ser vendor-scoped** — keys sem
+  `vendorId` são rejeitadas com `403`.
+</ParamField>
+
+## Path params
+
+<ParamField path="orderId" type="string" required>
+  Qualquer uma das três referências públicas do pedido:
+
+  | referência | o que é |
+  | --- | --- |
+  | `orders.id` | o UUID interno do Fire |
+  | `order_external` | o id que você atribuiu ao criar o pedido |
+  | `metadata.order_id` | cópia do id externo dentro do pedido |
+
+  É o mesmo conjunto aceito por [Obter pedido](/pt/api-reference/get-order) e
+  [Cancelar pedido](/pt/api-reference/cancel-order).
+</ParamField>
+
+## Corpo
+
+<ParamField body="payments" type="object[]" required>
+  Os meios com os quais você cobrou o pedido. Entre 1 e 20 peças. Cada objeto é guardado exatamente
+  como você enviou; abaixo estão apenas os campos que o Fire lê.
+</ParamField>
+
+<ParamField body="payments[].details.transaction_status" type="string" required>
+  Resultado da tentativa. Contam como **cobrado**: `APPROVED`, `AUTHORIZED`, `CAPTURED`, `PAID`,
+  `SUCCESS`, `SUCCEEDED` (sem diferenciar maiúsculas).
+
+  Qualquer outro valor é tratado como **recusa**, mesmo um que não reconheçamos. É deliberado:
+  faturar uma cobrança que não aconteceu não tem volta, enquanto deixar de liquidar uma que
+  aconteceu se resolve enviando de novo.
+</ParamField>
+
+<ParamField body="payments[].details.transaction_id" type="string" required>
+  Identificador da transação. **É a chave de idempotência**: reenviar o mesmo não cobra nem fatura
+  duas vezes. Se o seu meio não gerar um, o Fire usa `payments[].uid`.
+</ParamField>
+
+<ParamField body="payments[].details.total_bill" type="number" required>
+  Valor desta peça, decimal. Deve ser maior que zero. Se não vier, o Fire usa o `payments[].total`
+  do nível superior.
+</ParamField>
+
+<ParamField body="payments[].details.currency_code" type="string" required>
+  Moeda da peça. Todas as peças **aprovadas** devem compartilhar a mesma — incluindo as de chamadas
+  anteriores do mesmo pedido. Se não vier, o Fire usa o `payments[].currency_code` do nível superior.
+</ParamField>
+
+<ParamField body="payments[].details.decline_reason" type="string">
+  Motivo da recusa, com um código de [Motivos de recusa](/pt/api-reference/payment-decline-reasons).
+  Só se aplica quando `transaction_status` não é aprovado.
+
+  O código do seu adquirente (`51`, `do_not_honor`) precisa ser traduzido **do seu lado** para o do
+  catálogo: o Fire não guarda os códigos de cada provedor. Se você enviar um que não existe, ele é
+  aceito e guardado, mas volta com `resolvedTo: null` e fica fora das suas métricas agrupadas.
+</ParamField>
+
+<ParamField body="payments[].method" type="string">
+  Meio de pagamento (`CASH`, `CREDIT`, `DEBIT`, `PIX`…). Usado para o faturamento e as métricas.
+</ParamField>
+
+## Requisição
+
+<RequestExample>
+```http
+POST https://api.fire.rest/api/v1/fire/external/orders/ORD-77/confirm-payment
+x-api-key: <sua_api_key>
+Content-Type: application/json
+
+{
+  "payments": [
+    {
+      "uid": "9b1c...",
+      "total": "20",
+      "method": "CASH",
+      "currency_code": "BRL",
+      "details": {
+        "total_bill": 20,
+        "currency_code": "BRL",
+        "transaction_id": "BR-K000-POS-38-1785258648480",
+        "transaction_status": "APPROVED",
+        "transaction_date": { "date": "2026-07-28T17:10:48.000Z" }
+      }
+    },
+    {
+      "uid": "7d3a...",
+      "total": "15.90",
+      "method": "CREDIT",
+      "currency_code": "BRL",
+      "details": {
+        "total_bill": 15.90,
+        "currency_code": "BRL",
+        "transaction_id": "BR-K000-POS-38-1785258648999",
+        "transaction_status": "APPROVED",
+        "transaction_date": { "date": "2026-07-28T17:11:02.000Z" }
+      }
+    }
+  ]
+}
+```
+</RequestExample>
+
+## O que o Fire faz com isso
+
+Só as peças **aprovadas** somam e liquidam. As recusadas são registradas para suas métricas; nunca
+somam e nunca bloqueiam a cobrança.
+
+| situação | `outcome` | liquida? |
+| --- | --- | --- |
+| a soma das aprovadas **é igual** ao total | `settled` | sim — vira `COMPLETED` e o faturamento começa |
+| nenhuma peça aprovada, só recusas | `declined` | não — é registrado e o pedido continua aberto |
+| nenhuma peça nova (você já as enviou) | `duplicate` | não — repetição idempotente |
+| a soma das aprovadas **não é igual** ao total | — | **`400`** — nada é registrado |
+| uma peça **nova** num pedido **fechado** (liquidado, cancelado ou forçado) | — | **`409`** — nada é registrado |
+
+<Warning>
+  **Tudo ou nada.** Uma cobrança cujas peças aprovadas não somam o total do pedido é rejeitada por
+  inteiro — nem sequer uma recusa que viajava no mesmo envio é guardada.
+
+  O motivo não é contábil, é operacional: dinheiro aceito num pedido que não liquida deixa o pedido
+  com dinheiro dentro e sem saída. O Fire não processa devoluções e não existe forma de você nos
+  avisar que devolveu. Consolidar as cobranças parciais é tarefa sua — e você é o único que pode
+  devolver, então esse estado é seu de qualquer jeito.
+
+  Cobrar **mais** que o total é rejeitado por outro motivo: faturaria um valor que não foi o cobrado,
+  e uma nota emitida não se desfaz. As duas mensagens trazem os dois valores para você corrigir e
+  reenviar.
+
+  As recusas são a exceção: um envio **sem** nenhuma peça aprovada é registrado e o pedido continua
+  aberto. Sem dinheiro não há estado a resolver, e é ali que vivem as suas métricas de recusa.
+</Warning>
+
+## O que aconteceu com cada recusa
+
+Cada peça recusada volta em `declines[]`, com o que você enviou e se encontramos no catálogo.
+
+```jsonc
+"declines": [
+  { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "exceedsOrderTotal": false },
+  { "sent": "51",                 "resolvedTo": null,                 "group": null,    "exceedsOrderTotal": true }
+]
+```
+
+`exceedsOrderTotal: true` significa que o valor que você tentou cobrar **supera o total do pedido**.
+Não exigimos que cada peça seja igual ao total —numa cobrança dividida, $20 sobre $35,90 é legítimo—
+mas superá-lo nunca é: quase sempre significa que se está cobrando outro pedido. A recusa é o seu
+aviso de graça, porque se a próxima tentativa for aprovada liquidaria um valor que não corresponde.
+
+`resolvedTo: null` significa que aquele código **não existe no catálogo** — no exemplo, foi enviado o
+código cru do adquirente em vez do do Fire. A recusa foi registrada mesmo assim e o valor ficou
+guardado, mas não aparece em nada agrupado por motivo.
+
+<Warning>
+  Confira este bloco na primeira integração. Um código mal traduzido não quebra nada: a cobrança
+  funciona, a resposta é `200`, e as suas recusas entram sem classificação. Você descobriria meses
+  depois com o painel de motivos vazio.
+</Warning>
+
+## Um pedido fechado não aceita mais nada
+
+Um pedido recebe cobranças **enquanto está aberto**. Uma vez fechado está fechado, não importa como
+chegou lá. Uma peça que ele nunca viu é **rejeitada** e nada é registrado — aprovada ou recusada, dá
+no mesmo.
+
+O código de erro informa *por que* está fechado, e os dois pedem ações diferentes:
+
+| código | o pedido | o que significa para você |
+| --- | --- | --- |
+| `ORDER_ALREADY_SETTLED` | já foi cobrado por completo | o dinheiro entrou. Se você cobrou de novo, é preciso devolver |
+| `ORDER_NOT_OPEN` | fechou sem ser cobrado (cancelado, forçado) | esse dinheiro não corresponde a este pedido |
+
+O que separa uma rejeição de uma repetição é o `transaction_id`, não o estado do pedido:
+
+| você envia | o que é | resposta |
+| --- | --- | --- |
+| um `transaction_id` que o Fire já tem | uma repetição após um timeout de rede | `200`, `outcome: duplicate` |
+| um `transaction_id` que o Fire nunca viu | um aviso sobre um pedido fechado | `409` |
+
+<Warning>
+  Uma repetição nunca é rejeitada, de propósito. Você cobrou uma vez e a nossa resposta não chegou até
+  você; responder com um erro ali empurraria o operador a passar o cartão de novo — a cobrança dupla
+  que estamos tentando evitar. Envie o mesmo `transaction_id` e você recebe de volta o resultado
+  original.
+</Warning>
+
+## Quando a cobrança quita
+
+Quitar é o que completa o pedido, então é aí que o Fire emite
+[`order.completed`](/pt/events/order-completed) — o pedido nasceu `OPEN` e só agora
+terminou. A resposta informa isso como `flowsTriggered`.
+
+`flowsTriggered: 0` **não** é um erro de cobrança. Significa uma de três coisas:
+
+| Caso | Por quê |
+|---|---|
+| A cobrança não quitou | O pedido continua aberto; nada foi completado. |
+| `outcome: "duplicate"` | O evento já saiu na chamada original. |
+| A enfileiração falhou | O pagamento fica registrado de todo jeito. O incidente fica do lado do Fire para um operador reprocessar. |
+
+Essa última linha é deliberada. Se o Fire respondesse com erro porque não conseguiu
+enfileirar um evento, você tentaria de novo uma cobrança que já entrou. O dinheiro
+manda sobre o aviso.
+
+<Note>
+Um pedido com pagamento diferido já emitiu seu documento fiscal ao abrir, e passa de
+novo pela etapa fiscal em `order.completed`. O Fire detecta o documento existente e
+pula a segunda emissão — você não recebe duas notas.
+</Note>
+
+## Idempotência
+
+Cada peça é identificada pelo seu `transaction_id` dentro do pedido. Pode repetir sem medo:
+
+- **Reenviar a cobrança completa** → `duplicate`. Nada é liquidado nem faturado de novo.
+- **Reenviar após um timeout** → reenvie o envio **inteiro**. Uma cobrança incompleta nunca foi
+  registrada, e qualquer peça que tenha entrado é ignorada pelo seu `transaction_id`.
+
+## Validações
+
+Todas retornam `400`, salvo indicação em contrário. Cada rejeição traz um **`code`** além da mensagem:
+ramifique pelo código, não pelo texto — a mensagem é escrita para ser lida e pode ser reescrita, o
+código é contrato.
+
+| regra | código |
+| --- | --- |
+| `payments` com ao menos uma peça | `400` |
+| no máximo 20 peças | `400` |
+| `details.transaction_status` presente | `400` |
+| `transaction_id` ou `uid` presente | `400` |
+| `transaction_id` sem repetição no mesmo envio | `400` |
+| valor maior que zero em cada peça | `400` |
+| uma única moeda entre as peças aprovadas | `400 MIXED_CURRENCIES` |
+| a soma das aprovadas é exatamente igual ao total do pedido (tudo ou nada) | `400 INCOMPLETE_CHARGE` |
+| a soma das aprovadas não supera o total do pedido | `400 AMOUNT_EXCEEDS_TOTAL` |
+| o total do pedido pode ser resolvido na moeda das peças | `400 TOTAL_NOT_RESOLVABLE` |
+| API key válida | `401` |
+| scope `orders:write` e key vendor-scoped | `403` |
+| o pedido existe dentro do seu vendor | `404` |
+| a referência corresponde a mais de um pedido | `409 AMBIGUOUS_ORDER_REFERENCE` |
+| uma peça nova num pedido já liquidado | `409 ORDER_ALREADY_SETTLED` |
+| uma peça nova num pedido fechado sem ter sido cobrado | `409 ORDER_NOT_OPEN` |
+
+Campos que o Fire não conhece **são aceitos e guardados**: você pode enviar seu objeto de pagamento
+completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, porque não soma.
+
+## Respostas
+
+<ResponseExample>
+```json 200 — liquidado
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "settled",
+    "settled": true,
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "completedAt": "2026-07-28T17:11:02.000Z",
+    "tenderCount": 2,
+    "declinedCount": 0,
+    "amountMismatch": false,
+    "declines": [],
+    "flowsTriggered": 1
+  }
+}
+```
+
+```json 200 — recusado, o pedido continua aberto
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "declined",
+    "settled": false,
+    "status": "OPEN",
+    "paymentStatus": "PENDING",
+    "completedAt": null,
+    "tenderCount": 0,
+    "declinedCount": 2,
+    "amountMismatch": false,
+    "declines": [
+      { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "exceedsOrderTotal": false },
+      { "sent": "51", "resolvedTo": null, "group": null, "exceedsOrderTotal": true }
+    ],
+    "flowsTriggered": 0
+  }
+}
+```
+
+```json 200 — repetição da mesma cobrança
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "duplicate",
+    "settled": false,
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "completedAt": "2026-07-28T17:11:02.000Z",
+    "tenderCount": 0,
+    "declinedCount": 0,
+    "amountMismatch": false,
+    "flowsTriggered": 0
+  }
+}
+```
+
+```json 400 — a cobrança não atinge o total
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "code": "INCOMPLETE_CHARGE",
+  "message": "Approved tenders total 200000 does not reach the order total 359000 — send the complete charge in one call"
+}
+```
+
+```json 400 — você cobrou mais que o total
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "code": "AMOUNT_EXCEEDS_TOTAL",
+  "message": "Approved tenders total 500000 exceeds the order total 359000"
+}
+```
+
+```json 409 — o pedido já estava liquidado
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_ALREADY_SETTLED",
+  "message": "Order is already settled and does not accept new payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "completedAt": "2026-07-30T16:24:11.802Z"
+  }
+}
+```
+
+```json 409 — o pedido está fechado (cancelado)
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_NOT_OPEN",
+  "message": "Order is closed and does not accept payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "orderStatus": "CANCELLED",
+    "completedAt": null
+  }
+}
+```
+
+```json 400 — validação
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "code": "custom",
+      "path": ["payments", 1],
+      "message": "Duplicate transaction id \"BR-K000-POS-38-1785258648480\" within the same payment batch"
+    }
+  ]
+}
+```
+
+```json 403 — key sem vendor
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "Vendor-scoped API key required (accountId binding missing)"
+}
+```
+
+```json 404 — o pedido não existe no seu vendor
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "InjectedOrder not found with ID ORD-77"
+}
+```
+
+```json 409 — referência ambígua
+{
+  "success": false,
+  "error": "CONFLICT",
+  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate"
+}
+```
+</ResponseExample>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Motivos de recusa" icon="circle-xmark" href="/pt/api-reference/payment-decline-reasons">
+    Catálogo agrupado para classificar as tentativas recusadas.
+  </Card>
+  <Card title="Obter pedido" icon="receipt" href="/pt/api-reference/get-order">
+    Consulte o status e o total antes de cobrar.
+  </Card>
+</CardGroup>
