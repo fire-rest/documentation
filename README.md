@@ -65,10 +65,12 @@ superior o desde el formulario al inicio de `*/changelog.mdx`. El alta, el captc
 doble opt-in y la baja los gestiona [Buttondown](https://buttondown.com); este
 repositorio no almacena ningún correo.
 
-El formulario vive en un único snippet,
-[`snippets/changelog-subscribe.mdx`](snippets/changelog-subscribe.mdx): solo el marcado.
-Cada changelog lo importa y le pasa sus textos por props, así los tres idiomas comparten
-una sola URL de lista.
+El formulario está escrito como JSX plano dentro de cada `*/changelog.mdx`, arriba de la
+primera entrada. Se intentó factorizarlo a un snippet con props, pero el MDX de Mintlify
+no renderizaba el resto de la página: cualquier contenido debajo del componente
+importado desaparecía. Repetir el marcado en tres archivos es el precio de que funcione.
+
+Al cambiar la URL de la lista hay que tocar los tres, más `docs.json`.
 
 Cuando una entrada nueva llega a `main`, el workflow
 [`changelog-newsletter.yml`](.github/workflows/changelog-newsletter.yml) toma la
@@ -93,11 +95,9 @@ En **Settings** del repositorio en GitHub:
 | Secret | `BUTTONDOWN_API_KEY` | Clave de API de Buttondown (Settings → Programming) |
 | Variable | `DOCS_BASE_URL` | URL pública de la doc, p. ej. `https://docs.fire.rest` |
 
-Además hay que reemplazar el marcador `fire-docs` por el usuario real de Buttondown en
-los **dos** únicos lugares donde aparece:
-
-- `snippets/changelog-subscribe.mdx` → constante `LIST_URL` (destino del formulario)
-- `docs.json` → link **Subscribe to updates** de la barra superior
+La lista en Buttondown es `fire-docs`, y ese nombre aparece en cuatro lugares:
+`en/changelog.mdx`, `es/changelog.mdx`, `pt/changelog.mdx` (el `action` del formulario)
+y `docs.json` (el link **Subscribe to updates** de la barra superior).
 
 ### Probar sin enviar
 
