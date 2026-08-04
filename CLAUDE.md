@@ -77,9 +77,10 @@ Al publicar una entrada en `*/changelog.mdx` hay un envío de email atrás
 (`.github/workflows/changelog-newsletter.yml`). Reglas que el script asume:
 
 - **La entrada nueva va arriba de todo, con `## ` de primer nivel.** El script toma
-  desde el primer `## ` hasta el siguiente; ese título es el asunto del correo.
-- **`en/changelog.mdx` es la fuente de disparo.** ES y PT no disparan nada. Escribí
-  siempre la entrada en inglés en el mismo commit que las traducciones.
+  desde el primer `## ` hasta el siguiente; el título en inglés es el asunto del correo.
+- **Un solo correo lleva los tres idiomas.** `en/changelog.mdx` decide si sale; ES y PT
+  se suman solo si su propia entrada también cambió en ese commit. Escribí las tres
+  versiones juntas o las traducciones se pierden ese envío.
 - **Cambiar el título `## ` de una entrada ya publicada reenvía el correo.** Para
   corregir una errata, editá el cuerpo, nunca el título.
 - **Nada de contenido nuevo por encima del primer `## `** — ahí vive el formulario de

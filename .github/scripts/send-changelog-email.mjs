@@ -1,11 +1,17 @@
-// Sends the newest changelog entry to the Buttondown mailing list.
+// Sends the newest changelog entry to the Buttondown mailing list, in all three
+// languages, as a single email.
 //
-// Reads the top `## ` section of en/changelog.mdx, converts the MDX to plain
-// Markdown, and creates the email with status `about_to_send` — Buttondown
-// delivers it to every confirmed subscriber within a few minutes.
+// One email, not three. Segmenting by language would mean tagging subscribers,
+// which is a paid Buttondown add-on and would tie the list to one provider's
+// feature set. Everybody gets every language and reads the one they want.
 //
-// Guard: if the newest heading is identical to the one in the previous commit,
-// nothing is sent. That way editing an existing entry (a typo, a broken link)
+// English drives the send: the run only does anything when the top `## ` heading
+// of en/changelog.mdx is new. Spanish and Portuguese ride along, and each is
+// included only if its own top heading also changed in this commit — that way a
+// stale translation is never passed off as the new entry.
+//
+// Guard: if the newest English heading is identical to the one in the previous
+// commit, nothing is sent. Editing an existing entry (a typo, a broken link)
 // does not re-blast the list; only a brand new `## ` heading does.
 //
 // Env:
@@ -20,9 +26,15 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
-const CHANGELOG = 'en/changelog.mdx'
 const API = 'https://api.buttondown.com/v1/emails'
 const API_VERSION = '2026-04-01'
+
+// English first — it is the one that decides whether the email goes out at all.
+const LANGUAGES = [
+  { code: 'en', file: 'en/changelog.mdx', label: 'English', readMore: 'Read the full changelog' },
+  { code: 'es', file: 'es/changelog.mdx', label: 'Español', readMore: 'Ver el registro completo' },
+  { code: 'pt', file: 'pt/changelog.mdx', label: 'Português', readMore: 'Ver o registro completo' },
+]
 
 const apiKey = process.env.BUTTONDOWN_API_KEY
 const baseUrl = (process.env.DOCS_BASE_URL || '').replace(/\/$/, '')
@@ -45,10 +57,11 @@ function latestEntry(source) {
 }
 
 /**
- * First line of an entry, minus the `## `, used as the email subject.
+ * First line of an entry, minus the `## `.
  *
- * Markdown is stripped: a subject line is plain text in every mail client, so
- * `order.opened` would arrive with the backticks showing.
+ * Markdown is stripped because this becomes the email subject, and a subject
+ * line is plain text in every mail client — `order.opened` would otherwise
+ * arrive with the backticks showing.
  */
 function heading(entry) {
   if (!entry) return null
@@ -61,12 +74,15 @@ function heading(entry) {
     .trim()
 }
 
-/** The same file as it was one commit ago, or null if it did not exist. */
-function previousVersion() {
+/** Everything below the `## ` line. */
+function withoutHeading(entry) {
+  return entry.split('\n').slice(1).join('\n').trim()
+}
+
+/** A file as it was one commit ago, or null if it did not exist. */
+function previousVersion(file) {
   try {
-    return execFileSync('git', ['show', `HEAD^:${CHANGELOG}`], {
-      encoding: 'utf8',
-    })
+    return execFileSync('git', ['show', `HEAD^:${file}`], { encoding: 'utf8' })
   } catch {
     return null
   }
@@ -95,31 +111,65 @@ function toMarkdown(entry) {
     .trim()
 }
 
-const current = latestEntry(readFileSync(CHANGELOG, 'utf8'))
-if (!current) fail(`No \`## \` entry found in ${CHANGELOG}.`)
+/** Reads one language and works out whether its top entry is new. */
+function readLanguage(language) {
+  const entry = latestEntry(readFileSync(language.file, 'utf8'))
+  if (!entry) return null
 
-const previousFile = previousVersion()
-const previousHeading = previousFile ? heading(latestEntry(previousFile)) : null
-const subject = heading(current)
+  const previousFile = previousVersion(language.file)
+  const previousHeading = previousFile ? heading(latestEntry(previousFile)) : null
+  const currentHeading = heading(entry)
 
-const isEdit = previousHeading === subject
+  return {
+    ...language,
+    heading: currentHeading,
+    markdown: toMarkdown(withoutHeading(entry)),
+    isNew: previousHeading !== currentHeading,
+  }
+}
+
+const [english, ...translations] = LANGUAGES.map(readLanguage)
+
+if (!english) fail('No `## ` entry found in en/changelog.mdx.')
+
+const subject = english.heading
 
 // The guard only protects the automatic path. A preview or a draft is asked for
 // by hand, and by then the newest entry always looks like an edit — it is
 // already on main — so the guard would make both impossible to ever use.
-if (isEdit && !dryRun && !draftOnly) {
+if (!english.isNew && !dryRun && !draftOnly) {
   console.log(`• Newest entry is still "${subject}" — edit only, nothing sent.`)
   process.exit(0)
 }
 
-// Drop the `## ` line: Buttondown already renders the subject as the email's
-// heading, so keeping it here prints the same title twice.
-const withoutHeading = current.split('\n').slice(1).join('\n').trim()
+// A translation that did not move in this commit is last month's entry, so
+// including it would put the wrong text under a "Español" heading. Skip it and
+// say so out loud — a silently monolingual email looks like a bug.
+//
+// Manual runs keep every language, for the same reason the English guard is
+// relaxed there: by the time an entry is on main nothing looks new, and a
+// preview that drops two thirds of the email is useless for checking it.
+const manualRun = dryRun || draftOnly
 
-const body = `${toMarkdown(withoutHeading)}\n\n---\n\n[Read the full changelog](${baseUrl}/en/changelog)`
+const included = translations.filter((language) => {
+  if (language.isNew || manualRun) return true
+  console.log(`• ${language.label} has no new entry in this commit — leaving it out.`)
+  return false
+})
+
+const sections = [
+  english.markdown,
+  ...included.map((l) => `---\n\n## ${l.label}\n\n### ${l.heading}\n\n${l.markdown}`),
+]
+
+const readMoreLinks = [english, ...included]
+  .map((l) => `[${l.readMore}](${baseUrl}/${l.code}/changelog)`)
+  .join(' · ')
+
+const body = `${sections.join('\n\n')}\n\n---\n\n${readMoreLinks}`
 
 if (dryRun) {
-  if (isEdit) {
+  if (!english.isNew) {
     console.log('• Preview only — a real run would send nothing (entry unchanged).\n')
   }
   console.log(`Subject: ${subject}\n\n${body}`)
@@ -151,8 +201,10 @@ if (!response.ok) {
   fail(`Buttondown returned ${response.status}: ${await response.text()}`)
 }
 
+const languages = [english, ...included].map((l) => l.code.toUpperCase()).join(' / ')
+
 console.log(
   draftOnly
-    ? `✓ Created "${subject}" as a draft — nothing was sent. Review it at https://buttondown.com/emails`
-    : `✓ Queued "${subject}" for delivery.`,
+    ? `✓ Created "${subject}" (${languages}) as a draft — nothing was sent. Review it at https://buttondown.com/emails`
+    : `✓ Queued "${subject}" (${languages}) for delivery.`,
 )

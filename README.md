@@ -90,11 +90,19 @@ iframe tiene que seguir siendo único por página.
 
 Cuando una entrada nueva llega a `main`, el workflow
 [`changelog-newsletter.yml`](.github/workflows/changelog-newsletter.yml) toma la
-sección `##` más reciente de `en/changelog.mdx` y la envía a la lista.
+sección `##` más reciente de **los tres** changelogs y arma **un solo correo** con los
+tres idiomas apilados: inglés arriba, después Español y Português.
 
-**EN es la fuente de disparo.** El workflow solo reacciona a cambios en
-`en/changelog.mdx`; publicar primero en ES o PT no envía nada. Escribí siempre la
-entrada en inglés en el mismo commit.
+Es un correo y no tres a propósito. Segmentar por idioma exige etiquetar suscriptores,
+que en Buttondown es un add-on pago y ataría la lista a una función de un proveedor
+puntual. Así todos reciben todo y leen el idioma que quieren.
+
+**EN decide si el correo sale.** Solo una entrada nueva en `en/changelog.mdx` dispara el
+envío. Las traducciones viajan de acompañantes, y cada una entra **solo si su propia
+entrada también cambió en ese commit** — una traducción vieja nunca se publica como si
+fuera la nueva. Cuando alguna queda afuera, el log lo dice.
+
+En la práctica: escribí las tres versiones en el mismo commit y salen las tres.
 
 **Solo se envía si el título `##` más nuevo cambió.** Editar una entrada ya publicada
 (una errata, un enlace roto) no vuelve a enviar el correo.
