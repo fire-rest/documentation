@@ -65,21 +65,28 @@ superior o desde el formulario al inicio de `*/changelog.mdx`. El alta, el captc
 doble opt-in y la baja los gestiona [Buttondown](https://buttondown.com); este
 repositorio no almacena ningún correo.
 
-El formulario es el de Buttondown, embebido en un `<iframe>` (`?as_embed=true`) dentro de
-cada `*/changelog.mdx`, arriba de la primera entrada. **No se estiliza como el resto de la
-página a propósito.**
+El formulario está escrito a mano en cada `*/changelog.mdx`, arriba de la primera
+entrada, y sigue el tema de la doc en claro y oscuro.
 
-La razón: Buttondown bloquea el AJAX cross-origin, así que un formulario propio solo
-puede enviarse llevándose al lector a buttondown.com. El iframe lo deja en la doc y
-además hereda el captcha (Cloudflare Turnstile) y el firewall de Buttondown, que un
-formulario a mano se saltearía. El captcha solo aparece cuando el firewall sospecha.
+**Envía a un `<iframe>` oculto en vez de navegar**, así el lector nunca sale de la
+página. Es la única forma: Buttondown bloquea el AJAX cross-origin, y su API key no
+puede vivir en el navegador —cualquiera la leería del código fuente y se llevaría la
+lista—, así que un `fetch` directo a la API queda descartado.
 
-El color del botón se cambia en Buttondown, en **Settings → Design** — no desde este
-repositorio.
+Dos consecuencias que conviene tener presentes:
+
+- **La confirmación es optimista.** La respuesta cae en un iframe de otro origen que no
+  podemos leer, así que el mensaje dice "revisá tu correo", nunca "ya estás suscrito".
+- **No hay captcha.** El Turnstile de Buttondown vive en la página de ellos, y la
+  evitamos. Siguen activos el doble opt-in, el firewall (scoring de IP y correo) y el
+  attack mode. Si algún día aparece spam, la salida es un proxy propio —un Worker de
+  Cloudflare de unas 30 líneas— que guarde la key del lado del servidor: ahí sí se puede
+  usar la API de verdad y sumar captcha verificado, sin rehacer el diseño.
 
 Tampoco se puede factorizar a un snippet: se intentó con un componente con props y el
 MDX de Mintlify dejaba de renderizar todo lo que viniera debajo. Se repite en los tres
-archivos, y al cambiar la lista hay que tocar los tres más `docs.json`.
+archivos, y al cambiar la lista hay que tocar los tres más `docs.json`. El `name` del
+iframe tiene que seguir siendo único por página.
 
 Cuando una entrada nueva llega a `main`, el workflow
 [`changelog-newsletter.yml`](.github/workflows/changelog-newsletter.yml) toma la
