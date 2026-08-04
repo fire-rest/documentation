@@ -72,6 +72,11 @@ Reglas:
 - product.updated y product.availability_changed usan `targets[]` — un solo evento cubre todas las tiendas afectadas
 - stores.sync y menus.sync: batches de hasta 50 items, con batchIndex/batchTotal
 
+## Changelog — usá la skill `changelog-entry`
+Antes de escribir o editar una entrada en `*/changelog.mdx`, leé
+`.claude/skills/changelog-entry/SKILL.md`: formato, tono, cuándo advertir y las reglas
+del correo. Lo de abajo es el resumen mínimo.
+
 ## Changelog — el formato dispara correos, no lo rompas
 Al publicar una entrada en `*/changelog.mdx` hay un envío de email atrás
 (`.github/workflows/changelog-newsletter.yml`). Reglas que el script asume:
