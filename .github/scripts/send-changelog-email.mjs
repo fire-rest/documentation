@@ -13,6 +13,9 @@
 //   DOCS_BASE_URL       required, e.g. https://docs.fire.rest — used to turn
 //                       /en/... links into absolute ones
 //   DRY_RUN             optional, "true" prints the email instead of sending
+//   DRAFT_ONLY          optional, "true" creates the email in Buttondown but
+//                       leaves it unsent, for a dress rehearsal against the real
+//                       newsletter without reaching a single subscriber
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
@@ -24,6 +27,7 @@ const API_VERSION = '2026-04-01'
 const apiKey = process.env.BUTTONDOWN_API_KEY
 const baseUrl = (process.env.DOCS_BASE_URL || '').replace(/\/$/, '')
 const dryRun = process.env.DRY_RUN === 'true'
+const draftOnly = process.env.DRAFT_ONLY === 'true'
 
 if (!apiKey && !dryRun) fail('BUTTONDOWN_API_KEY is not set.')
 if (!baseUrl) fail('DOCS_BASE_URL is not set.')
@@ -40,9 +44,21 @@ function latestEntry(source) {
   return match ? match[0].trim() : null
 }
 
-/** First line of an entry, minus the `## `, used as the email subject. */
+/**
+ * First line of an entry, minus the `## `, used as the email subject.
+ *
+ * Markdown is stripped: a subject line is plain text in every mail client, so
+ * `order.opened` would arrive with the backticks showing.
+ */
 function heading(entry) {
-  return entry ? entry.split('\n')[0].replace(/^##\s*/, '').trim() : null
+  if (!entry) return null
+  return entry
+    .split('\n')[0]
+    .replace(/^##\s*/, '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .trim()
 }
 
 /** The same file as it was one commit ago, or null if it did not exist. */
@@ -88,10 +104,10 @@ const subject = heading(current)
 
 const isEdit = previousHeading === subject
 
-// A dry run still renders the email even for an edit — otherwise the newest
-// entry could never be previewed, since by the time it is on main it always
-// looks like an edit to the next run.
-if (isEdit && !dryRun) {
+// The guard only protects the automatic path. A preview or a draft is asked for
+// by hand, and by then the newest entry always looks like an edit — it is
+// already on main — so the guard would make both impossible to ever use.
+if (isEdit && !dryRun && !draftOnly) {
   console.log(`• Newest entry is still "${subject}" — edit only, nothing sent.`)
   process.exit(0)
 }
@@ -106,21 +122,33 @@ if (dryRun) {
   process.exit(0)
 }
 
+const headers = {
+  Authorization: `Token ${apiKey}`,
+  'Content-Type': 'application/json',
+  'X-API-Version': API_VERSION,
+}
+
+// Buttondown requires this confirmation to create an email that sends
+// immediately. A draft needs no such guard — it goes nowhere until a human
+// presses send in the dashboard.
+if (!draftOnly) headers['X-Buttondown-Live-Dangerously'] = 'true'
+
 const response = await fetch(API, {
   method: 'POST',
-  headers: {
-    Authorization: `Token ${apiKey}`,
-    'Content-Type': 'application/json',
-    'X-API-Version': API_VERSION,
-    // Buttondown requires this confirmation to create an email that sends
-    // immediately rather than as a draft.
-    'X-Buttondown-Live-Dangerously': 'true',
-  },
-  body: JSON.stringify({ subject, body, status: 'about_to_send' }),
+  headers,
+  body: JSON.stringify({
+    subject,
+    body,
+    status: draftOnly ? 'draft' : 'about_to_send',
+  }),
 })
 
 if (!response.ok) {
   fail(`Buttondown returned ${response.status}: ${await response.text()}`)
 }
 
-console.log(`✓ Queued "${subject}" for delivery.`)
+console.log(
+  draftOnly
+    ? `✓ Created "${subject}" as a draft — nothing was sent. Review it at https://buttondown.com/emails`
+    : `✓ Queued "${subject}" for delivery.`,
+)
