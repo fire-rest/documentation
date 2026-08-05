@@ -3,6 +3,115 @@ title: Changelog
 description: Recent documentation and API reference updates.
 ---
 
+{/*
+  BRIDGE — a link, not a form. Temporary, and deliberate.
+
+  Mintlify serves `form-action 'self'` in production, so a form posting to
+  buttondown.com is blocked by the browser. It failed silently: the page said
+  "check your inbox" and no subscriber was ever created. Local `mint dev` does
+  not send that header, which is why it looked fine until it shipped.
+
+  Plain navigation is not restricted by that policy, so this link works. The
+  cost is the reader leaving the page, and no inline email field — Buttondown
+  does not accept a prefilled address, so keeping the field would only make
+  people type it twice.
+
+  This goes away once the Cloudflare Worker exists: the doc will `fetch` our own
+  endpoint, which the CSP does allow (it sets no connect-src), and the inline
+  field comes back for good.
+
+  Repeated in es/ and pt/ with translated copy.
+*/}
+
+<div style={{border: '1px solid rgb(128 128 128 / 0.25)', borderRadius: '0.75rem', padding: '1.25rem', marginBottom: '2.5rem'}}>
+  <div style={{fontWeight: 600, fontSize: '1rem'}}>Subscribe to updates</div>
+  <div style={{fontSize: '0.875rem', opacity: 0.8, marginTop: '0.25rem'}}>Get an email whenever a new entry lands here — new events, breaking changes and API reference updates. One click to unsubscribe.</div>
+  <a href="https://buttondown.com/fire-docs" target="_blank" rel="noopener" style={{display: 'inline-block', marginTop: '0.875rem', padding: '0.5rem 1.25rem', borderRadius: '0.5rem', background: '#E6293D', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none'}}>Subscribe</a>
+</div>
+
+## 4 August 2026 — New `assignedAt` field on menu and product events
+
+`menu.updated v2` and `product.updated` now carry `assignedAt` on every category and product.
+
+- **`categories[n].assignedAt`** and **`products[n].additionalInfo.assignedAt`** — the date the entity joined the menu, ISO 8601 UTC, no milliseconds. It's **membership** data, not edit data: untouched by price, name, image, or order edits; gets a **new** value when an item is removed from the menu and re-added. Full edge cases in [`menu.updated` → Menu assignment date](/en/webhook-reference/menu-updated-v2#menu-assignment-date). Not carried by [`product.price_updated`](/en/webhook-reference/product-price-updated) or [`product.availability_changed`](/en/webhook-reference/product-availability-changed) — they only ship their delta.
+- **[`menu.updated`](/en/webhook-reference/menu-updated-v2) / [`product.updated`](/en/webhook-reference/product-updated) use `taxInfo`** (not `taxesInfo`), **`type: PRODUCTO`** for standard items, and **`modifierGroups[n].type: RADIO`** for single-select groups (`CHECKBOX` for multiple).
+- **`storeId` is the store's internal UUID** (`stores.id`), not the `store_number` — same convention across `menu.updated`, `product.updated`, `product.price_updated`, and `product.availability_changed`.
+- **`product.price_updated`'s `priceInfo` doesn't share a shape with the catalog `priceInfo`** in `menu.updated` / `product.updated` — it's the sale price just saved with its discount, not catalog pricing.
+
+<Note>
+`channelReferenceName` means the **fulfillment** (`delivery`, `pickup`) in `menu.updated`'s `list.stores[n].channels[n]`, but the **sales channel** (`iFood`, `Rappi`) in the same field name on `product.updated`, `product.price_updated`, and `product.availability_changed`. Same key, two different things depending on the event.
+</Note>
+
+Updated in **EN / ES / PT**.
+
+## 4 August 2026 — Subscribe to the changelog by email
+
+You can now get an email whenever a new entry lands on this page. Subscribe from the
+button at the top — Buttondown handles the list, so no address is ever stored in the
+docs, and one click unsubscribes you from any email.
+
+- **One email per entry, in all three languages** — English, Español and Português
+  arrive stacked in the same message, so there is nothing to pick.
+- **Only a new entry sends** — correcting a typo in something already published never
+  re-sends it.
+
+Updated in **EN / ES / PT**.
+
+## 2 August 2026 — `order.opened` and the deferred-payment blocks
+
+Each event advances on **its own version line** — there is no global contract number:
+
+| Event | Version |
+|---|---|
+| [`order.opened`](/en/events/order-opened) | **v1** (new event, first version) |
+| [`order.completed`](/en/events/order-completed) | v1 → **v1.1** |
+| [`order.invoiced`](/en/events/order-invoiced) | v1 → **v1.1** |
+| [`order.cancelled`](/en/events/order-cancelled) | v2 → **v2.1** |
+
+Every addition is backward-compatible (new blocks on an existing shape). Nothing here
+changes a field you already read, and the previous contract of each event stays online
+behind its version tab.
+
+- **New event [`order.opened`](/en/events/order-opened)** — fires when an order is
+  injected **already open**: it exists, the kitchen can start, nobody has paid yet.
+  Carries the same V4 snapshot as `order.completed`. It does **not** fire for orders
+  injected as `COMPLETED` or `CANCELLED`. This event has no v0 — it was born at v1.
+- **`data.policy.deferredPayment`** — added to **all four** order events
+  (`order.opened`, `order.completed`, `order.invoiced`, `order.cancelled`). Says
+  whether the order may be cooked, invoiced or dispatched **before** payment.
+  Resolved once at injection and stamped immutably; every later event echoes the same
+  value.
+- **`data.lastKnown`** — added to the same four events. Advisory snapshot of kitchen
+  and fiscal state. **Never gate an irreversible action on it** — it may be `null` or
+  stale, and Fire itself ignores it and re-reads from source before issuing anything.
+
+<Note>
+On `order.opened`, `payments.paymentMethods[]` is what the POS **declared**, not what
+was charged — `transactionStatus` is `PENDING` and `transactionId` is usually empty.
+Fire overwrites the array with the real tenders when the charge settles, and emits
+`order.completed`. Reading the declared method as settlement evidence is the most
+common mistake with this event.
+</Note>
+
+Updated in **EN / ES / PT**.
+
+## 13 July 2026 — Cancel Order: `cancellationType` field
+
+Added optional `cancellationType` (`string`) to the [Cancel Order](/en/api-reference/cancel-order) request body. When provided, the cancellation reason ID or code from the catalog is persisted on the order and reported to the payment gateway. Updated in **EN / ES / PT**.
+
+## 3 July 2026 — Inject Order: combo discount distribution
+
+Added a new [Combo discounts](/en/api-reference/orders#combo-discounts) section to the Inject Order reference.
+
+When a `COMBO` product has a container price of 0, the combo's `discountsValue` **must not** be placed on the container line (this produces negative totals). Instead, distribute the discount proportionally across the `selectedModifiers`:
+
+- `discount_i = ROUND(D × (base_i / B), 2)` — proportional share per modifier
+- Every modifier must keep `subtotalIncludeDiscounts >= 0` and `total >= 0` after the discount
+- The COMBO container must have all price fields at `0`
+- `SUM(modifier.totalPrice.discountsValue)` must equal the combo's total discount
+
+Includes a before/after JSON example (BRL 17.94 discount over a 7-item combo, base BRL 89.68) and a full breakdown table. Updated in **EN / ES / PT**.
+
 ## 29 June 2026 — KDS user manuals
 
 Added a **KDS** section to the User manuals tab covering both operator and backoffice administration:
@@ -17,8 +126,6 @@ Added a **KDS** section to the User manuals tab covering both operator and backo
 - **[Order display](/en/manuals/kds/waitlist)** — customer-facing waitlist screen (preparing / ready areas, hero on ready, auto-pagination).
 
 All 8 pages published in **EN / ES / PT**.
-
----
 
 ## 22 June 2026 — New guide: Products structure · Menu publication updated
 
@@ -39,25 +146,6 @@ New [Products structure](/en/guides/combo-products) page in the Guides tab — c
 - Added a menu structure section describing `list`, `categories`, `products` (type table), and `modifierGroups`.
 
 Updated in **EN / ES / PT**.
-
----
-
-## 13 July 2026 — Cancel Order: `cancellationType` field
-
-Added optional `cancellationType` (`string`) to the [Cancel Order](/en/api-reference/cancel-order) request body. When provided, the cancellation reason ID or code from the catalog is persisted on the order and reported to the payment gateway. Updated in **EN / ES / PT**.
-
-## 3 July 2026 — Inject Order: combo discount distribution
-
-Added a new [Combo discounts](/en/api-reference/orders#combo-discounts) section to the Inject Order reference.
-
-When a `COMBO` product has a container price of 0, the combo's `discountsValue` **must not** be placed on the container line (this produces negative totals). Instead, distribute the discount proportionally across the `selectedModifiers`:
-
-- `discount_i = ROUND(D × (base_i / B), 2)` — proportional share per modifier
-- Every modifier must keep `subtotalIncludeDiscounts >= 0` and `total >= 0` after the discount
-- The COMBO container must have all price fields at `0`
-- `SUM(modifier.totalPrice.discountsValue)` must equal the combo's total discount
-
-Includes a before/after JSON example (BRL 17.94 discount over a 7-item combo, base BRL 89.68) and a full breakdown table. Updated in **EN / ES / PT**.
 
 ## 15 June 2026 — `order.completed` — new payment method fields
 

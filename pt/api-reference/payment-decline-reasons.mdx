@@ -1,0 +1,154 @@
+---
+title: "Motivos de recusa"
+api: "GET https://api.fire.rest/api/v1/fire/external/payment-decline-reasons"
+description: "Catálogo agrupado de motivos de recusa de pagamento. Mapeie os códigos do seu adquirente para estes e envie o nosso."
+authMethod: "bearer"
+---
+
+Retorna o catálogo com que o Fire classifica os pagamentos recusados que você envia em
+[Confirmar pagamento](/pt/api-reference/confirm-payment).
+
+## Como usar
+
+Seu adquirente (Rede, Cielo, Stone…) devolve **o código dele** quando um cartão é recusado: `51`,
+`insufficient_funds`, `NSF`. Cada um escreve à sua maneira.
+
+Este catálogo é o vocabulário do Fire. **Você faz o mapeamento do seu lado, uma vez**, e envia o
+código do Fire em `decline_reason`:
+
+```
+seu adquirente diz  "51"   →   você envia  "INSUFFICIENT_FUNDS"
+```
+
+<Note>
+  Funciona como os motivos de cancelamento: você baixa o catálogo e envia um dos códigos dele. O Fire
+  não guarda os códigos de cada adquirente — você tem a documentação da Rede ou da Cielo, e manter o
+  vocabulário de cada provedor em cada país não seria sustentável.
+
+  É também por isso que este endpoint não fica pendurado num pedido: é o mesmo para toda a sua conta.
+</Note>
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `orders:read`.
+</ParamField>
+
+## Requisição
+
+<RequestExample>
+```http
+GET https://api.fire.rest/api/v1/fire/external/payment-decline-reasons
+x-api-key: <sua_api_key>
+```
+</RequestExample>
+
+## Resposta
+
+Grupos ordenados, cada um com seus motivos. Grupos sem motivos ativos não são retornados.
+
+| campo | o que significa |
+| --- | --- |
+| `code` | o código do Fire. **É o que você deve enviar** em `decline_reason` |
+| `label` | texto em `en`, `es` e `pt` |
+
+O catálogo traz **código, etiqueta e grupo. Nada mais.** Não diz se convém tentar de novo nem quem
+deveria agir: essa decisão é sua e do seu adquirente, que são quem vê a transação.
+
+Grupos disponíveis: `funds`, `card`, `security`, `technical`, `operational`.
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "groups": [
+      {
+        "code": "funds",
+        "label": { "en": "Funds", "es": "Fondos", "pt": "Fundos" },
+        "displayOrder": 1,
+        "reasons": [
+          {
+            "code": "INSUFFICIENT_FUNDS",
+            "groupCode": "funds",
+            "label": {
+              "en": "Insufficient funds",
+              "es": "Fondos insuficientes",
+              "pt": "Saldo insuficiente"
+            },
+            "displayOrder": 1
+          }
+        ]
+      },
+      {
+        "code": "technical",
+        "label": { "en": "Technical", "es": "Técnico", "pt": "Técnico" },
+        "displayOrder": 4,
+        "reasons": [
+          {
+            "code": "ISSUER_UNAVAILABLE",
+            "groupCode": "technical",
+            "label": {
+              "en": "Issuer unavailable",
+              "es": "Emisor no disponible",
+              "pt": "Emissor indisponível"
+            },
+            "displayOrder": 1
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+```json 401 — API key inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — a key não tem o scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have the required scope: orders:read"
+}
+```
+</ResponseExample>
+
+## O que o Fire guarda
+
+Quando você envia um pagamento recusado, o Fire procura esse código no catálogo e guarda o grupo e o
+grupo junto com o que você mandou:
+
+```jsonc
+"declineReason":     "DO_NOT_HONOR",   // o que você mandou
+"declineReasonCode": "DO_NOT_HONOR",   // encontrado no catálogo
+"declineGroup":      "security"
+```
+
+É guardado na escrita e nunca recalculado na leitura, então suas métricas históricas não mudam
+sozinhas quando o catálogo cresce.
+
+<Warning>
+  **Um código que não está no catálogo não faz a cobrança falhar.** É guardado como está, sem grupo, e
+  esses registros ficam de fora de qualquer agrupamento por motivo.
+
+  [Confirmar pagamento](/pt/api-reference/confirm-payment) avisa na resposta com `resolvedTo: null`.
+  **Confira na primeira integração**: se o seu mapeamento tiver um código errado, todas as recusas
+  entram sem classificação e nada falha.
+</Warning>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Confirmar pagamento" icon="credit-card" href="/pt/api-reference/confirm-payment">
+    Registre a cobrança, com os meios aprovados e os recusados.
+  </Card>
+  <Card title="Obter pedido" icon="receipt" href="/pt/api-reference/get-order">
+    Consulte o status do pedido e o seu total.
+  </Card>
+</CardGroup>

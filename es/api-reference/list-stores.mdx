@@ -1,0 +1,266 @@
+---
+title: "Listar tiendas"
+api: "GET https://api.fire.rest/api/v1/fire/external/stores"
+description: "Lista las tiendas del account y vendor asociados a tu API key, con paginación y filtros."
+authMethod: "bearer"
+---
+
+Devuelve las tiendas del account + vendor asociados a tu API key. Cada tienda viene con su
+**configuración completa** — location, services, channels, schedules, información de impuestos y
+contacto, configuración de delivery, sales goals, el bloque **fiscal** y estado operativo. Solo se
+excluyen los campos internos de Fire (el `effectiveSettings` derivado, drafts/overrides y columnas
+de auditoría).
+
+Usá el [projection de campos](#projection-de-campos) (`?fields=`) para devolver solo los campos que necesitás.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `store:read`. La key **debe ser vendor-scoped** (binding account +
+  vendor) — las keys sin `vendorId` se rechazan con `403`.
+</ParamField>
+
+## Query params
+
+<Info>El account y el vendor se derivan de tu API key (vendor-scoped) — no se envían por query.</Info>
+
+<ParamField query="fields" type="string">
+  Lista de campos a devolver separados por coma (projection). Ver [Projection de campos](#projection-de-campos).
+  Omitir para devolver todos los campos. Un campo desconocido da `400`.
+</ParamField>
+
+<ParamField query="status" type="string">
+  Filtra por estado de publicación: `DRAFT`, `PUBLISHED`, `PARTIALLY_PUBLISHED`, `ARCHIVED`.
+</ParamField>
+
+<ParamField query="active" type="string">
+  Filtra por estado operativo: `ACTIVE`, `INACTIVE`, `SUSPENDED`.
+</ParamField>
+
+<ParamField query="syncStatus" type="string">
+  Filtra por estado de sync: `SYNCED`, `PENDING`, `FAILED`.
+</ParamField>
+
+<ParamField query="cityId" type="string">Filtra por id de ciudad.</ParamField>
+<ParamField query="channel" type="string">Filtra por un código de canal publicado (ej. `APP`).</ParamField>
+<ParamField query="query" type="string">Búsqueda de texto sobre nombre, store code y external id.</ParamField>
+
+<ParamField query="page" type="integer" default="1">Número de página (base 1).</ParamField>
+<ParamField query="size" type="integer" default="20">Tamaño de página (1–500).</ParamField>
+
+## Petición
+
+<RequestExample>
+```http
+GET https://api.fire.rest/api/v1/fire/external/stores?page=1&size=20
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+## Respuesta
+
+<ResponseField name="stores" type="object[]">
+  <Expandable title="store">
+    <ResponseField name="id" type="string">UUID de la tienda.</ResponseField>
+    <ResponseField name="storeNumber" type="integer">Número secuencial de tienda.</ResponseField>
+    <ResponseField name="storeCode" type="string | null">Código interno de la tienda.</ResponseField>
+    <ResponseField name="accountId" type="string">UUID del account.</ResponseField>
+    <ResponseField name="vendorId" type="string">Identificador del vendor.</ResponseField>
+    <ResponseField name="name" type="string">Nombre de la tienda.</ResponseField>
+    <ResponseField name="externalId" type="string | null">Identificador externo controlado por Fire.</ResponseField>
+    <ResponseField name="status" type="string">`DRAFT` | `PUBLISHED` | `PARTIALLY_PUBLISHED` | `ARCHIVED`.</ResponseField>
+    <ResponseField name="active" type="string">`ACTIVE` | `INACTIVE` | `SUSPENDED`.</ResponseField>
+    <ResponseField name="timezone" type="string | null">Timezone IANA (ej. `America/Guayaquil`). Cae de vuelta a `location.timezone`.</ResponseField>
+    <ResponseField name="location" type="object | null">
+      <Expandable title="location">
+        <ResponseField name="countryId" type="string">Id de país.</ResponseField>
+        <ResponseField name="countryCode" type="string">ISO 3166-1 alpha-2.</ResponseField>
+        <ResponseField name="countryName" type="string | null">Nombre del país.</ResponseField>
+        <ResponseField name="cityId" type="string">Id de ciudad.</ResponseField>
+        <ResponseField name="cityCode" type="string | null">Código de ciudad.</ResponseField>
+        <ResponseField name="cityName" type="string">Nombre de la ciudad.</ResponseField>
+        <ResponseField name="address" type="string">Dirección completa.</ResponseField>
+        <ResponseField name="latitude" type="number | null">Latitud.</ResponseField>
+        <ResponseField name="longitude" type="number | null">Longitud.</ResponseField>
+        <ResponseField name="timezone" type="string | null">Timezone IANA.</ResponseField>
+        <ResponseField name="currencyCode" type="string | null">Código de moneda ISO 4217.</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="services" type="object[] | null">Configuración de servicios de la tienda (dine-in, takeout, delivery…). Passthrough desde los settings de la tienda.</ResponseField>
+    <ResponseField name="channels" type="object[] | null">Configuración por canal — cada entrada lleva `code`, `enabled`, `fulfillmentTypes` y schedules.</ResponseField>
+    <ResponseField name="publishedChannels" type="string[]">Códigos de canales publicados (ej. `["APP"]`).</ResponseField>
+    <ResponseField name="operationSchedule" type="object[] | null">Horarios de operación por día/intervalo.</ResponseField>
+    <ResponseField name="salesSchedule" type="object[] | null">Horarios de ventas por día/intervalo.</ResponseField>
+    <ResponseField name="schedulesByChannel" type="object[] | null">Schedules sobreescritos por canal.</ResponseField>
+    <ResponseField name="taxesInfo" type="object | null">Configuración de impuestos (ej. `taxRate`, `vatRatePercentage`).</ResponseField>
+    <ResponseField name="contactInfo" type="object | null">Datos de contacto de la tienda (ej. `phone`).</ResponseField>
+    <ResponseField name="deliveryInfo" type="object | null">Configuración de delivery.</ResponseField>
+    <ResponseField name="salesGoals" type="object | null">Configuración de sales goals.</ResponseField>
+    <ResponseField name="fiscal" type="object | null">
+      Configuración fiscal — mismo shape que `store.storeFiscalConfig` en el evento `order.completed`
+      (ambos se proyectan con la misma función). `null` cuando la tienda no tiene setup fiscal. Ver
+      [El bloque fiscal](#el-bloque-fiscal).
+      <Expandable title="fiscal">
+        <ResponseField name="enabled" type="boolean">Si la emisión fiscal está habilitada.</ResponseField>
+        <ResponseField name="company" type="object">
+          <Expandable title="company">
+            <ResponseField name="govIdType" type="string">Tipo de identificación fiscal (`CNPJ`, `RUC`, `NIT`, `RUT`, `CUIT`, `RIF`).</ResponseField>
+            <ResponseField name="govIdNumber" type="string">Número de identificación fiscal.</ResponseField>
+            <ResponseField name="legalName" type="string">Razón social.</ResponseField>
+            <ResponseField name="tradeName" type="string">Nombre comercial.</ResponseField>
+          </Expandable>
+        </ResponseField>
+        <ResponseField name="govIdType" type="string">Tipo de identificación fiscal primaria (a nivel raíz, conveniencia legacy).</ResponseField>
+        <ResponseField name="govIdNumber" type="string">Número de identificación fiscal primaria.</ResponseField>
+        <ResponseField name="secondaryGovIdType" type="string | null">Tipo de identificación fiscal secundaria — **solo Brasil** (`INSCRICAO_ESTADUAL`). Se omite para los demás países.</ResponseField>
+        <ResponseField name="secondaryGovIdNumber" type="string | null">Número de identificación fiscal secundaria — **solo Brasil**. Se omite para los demás países.</ResponseField>
+        <ResponseField name="metadata" type="object | null">Extras específicos por país — **solo Brasil**. Se omite para los demás países. Ver [El bloque fiscal](#el-bloque-fiscal).</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="operational" type="object | null">
+      Estado de runtime — ej. `{ isBusinessDayOpen, businessDayDate, activeChannels }`.
+    </ResponseField>
+    <ResponseField name="syncStatus" type="string">`SYNCED` | `PENDING` | `FAILED`.</ResponseField>
+    <ResponseField name="lastSyncedAt" type="string | null">Datetime ISO 8601.</ResponseField>
+    <ResponseField name="createdAt" type="string">Datetime ISO 8601.</ResponseField>
+    <ResponseField name="updatedAt" type="string">Datetime ISO 8601.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="total" type="integer">Total de tiendas que matchean el query.</ResponseField>
+<ResponseField name="page" type="integer">Página actual.</ResponseField>
+<ResponseField name="size" type="integer">Tamaño de página.</ResponseField>
+<ResponseField name="totalPages" type="integer">Total de páginas.</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "stores": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "storeNumber": 10,
+      "storeCode": "ST-10",
+      "accountId": "550e8400-e29b-41d4-a716-446655440000",
+      "vendorId": "100.1.10",
+      "name": "Main Store",
+      "externalId": "EXT-10",
+      "status": "PUBLISHED",
+      "active": "ACTIVE",
+      "timezone": "America/Guayaquil",
+      "location": {
+        "countryId": "1",
+        "countryCode": "EC",
+        "countryName": "Ecuador",
+        "cityId": "2",
+        "cityCode": "UIO",
+        "cityName": "Quito",
+        "address": "Av. Amazonas N32-14",
+        "latitude": -0.18,
+        "longitude": -78.47,
+        "timezone": "America/Guayaquil",
+        "currencyCode": "USD"
+      },
+      "services": [],
+      "channels": [
+        { "code": "APP", "enabled": true, "fulfillmentTypes": ["DELIVERY", "PICKUP"] }
+      ],
+      "publishedChannels": ["APP"],
+      "operationSchedule": [],
+      "salesSchedule": [],
+      "schedulesByChannel": [],
+      "taxesInfo": { "taxRate": 0, "vatRatePercentage": 12 },
+      "contactInfo": { "phone": "+593 2 000 0000" },
+      "deliveryInfo": null,
+      "salesGoals": null,
+      "fiscal": {
+        "enabled": true,
+        "company": {
+          "govIdType": "RUC",
+          "govIdNumber": "1790012345001",
+          "legalName": "Sandbox Ecuador Cia. Ltda.",
+          "tradeName": "Sandbox EC"
+        },
+        "govIdType": "RUC",
+        "govIdNumber": "1790012345001"
+      },
+      "operational": {
+        "isBusinessDayOpen": true,
+        "businessDayDate": "2026-07-01",
+        "activeChannels": ["APP"]
+      },
+      "syncStatus": "SYNCED",
+      "lastSyncedAt": "2026-07-01T00:00:00Z",
+      "createdAt": "2026-06-01T00:00:00Z",
+      "updatedAt": "2026-06-02T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "size": 20,
+  "totalPages": 1
+}
+```
+
+```json 401 — API key inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or missing API key"
+}
+```
+
+```json 403 — account/vendor no coincide o key no vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key is not authorized for the requested vendor"
+}
+```
+</ResponseExample>
+
+## El bloque fiscal
+
+`fiscal` refleja `store.storeFiscalConfig` en el evento `order.completed` — ambos se proyectan con
+la misma función, así que un integrador fiscal obtiene exactamente el mismo shape por cualquiera de
+los dos caminos (incluyendo los fallbacks legacy a nivel raíz `govIdType` / `govIdNumber`). `fiscal`
+es `null` para tiendas sin configuración fiscal.
+
+El bloque `fiscal` es **específico por país**: los campos exclusivos de Brasil (`secondaryGovIdType`,
+`secondaryGovIdNumber`, `metadata`) se incluyen **solo para tiendas de Brasil** y se **omiten por
+completo** — las claves no aparecen, no van en `null` — para los demás países. Mismo criterio que
+`orders.fiscal.metadata`. El país sale de `location.countryCode` (con fallback legacy a `govIdType === "CNPJ"` para stores de Brasil viejos que no lo tengan).
+
+| País | `govIdType` | Campos solo-Brasil (`secondaryGovId*`, `metadata`) |
+|---|---|---|
+| BR | `CNPJ` | incluidos — `secondaryGovIdType: INSCRICAO_ESTADUAL`, `metadata: { storeCode3S, serialNumber, neverstop }` |
+| EC | `RUC` | omitidos |
+| CO | `NIT` | omitidos |
+| CL | `RUT` | omitidos |
+| AR | `CUIT` | omitidos |
+| VE | `RIF` | omitidos |
+
+## Projection de campos
+
+Elegí qué campos devuelve cada tienda, similar al projection de MongoDB o al parámetro `_source` de
+Elasticsearch. Aplica tanto al listado como a la [tienda puntual](/es/api-reference/get-store).
+
+- Sin `fields` → se devuelven todos los campos.
+- `fields=id,storeCode,name,fiscal` → solo esos.
+- Un campo fuera del catálogo → `400` con la lista de campos permitidos.
+
+**Campos disponibles**: `id`, `storeNumber`, `storeCode`, `accountId`, `vendorId`, `name`,
+`externalId`, `status`, `active`, `timezone`, `location`, `services`, `channels`,
+`publishedChannels`, `operationSchedule`, `salesSchedule`, `schedulesByChannel`, `taxesInfo`,
+`contactInfo`, `deliveryInfo`, `salesGoals`, `fiscal`, `operational`, `syncStatus`, `lastSyncedAt`,
+`createdAt`, `updatedAt`.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Obtener tienda" icon="store" href="/es/api-reference/get-store">
+    Lee una tienda puntual por id.
+  </Card>
+  <Card title="Listar órdenes de tienda" icon="receipt" href="/es/api-reference/list-store-orders">
+    Lista las órdenes de una tienda específica.
+  </Card>
+</CardGroup>

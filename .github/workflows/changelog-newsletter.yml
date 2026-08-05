@@ -1,0 +1,51 @@
+name: Changelog newsletter
+
+# Sends the newest changelog entry to the Buttondown list when it lands on main.
+# Only a new `## ` heading triggers a send — see .github/scripts/send-changelog-email.mjs.
+
+on:
+  push:
+    branches: [main]
+    # Los tres, porque el correo los lleva a los tres. Igual solo sale cuando la
+    # entrada en ingles es nueva: un commit que toca solo es/ o pt/ despierta el
+    # workflow y el guard lo corta.
+    paths: ['en/changelog.mdx', 'es/changelog.mdx', 'pt/changelog.mdx']
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'What to do with the newest entry'
+        type: choice
+        default: preview
+        options:
+          # Renders the email into the job log. Touches nothing.
+          - preview
+          # Creates it in Buttondown but leaves it unsent, so the real
+          # formatting can be checked in the dashboard. Reaches no subscriber.
+          - draft
+          # The real thing: delivers to every confirmed subscriber.
+          - send
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The script diffs against HEAD^ to tell a new entry from an edit.
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: node .github/scripts/send-changelog-email.mjs
+        env:
+          BUTTONDOWN_API_KEY: ${{ secrets.BUTTONDOWN_API_KEY }}
+          DOCS_BASE_URL: ${{ vars.DOCS_BASE_URL }}
+          # On a push there is no `inputs`, so both stay empty and the script
+          # takes its default path: a real send.
+          DRY_RUN: ${{ inputs.mode == 'preview' }}
+          # Only main is ever allowed to reach a subscriber. Anywhere else the
+          # run is downgraded to a draft no matter how it was started, so the
+          # workflow can be exercised from a branch without risking a send.
+          DRAFT_ONLY: ${{ inputs.mode == 'draft' || github.ref != 'refs/heads/main' }}

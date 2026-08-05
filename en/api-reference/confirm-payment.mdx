@@ -1,0 +1,434 @@
+---
+title: "Confirm payment"
+api: "POST https://api.fire.rest/api/v1/fire/external/orders/{orderId}/confirm-payment"
+description: "Records the payment for an open order and settles it. Accepts several tenders in one charge, and declined attempts too."
+authMethod: "bearer"
+---
+
+Closes the **deferred payment** cycle: the order was born open, the kitchen already worked, and the
+payment arrives here. The order becomes `COMPLETED` and invoicing starts when the approved amount
+reaches the order total **exactly**.
+
+<Note>
+  **One charge with several tenders, in a single call.** If you split the bill between cash and card,
+  send both pieces **in the same call**: the approved tenders must add up to the order total exactly.
+  A charge that does not add up is rejected in full and nothing is recorded — consolidate your
+  partials before sending them.
+
+  Retrying is safe and expected: resend the **whole** batch and idempotency by `transaction_id` takes
+  care of the rest.
+</Note>
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `orders:write` scope. The key **must be vendor-scoped** — keys without
+  a `vendorId` are rejected with `403`.
+</ParamField>
+
+## Path parameters
+
+<ParamField path="orderId" type="string" required>
+  Any of the order's three public references:
+
+  | reference | what it is |
+  | --- | --- |
+  | `orders.id` | Fire's internal UUID |
+  | `order_external` | the id you assigned when creating the order |
+  | `metadata.order_id` | a copy of the external id inside the order |
+
+  This is the same set accepted by [Get order](/en/api-reference/get-order) and
+  [Cancel order](/en/api-reference/cancel-order).
+</ParamField>
+
+## Body
+
+<ParamField body="payments" type="object[]" required>
+  The tenders you charged the order with. Between 1 and 20 pieces. Each object is stored exactly as
+  you sent it; only the fields Fire reads are listed below.
+</ParamField>
+
+<ParamField body="payments[].details.transaction_status" type="string" required>
+  Outcome of the attempt. These count as **charged**: `APPROVED`, `AUTHORIZED`, `CAPTURED`, `PAID`,
+  `SUCCESS`, `SUCCEEDED` (case-insensitive).
+
+  Any other value is treated as a **decline**, even one we do not recognise. That is deliberate:
+  invoicing a charge that never happened cannot be undone, while failing to settle one that did is
+  fixed by sending it again.
+</ParamField>
+
+<ParamField body="payments[].details.transaction_id" type="string" required>
+  Transaction identifier. **This is the idempotency key**: resending the same one does not charge or
+  invoice twice. If your tender does not produce one, Fire falls back to `payments[].uid`.
+</ParamField>
+
+<ParamField body="payments[].details.total_bill" type="number" required>
+  Amount for this tender, decimal. Must be greater than zero. If it is absent, Fire falls back to
+  the top-level `payments[].total`.
+</ParamField>
+
+<ParamField body="payments[].details.currency_code" type="string" required>
+  Currency of the tender. All **approved** tenders must share the same one — including tenders sent
+  in earlier calls for the same order. If it is absent, Fire falls back to the top-level
+  `payments[].currency_code`.
+</ParamField>
+
+<ParamField body="payments[].details.decline_reason" type="string">
+  Reason for the decline, using a code from [Decline reasons](/en/api-reference/payment-decline-reasons).
+  Only applies when `transaction_status` is not approved.
+
+  Your acquirer's code (`51`, `do_not_honor`) must be translated **on your side** to the catalog's:
+  Fire does not store each provider's codes. If you send one that is not there it is accepted and
+  stored, but it comes back with `resolvedTo: null` and stays out of your grouped metrics.
+</ParamField>
+
+<ParamField body="payments[].method" type="string">
+  Payment method (`CASH`, `CREDIT`, `DEBIT`, `PIX`…). Used for invoicing and metrics.
+</ParamField>
+
+## Request
+
+<RequestExample>
+```http
+POST https://api.fire.rest/api/v1/fire/external/orders/ORD-77/confirm-payment
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "payments": [
+    {
+      "uid": "9b1c...",
+      "total": "20",
+      "method": "CASH",
+      "currency_code": "BRL",
+      "details": {
+        "total_bill": 20,
+        "currency_code": "BRL",
+        "transaction_id": "BR-K000-POS-38-1785258648480",
+        "transaction_status": "APPROVED",
+        "transaction_date": { "date": "2026-07-28T17:10:48.000Z" }
+      }
+    },
+    {
+      "uid": "7d3a...",
+      "total": "15.90",
+      "method": "CREDIT",
+      "currency_code": "BRL",
+      "details": {
+        "total_bill": 15.90,
+        "currency_code": "BRL",
+        "transaction_id": "BR-K000-POS-38-1785258648999",
+        "transaction_status": "APPROVED",
+        "transaction_date": { "date": "2026-07-28T17:11:02.000Z" }
+      }
+    }
+  ]
+}
+```
+</RequestExample>
+
+## What Fire does with it
+
+Only **approved** tenders add up and settle. Declined ones are recorded for your metrics; they never
+add up and never block the charge.
+
+| situation | `outcome` | settles? |
+| --- | --- | --- |
+| the approved sum **equals** the total | `settled` | yes — becomes `COMPLETED` and invoicing starts |
+| no approved tender, only declines | `declined` | no — recorded, the order stays open |
+| no new tender (you already sent them) | `duplicate` | no — idempotent retry |
+| the approved sum does **not** equal the total | — | **`400`** — nothing is recorded |
+| a **new** tender on a **closed** order (settled, cancelled or force-closed) | — | **`409`** — nothing is recorded |
+
+<Warning>
+  **All or nothing.** A charge whose approved tenders do not add up to the order total is rejected in
+  full — not even a decline that travelled in the same batch is kept.
+
+  The reason is not accounting, it is operational: money accepted on an order that does not settle
+  leaves it with cash inside and no way out. Fire does not process refunds and there is no way for you
+  to tell us you refunded. Consolidating partial charges is yours to do — and you are the only one who
+  can refund, so you carry that state anyway.
+
+  Charging **more** than the total is rejected for a different reason: it would invoice an amount that
+  was not the one collected, and an invoice cannot be un-issued. Both messages give you the two
+  amounts so you can fix and resend.
+
+  Declines are the exception: a batch with **no** approved tenders is recorded and the order stays
+  open. No money means no state to resolve, and that is where your decline metrics live.
+</Warning>
+
+## What happened to each decline
+
+Every declined tender comes back in `declines[]`, with what you sent and whether we found it in the
+catalog.
+
+```jsonc
+"declines": [
+  { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "exceedsOrderTotal": false },
+  { "sent": "51",                 "resolvedTo": null,                 "group": null,    "exceedsOrderTotal": true }
+]
+```
+
+`exceedsOrderTotal: true` means the amount you attempted **is larger than the order total**. We do
+not require each tender to equal the total —in a split charge, $20 on $35.90 is legitimate— but
+exceeding it never is: it almost always means the wrong order is being charged. The decline is your
+free warning, because if the next attempt is approved it would settle an amount that does not belong.
+
+`resolvedTo: null` means that code **does not exist in the catalog** — in the example, the acquirer's
+raw code was sent instead of Fire's. The decline was still recorded and the value is kept, but it
+shows up in nothing grouped by reason.
+
+<Warning>
+  Check this block on your first integration. A mistranslated code breaks nothing: the charge works,
+  the response is `200`, and your declines land unclassified. You would find out months later with an
+  empty reasons dashboard.
+</Warning>
+
+## A closed order takes nothing else
+
+An order takes tenders **while it is open**. Once closed it is closed, however it got there. A tender
+it has never seen is **rejected** and nothing is recorded — approved or declined alike.
+
+The error code tells you *why* it is closed, and the two call for different actions:
+
+| code | the order | what it means for you |
+| --- | --- | --- |
+| `ORDER_ALREADY_SETTLED` | already charged in full | the money is in. If you charged again, refund it |
+| `ORDER_NOT_OPEN` | closed without being charged (cancelled, force-closed) | this money does not belong to this order |
+
+What separates a rejection from a retry is the `transaction_id`, not the state of the order:
+
+| you send | what it is | response |
+| --- | --- | --- |
+| a `transaction_id` Fire already has | a retry after a network timeout | `200`, `outcome: duplicate` |
+| a `transaction_id` Fire has never seen | a report on a closed order | `409` |
+
+<Warning>
+  A retry is never rejected, on purpose. You charged once and our answer never reached you; replying
+  with an error there would push the operator to run the card again — the double charge we are trying
+  to prevent. Send the same `transaction_id` and you get the original outcome back.
+</Warning>
+
+## When the charge settles
+
+Settling is what completes the order, so that is when Fire emits
+[`order.completed`](/en/events/order-completed) — the order was born `OPEN` and only
+now has it finished. The response reports it as `flowsTriggered`.
+
+`flowsTriggered: 0` is **not** a payment error. It means one of three things:
+
+| Case | Why |
+|---|---|
+| The charge did not settle | The order is still open; nothing completed. |
+| `outcome: "duplicate"` | The event already went out with the original call. |
+| Enqueueing failed | The payment is recorded either way. The incident is kept on Fire's side for an operator to replay. |
+
+That last row is deliberate. If Fire answered with an error because an event could not
+be queued, you would retry a charge that already went through. The money wins over the
+notification.
+
+<Note>
+An order with deferred payment already issued its fiscal document when it opened, and
+it passes through the fiscal step again on `order.completed`. Fire detects the
+existing document and skips the second issuance — you do not get two invoices.
+</Note>
+
+## Idempotency
+
+Each tender is identified by its `transaction_id` within the order. Retry without fear:
+
+- **Resending the whole charge** → `duplicate`. Nothing is settled or invoiced again.
+- **Resending after a timeout** → resend the **whole** batch. An incomplete charge was never
+  recorded, and any tender that did land is ignored by its `transaction_id`.
+
+## Validations
+
+All return `400` unless stated otherwise. Every rejection carries a **`code`** on top of the message:
+branch on the code, not on the text — the message is written to be read and may be reworded, the code
+is contract.
+
+| rule | code |
+| --- | --- |
+| `payments` with at least one tender | `400` |
+| at most 20 tenders | `400` |
+| `details.transaction_status` present | `400` |
+| `transaction_id` or `uid` present | `400` |
+| no repeated `transaction_id` within the same batch | `400` |
+| amount greater than zero on every tender | `400` |
+| a single currency across approved tenders | `400 MIXED_CURRENCIES` |
+| the approved sum equals the order total exactly (all or nothing) | `400 INCOMPLETE_CHARGE` |
+| the approved sum does not exceed the order total | `400 AMOUNT_EXCEEDS_TOTAL` |
+| the order total is resolvable in the tender currency | `400 TOTAL_NOT_RESOLVABLE` |
+| valid API key | `401` |
+| `orders:write` scope and vendor-scoped key | `403` |
+| the order exists within your vendor | `404` |
+| the reference matches more than one order | `409 AMBIGUOUS_ORDER_REFERENCE` |
+| a new tender on an already settled order | `409 ORDER_ALREADY_SETTLED` |
+| a new tender on an order closed without being charged | `409 ORDER_NOT_OPEN` |
+
+Fields Fire does not know about **are accepted and stored**: you can send your full payment object
+without trimming it. The currency of a declined tender never invalidates the batch, because it does
+not add up.
+
+## Responses
+
+<ResponseExample>
+```json 200 — settled
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "settled",
+    "settled": true,
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "completedAt": "2026-07-28T17:11:02.000Z",
+    "tenderCount": 2,
+    "declinedCount": 0,
+    "amountMismatch": false,
+    "declines": [],
+    "flowsTriggered": 1
+  }
+}
+```
+
+```json 200 — declined, the order stays open
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "declined",
+    "settled": false,
+    "status": "OPEN",
+    "paymentStatus": "PENDING",
+    "completedAt": null,
+    "tenderCount": 0,
+    "declinedCount": 2,
+    "amountMismatch": false,
+    "declines": [
+      { "sent": "INSUFFICIENT_FUNDS", "resolvedTo": "INSUFFICIENT_FUNDS", "group": "funds", "exceedsOrderTotal": false },
+      { "sent": "51", "resolvedTo": null, "group": null, "exceedsOrderTotal": true }
+    ],
+    "flowsTriggered": 0
+  }
+}
+```
+
+```json 200 — retry of the same charge
+{
+  "success": true,
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "outcome": "duplicate",
+    "settled": false,
+    "status": "COMPLETED",
+    "paymentStatus": "SUCCEEDED",
+    "completedAt": "2026-07-28T17:11:02.000Z",
+    "tenderCount": 0,
+    "declinedCount": 0,
+    "amountMismatch": false,
+    "flowsTriggered": 0
+  }
+}
+```
+
+```json 400 — the charge does not add up to the total
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "code": "INCOMPLETE_CHARGE",
+  "message": "Approved tenders total 200000 does not reach the order total 359000 — send the complete charge in one call"
+}
+```
+
+```json 400 — you charged more than the total
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "code": "AMOUNT_EXCEEDS_TOTAL",
+  "message": "Approved tenders total 500000 exceeds the order total 359000"
+}
+```
+
+```json 409 — the order was already settled
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_ALREADY_SETTLED",
+  "message": "Order is already settled and does not accept new payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "completedAt": "2026-07-30T16:24:11.802Z"
+  }
+}
+```
+
+```json 409 — the order is closed (cancelled)
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_NOT_OPEN",
+  "message": "Order is closed and does not accept payment reports",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "orderStatus": "CANCELLED",
+    "completedAt": null
+  }
+}
+```
+
+```json 400 — validation
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "code": "custom",
+      "path": ["payments", 1],
+      "message": "Duplicate transaction id \"BR-K000-POS-38-1785258648480\" within the same payment batch"
+    }
+  ]
+}
+```
+
+```json 403 — key without a vendor
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
+}
+```
+
+```json 404 — the order does not exist in your vendor
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "InjectedOrder not found with ID ORD-77"
+}
+```
+
+```json 409 — ambiguous reference
+{
+  "success": false,
+  "error": "CONFLICT",
+  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate"
+}
+```
+</ResponseExample>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Decline reasons" icon="circle-xmark" href="/en/api-reference/payment-decline-reasons">
+    Grouped catalog used to classify declined attempts.
+  </Card>
+  <Card title="Get order" icon="receipt" href="/en/api-reference/get-order">
+    Check the status and total before charging.
+  </Card>
+</CardGroup>

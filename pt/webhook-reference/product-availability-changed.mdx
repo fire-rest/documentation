@@ -3,9 +3,9 @@ title: "product.availability_changed"
 description: "Disparado quando um produto é ativado ou desativado em uma ou mais lojas."
 ---
 
-`product.availability_changed` é emitido quando a disponibilidade de um produto muda — por exemplo, quando um restaurante marca um produto como esgotado ou o reativa. Controla se o produto aparece no menu e está disponível para compra.
+`product.availability_changed` é emitido quando a disponibilidade de um ou mais produtos muda — por exemplo, quando um restaurante marca um produto como esgotado ou o reativa. Controla se o produto aparece no menu e está disponível para compra.
 
-Quando a mudança afeta várias lojas, o Fire emite um **único evento** com todas as lojas afetadas listadas em `targets`.
+Suporta múltiplos produtos em um único evento. Quando a mudança afeta várias lojas, o Fire emite um **único evento** com todas as lojas afetadas listadas em `targets`.
 
 ## Payload
 
@@ -14,34 +14,48 @@ Quando a mudança afeta várias lojas, o Fire emite um **único evento** com tod
   "event": {
     "id": "evt_mno345",
     "type": "product.availability_changed",
-    "createdAt": "2025-01-15T14:40:00Z"
+    "executionId": "exec_mno123",
+    "createdAt": "2025-01-15T14:40:00.000Z",
+    "timezone": "America/Sao_Paulo"
   },
   "data": {
     "account": "1",
     "country": "BR",
-    "productId": "e925f6b0-15bf-dc39-2e3f-1a2b284310c6",
-    "vendorId": "1350",
-    "active": false,
+    "groupId": "a3f7c2d1-84be-4e10-9b3a-2c5d6e7f8091",
     "targets": [
       {
-        "storeId": "805",
+        "storeId": "b3d2a1f0-6e21-4c3a-9f5d-7a8b9c0d1e2f",
         "storeName": "Laboratorio Brasil",
+        "vendorId": "100.6.1350",
+        "timezone": "America/Sao_Paulo",
         "channels": [
           {
-            "channelId": "0E049503-85CF-E511-80C6-000D3A3261F3",
+            "channelId": "d5f4c3b2-8043-4e5c-9b7f-9c0d1e2f3a4b",
             "channelReferenceName": "iFood"
           }
         ]
       },
       {
-        "storeId": "806",
+        "storeId": "c4e3b2a1-7f32-4d4b-8a6e-8b9c0d1e2f3a",
         "storeName": "Vila Olimpia",
+        "vendorId": "100.6.1351",
+        "timezone": "America/Sao_Paulo",
         "channels": [
           {
-            "channelId": "0E049503-85CF-E511-80C6-000D3A3261F3",
+            "channelId": "d5f4c3b2-8043-4e5c-9b7f-9c0d1e2f3a4b",
             "channelReferenceName": "iFood"
           }
         ]
+      }
+    ],
+    "products": [
+      {
+        "productId": "e925f6b0-15bf-dc39-2e3f-1a2b284310c6",
+        "active": false
+      },
+      {
+        "productId": "prod_size_small",
+        "active": true
       }
     ]
   }
@@ -56,31 +70,43 @@ Quando a mudança afeta várias lojas, o Fire emite um **único evento** com tod
 |---|---|---|
 | `account` | string | Identificador da conta — necessário para sistemas externos |
 | `country` | string | Código do país ISO 3166-1 alpha-2 (ex.: `EC`, `BR`, `CO`) — necessário para sistemas externos |
-| `productId` | string | Identificador do produto (UUID) |
-| `vendorId` | string | Identificador da marca |
-| `active` | boolean | `true` para ativar, `false` para desativar |
+| `groupId` | string | UUID que correlaciona eventos do mesmo batch de publicação ou sincronização |
 | `targets` | object[] | Lojas onde a mudança de disponibilidade deve ser aplicada |
+| `products` | object[] | Produtos cuja disponibilidade mudou |
 
 ### `data.targets[n]`
 
+Mesma estrutura que em [`product.updated`](/pt/webhook-reference/product-updated#datatargetsn), sem o campo `listName` em `channels[n]`.
+
 | Campo | Tipo | Descrição |
 |---|---|---|
-| `storeId` | string | Número da loja (`store_number`) |
+| `storeId` | string | UUID interno da loja (PK `stores.id`) — não é o `store_number` |
 | `storeName` | string | Nome operacional da loja |
+| `vendorId` | string | Identificador da marca da loja |
+| `timezone` | string | Fuso horário IANA da loja (ex.: `America/Sao_Paulo`) |
 | `channels` | object[] | Canais de vendas onde a alteração deve ser aplicada |
 
 ### `data.targets[n].channels[n]`
 
 | Campo | Tipo | Descrição |
 |---|---|---|
-| `channelId` | string | UUID do canal de vendas |
+| `channelId` | string | UUID interno do canal de vendas (PK `channels.id`) — não é o `channel_id` externo do agregador |
 | `channelReferenceName` | string | Nome legível do canal de vendas (ex.: `iFood`, `Rappi`) |
+
+### `data.products[n]`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `productId` | string | Identificador do produto (UUID) |
+| `active` | boolean | `true` para ativar, `false` para desativar |
 
 ## Comportamento
 
 Definir `active: false` oculta o produto do menu e o marca como indisponível para compra. Definir `active: true` o restaura.
 
 Este evento não modifica nenhum outro dado do produto — nome, preço, imagens e modificadores permanecem inalterados.
+
+Desativar um produto **não** é removê-lo do menu: ele continua sendo membro, apenas deixa de estar disponível. Por isso sua data de atribuição ao menu (`additionalInfo.assignedAt`) não muda com `active: false` nem é reiniciada ao voltar para `active: true`, e este evento não a transmite. Ela chega em [`product.updated`](/pt/webhook-reference/product-updated#data-de-atribuição-ao-menu) e em [`menu.updated`](/pt/webhook-reference/menu-updated-v2).
 
 ## Uso
 

@@ -58,6 +58,82 @@ mint broken-links
 
 Con el repositorio conectado a Mintlify, los cambios en la rama por defecto suelen desplegarse al hacer push. Ajustes de dominio e integración GitHub se gestionan en el [dashboard](https://dashboard.mintlify.com) de Mintlify.
 
+## Suscripción al changelog
+
+Los lectores pueden suscribirse desde el botón **Subscribe to updates** de la barra
+superior o desde el formulario al inicio de `*/changelog.mdx`. El alta, el captcha, el
+doble opt-in y la baja los gestiona [Buttondown](https://buttondown.com); este
+repositorio no almacena ningún correo.
+
+El formulario está escrito a mano en cada `*/changelog.mdx`, arriba de la primera
+entrada, y sigue el tema de la doc en claro y oscuro.
+
+**Envía a un `<iframe>` oculto en vez de navegar**, así el lector nunca sale de la
+página. Es la única forma: Buttondown bloquea el AJAX cross-origin, y su API key no
+puede vivir en el navegador —cualquiera la leería del código fuente y se llevaría la
+lista—, así que un `fetch` directo a la API queda descartado.
+
+Dos consecuencias que conviene tener presentes:
+
+- **La confirmación es optimista.** La respuesta cae en un iframe de otro origen que no
+  podemos leer, así que el mensaje dice "revisá tu correo", nunca "ya estás suscrito".
+- **No hay captcha.** El Turnstile de Buttondown vive en la página de ellos, y la
+  evitamos. Siguen activos el doble opt-in, el firewall (scoring de IP y correo) y el
+  attack mode. Si algún día aparece spam, la salida es un proxy propio —un Worker de
+  Cloudflare de unas 30 líneas— que guarde la key del lado del servidor: ahí sí se puede
+  usar la API de verdad y sumar captcha verificado, sin rehacer el diseño.
+
+Tampoco se puede factorizar a un snippet: se intentó con un componente con props y el
+MDX de Mintlify dejaba de renderizar todo lo que viniera debajo. Se repite en los tres
+archivos, y al cambiar la lista hay que tocar los tres más `docs.json`. El `name` del
+iframe tiene que seguir siendo único por página.
+
+Cuando una entrada nueva llega a `main`, el workflow
+[`changelog-newsletter.yml`](.github/workflows/changelog-newsletter.yml) toma la
+sección `##` más reciente de **los tres** changelogs y arma **un solo correo** con los
+tres idiomas apilados: inglés arriba, después Español y Português.
+
+Es un correo y no tres a propósito. Segmentar por idioma exige etiquetar suscriptores,
+que en Buttondown es un add-on pago y ataría la lista a una función de un proveedor
+puntual. Así todos reciben todo y leen el idioma que quieren.
+
+**EN decide si el correo sale.** Solo una entrada nueva en `en/changelog.mdx` dispara el
+envío. Las traducciones viajan de acompañantes, y cada una entra **solo si su propia
+entrada también cambió en ese commit** — una traducción vieja nunca se publica como si
+fuera la nueva. Cuando alguna queda afuera, el log lo dice.
+
+En la práctica: escribí las tres versiones en el mismo commit y salen las tres.
+
+**Solo se envía si el título `##` más nuevo cambió.** Editar una entrada ya publicada
+(una errata, un enlace roto) no vuelve a enviar el correo.
+
+El formulario de suscripción queda por encima del primer `##`, así que nunca entra en
+el cuerpo del correo.
+
+### Configuración necesaria
+
+En **Settings** del repositorio en GitHub:
+
+| Tipo | Nombre | Valor |
+| --- | --- | --- |
+| Secret | `BUTTONDOWN_API_KEY` | Clave de API de Buttondown (Settings → Programming) |
+| Variable | `DOCS_BASE_URL` | URL pública de la doc, p. ej. `https://docs.fire.rest` |
+
+La lista en Buttondown es `fire-docs`, y ese nombre aparece en cuatro lugares:
+`en/changelog.mdx`, `es/changelog.mdx`, `pt/changelog.mdx` (el `action` del formulario)
+y `docs.json` (el link **Subscribe to updates** de la barra superior).
+
+### Probar sin enviar
+
+En la pestaña **Actions** → *Changelog newsletter* → **Run workflow**, con
+`dry_run` activado: imprime el correo en el log sin enviarlo. El modo dry-run
+renderiza la entrada más reciente aunque un envío real no la mandaría (por ser una
+edición), para que siempre se pueda previsualizar. En local:
+
+```bash
+DRY_RUN=true DOCS_BASE_URL=https://docs.fire.rest node .github/scripts/send-changelog-email.mjs
+```
+
 ## Ayuda
 
 - [Documentación de Mintlify](https://mintlify.com/docs)

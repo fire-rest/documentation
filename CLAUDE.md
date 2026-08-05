@@ -72,6 +72,27 @@ Reglas:
 - product.updated y product.availability_changed usan `targets[]` — un solo evento cubre todas las tiendas afectadas
 - stores.sync y menus.sync: batches de hasta 50 items, con batchIndex/batchTotal
 
+## Changelog — usá la skill `changelog-entry`
+Antes de escribir o editar una entrada en `*/changelog.mdx`, leé
+`.claude/skills/changelog-entry/SKILL.md`: formato, tono, cuándo advertir y las reglas
+del correo. Lo de abajo es el resumen mínimo.
+
+## Changelog — el formato dispara correos, no lo rompas
+Al publicar una entrada en `*/changelog.mdx` hay un envío de email atrás
+(`.github/workflows/changelog-newsletter.yml`). Reglas que el script asume:
+
+- **La entrada nueva va arriba de todo, con `## ` de primer nivel.** El script toma
+  desde el primer `## ` hasta el siguiente; el título en inglés es el asunto del correo.
+- **Un solo correo lleva los tres idiomas.** `en/changelog.mdx` decide si sale; ES y PT
+  se suman solo si su propia entrada también cambió en ese commit. Escribí las tres
+  versiones juntas o las traducciones se pierden ese envío.
+- **Cambiar el título `## ` de una entrada ya publicada reenvía el correo.** Para
+  corregir una errata, editá el cuerpo, nunca el título.
+- **Nada de contenido nuevo por encima del primer `## `** — ahí vive el formulario de
+  suscripción y todo lo que esté ahí queda fuera del correo.
+- Solo `<Note>/<Warning>/<Info>/<Tip>/<Check>` sobreviven la conversión a Markdown
+  (pasan a blockquote). Cualquier otro componente pierde el tag y conserva el texto.
+
 ## Pendiente para construir payloads
 - Lista definitiva de estados de orden (order.status_changed)
 - Confirmación de mecanismo de firma de webhooks (X-Fire-Signature)

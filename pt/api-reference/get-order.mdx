@@ -1,0 +1,130 @@
+---
+title: "Obter pedido"
+api: "GET https://api.fire.rest/api/v1/fire/external/orders/{orderId}"
+description: "Leia um pedido por qualquer uma de suas referências, com projeção de campos. O pedido deve pertencer ao account e vendor da sua API key."
+authMethod: "bearer"
+---
+
+Retorna um pedido projetado conforme `fields`. Se o pedido não existe — ou pertence a outro tenant —
+a resposta é `404` (a existência nunca é vazada entre tenants).
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `orders:read`. A key **deve ser vendor-scoped** — keys sem `vendorId`
+  são rejeitadas com `403`.
+</ParamField>
+
+## Path params
+
+<ParamField path="orderId" type="string" required>
+  Qualquer uma das três referências públicas do pedido:
+
+  | referência | o que é |
+  | --- | --- |
+  | `orders.id` | o UUID interno do Fire |
+  | `order_external` | o id que você atribuiu ao criar o pedido |
+  | `metadata.order_id` | cópia do id externo dentro do pedido |
+
+  Não precisa traduzir: use o id que você já conhece.
+</ParamField>
+
+<Note>
+  É o mesmo conjunto de referências aceito por [Cancelar pedido](/pt/api-reference/cancel-order), então
+  o id com que você criou o pedido também serve para lê-lo.
+</Note>
+
+## Query params
+
+<ParamField query="fields" type="string">
+  Projeção — veja [Projeção de campos](/pt/api-reference/list-orders#projecao-de-campos). Omita para
+  retornar todos os campos.
+</ParamField>
+
+## Requisição
+
+<RequestExample>
+```http
+GET https://api.fire.rest/api/v1/fire/external/orders/7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f?fields=id,orderCode,status,orderLines,totals
+x-api-key: <sua_api_key>
+```
+</RequestExample>
+
+## Resposta
+
+Um objeto pedido, projetado conforme `fields`. Veja a lista completa de campos em
+[Projeção de campos](/pt/api-reference/list-orders#projecao-de-campos).
+
+Para acompanhar um pedido que está sendo cobrado em partes, peça `settlement` (quanto já entrou) e
+`payments` (com o quê) — veja
+[Progresso da cobrança](/pt/api-reference/list-orders#progresso-da-cobranca-settlement-e-payments).
+
+<ResponseExample>
+```json 200
+{
+  "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+  "orderCode": "OC-1024",
+  "status": "COMPLETED",
+  "orderLines": [
+    { "productId": "p1", "quantity": 2 }
+  ],
+  "totals": [
+    { "currencyCode": "USD", "total": 125000 }
+  ]
+}
+```
+
+```json 200 — um pedido ainda sendo cobrado (fields=orderCode,status,settlement,payments)
+{
+  "orderCode": "OC-1024",
+  "status": "OPEN",
+  "settlement": {
+    "status": "recorded",
+    "origin": "ledger",
+    "paidSoFar": "200000",
+    "total": "359000",
+    "currencyCode": "BRL",
+    "tenderCount": 1,
+    "declinedCount": 0,
+    "amountMismatch": true
+  },
+  "payments": [
+    {
+      "status": "approved",
+      "amount": "200000",
+      "currencyCode": "BRL",
+      "method": "CASH",
+      "transactionId": "POS-0001",
+      "occurredAt": "2026-07-30T16:20:04.000Z"
+    }
+  ]
+}
+```
+
+```json 409 — a referência corresponde a mais de um pedido
+{
+  "success": false,
+  "error": "CONFLICT",
+  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate"
+}
+```
+
+```json 404 — não existe ou é de outro tenant
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "Order not found with ID 7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+}
+```
+</ResponseExample>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Listar pedidos" icon="receipt" href="/pt/api-reference/list-orders">
+    Lista todos os pedidos do seu account e vendor.
+  </Card>
+  <Card title="Listar pedidos da loja" icon="store" href="/pt/api-reference/list-store-orders">
+    Lista os pedidos de uma loja específica.
+  </Card>
+</CardGroup>

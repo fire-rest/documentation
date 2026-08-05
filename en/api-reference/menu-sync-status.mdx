@@ -1,0 +1,234 @@
+---
+title: "Menu sync status"
+api: "POST https://app.fire.rest/api/v1/webhooks/xmart/sync-status"
+description: "Inbound endpoint your integrator POSTs to when it finishes publishing a vendor's menu/products downstream. Fire finalizes the vendor's pending sync logs and recomputes the menu's sync status. One status per vendor by default (all-or-nothing), unless you send eventId to target a single aggregator assignment."
+authMethod: "bearer"
+---
+
+This endpoint is **inbound**: your integrator (the system that publishes Fire's catalog downstream, an aggregator, an XMART client, a POS, etc.) POSTs to it once it finishes the asynchronous publish of a vendor's products. Fire authenticates the request, resolves the vendor, **finalizes** every sync log that was left pending for that vendor, and **recomputes** the affected menu's `syncStatus`. This is the callback that closes the loop opened by a menu/products publication event carrying `autoPublish`.
+
+<Note>
+  **This endpoint is synchronous.** Fire authenticates, resolves the vendor, finalizes the pending sync logs, recomputes the menu status, and returns **`200 OK`** with the number of rows it flipped (`updated`). There is no queue and no polling; unlike the [aggregator order status](/en/api-reference/aggregator-order-status) and [KDS](/en/api-reference/kds-order-status) webhooks, the work is done before the response returns.
+</Note>
+
+<Note>
+  **The correlation id is optional.** If you send `eventId` (aggregator channels only), Fire closes only that assignment's sync-log row. If you omit it, the only key is `vendorId`, and Fire applies the result to **all** of the vendor's pending sync logs for the entity resolved from `type` (all-or-nothing): if the vendor had several assignments and only some failed, you still send one `FAILED`, and every pending row for that vendor goes to `FAILED`, because without `eventId` Fire cannot tell which assignment failed. In that case, correctness relies on Fire's **per-vendor lock**, since there is never more than one publish batch pending for a vendor at a time. See [Correlation & the vendor lock](#correlation--the-vendor-lock).
+</Note>
+
+## Authentication
+
+This endpoint requires a **vendor-scoped API key with the `webhooks:xmart` scope** (account + vendor binding). Fire enforces that the `vendorId` in the body belongs to that vendor. Keys without the scope, or without a vendor binding, are rejected with `403 Forbidden`.
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire vendor-scoped API key with scope `webhooks:xmart`. Generate one from **Developers → API Management** for the account/vendor whose sync results this key may report.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  Optional `Bearer <token>`, accepted as a legacy alternative to `x-api-key`. Send one or the other.
+</ParamField>
+
+## Request body
+
+<ParamField body="vendorId" type="string" required>
+  The vendor identifier in **dotted** form (e.g. `100.6.1350`), the same value Fire uses on the sync logs and stores. It must belong to the vendor bound to your API key.
+
+  <Note>
+    Outbound publication payloads carry the **numeric legacy** vendor id (e.g. `1350`) inside `list`. This callback is different: send the **dotted** id.
+  </Note>
+</ParamField>
+
+<ParamField body="type" type="string" required>
+  Which entity your integrator published. Compared **case-insensitively**.
+
+  - `PRODUCTS` finalizes **both** the menu and the product dimensions of the vendor; the menu sync pushes products downstream, and your integrator reports the outcome as `PRODUCTS`.
+  - Any other value (`STORES`, …) finalizes **only** that entity's pending rows.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  The publish result for the vendor. Enum: `SUCCESS` | `FAILED`.
+</ParamField>
+
+<ParamField body="message" type="string">
+  Optional detail (failure reason, provider trace). Stored on the finalized rows as the error detail when `status` is `FAILED`; ignored (and cleared) when `status` is `SUCCESS`. If omitted while `status` is `FAILED`, Fire stores a generic default failure message instead.
+</ParamField>
+
+<ParamField body="eventId" type="string">
+  The `event.id` from the Fire envelope your integrator received for this assignment (`menu.updated` / `product.updated`), format `evt_<12 hex>` (e.g. `evt_9f2c41ab77de`). One per assignment (store × channel × fulfillment).
+
+  When present, Fire closes **only the sync-log row for that assignment**, instead of sweeping every pending row for the vendor. **Aggregator channels only**: omit it for other integrators, which get the vendor-wide sweep described above.
+</ParamField>
+
+### `type` — what gets finalized
+
+| `type` (case-insensitive) | Entities finalized | Why |
+|---|---|---|
+| `PRODUCTS` | menu **and** products | The menu sync pushes products downstream; your integrator reports the result as `PRODUCTS`, and both dimensions of the vendor close on that one callback. |
+| any other (`STORES`, …) | that entity only | Each type closes only its own pending rows. |
+
+### Examples
+
+```json PRODUCTS — publish succeeded
+{
+  "vendorId": "100.6.1350",
+  "type": "PRODUCTS",
+  "status": "SUCCESS"
+}
+```
+
+```json PRODUCTS — publish failed (with detail)
+{
+  "vendorId": "100.6.1350",
+  "type": "PRODUCTS",
+  "status": "FAILED",
+  "message": "Product 4471 rejected: missing tax info"
+}
+```
+
+```json PRODUCTS — aggregator channel, single assignment failed (eventId)
+{
+  "vendorId": "100.6.1350",
+  "type": "PRODUCTS",
+  "status": "FAILED",
+  "eventId": "evt_9f2c41ab77de",
+  "message": "Product 4471 rejected: missing tax info"
+}
+```
+
+## What Fire does
+
+Once authenticated and resolved, Fire, in a single synchronous pass:
+
+1. If `eventId` is present, resolves the **single** pending sync-log row that matches it, guarded by `vendorId`. Otherwise, resolves the affected entities from `type` (`PRODUCTS` → menu **and** products; any other → that entity only) and targets **every** pending row for the vendor across those entities.
+2. **Finalizes** the resolved row(s): sets the `status` you sent, stamps the completion time, and records `message` as the error detail when `FAILED`. The number of rows flipped is returned as `updated`.
+3. If **no rows** were pending, it is an **idempotent no-op** → `200` with `updated: 0`.
+4. **Recomputes** the affected menu's `syncStatus` from its finalized rows:
+   - any dimension still pending → `PENDING`
+   - all terminal and all succeeded → `SYNCED`
+   - all terminal and any failed → `FAILED`
+5. Finalizing the rows **releases the vendor lock**: there are no more pending rows for those entities, so the next publish batch for the vendor can start.
+
+## Response
+
+On success the endpoint returns **`200 OK`** with the number of sync-log rows it flipped, wrapped in Fire's standard success envelope. A `200` means the work is **done**: the logs are finalized and the menu status is recomputed.
+
+<ResponseField name="success" type="boolean">
+  Always `true` on a `200` response.
+</ResponseField>
+
+<ResponseField name="data.ok" type="boolean">
+  Always `true` when the request was processed.
+</ResponseField>
+
+<ResponseField name="data.updated" type="number">
+  How many pending sync-log rows were finalized. Without `eventId`, this can be any count across the vendor's pending rows; `0` on an idempotent no-op. With `eventId`, it's `0` or `1`: at most the one assignment row that matched.
+</ResponseField>
+
+<ResponseExample>
+```json 200 — processed (rows finalized)
+{
+  "success": true,
+  "data": { "ok": true, "updated": 2 }
+}
+```
+
+```json 200 — idempotent no-op (nothing was pending)
+{
+  "success": true,
+  "data": { "ok": true, "updated": 0 }
+}
+```
+
+```json 400 — validation error (missing field or status out of enum)
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "status must be one of SUCCESS, FAILED"
+}
+```
+
+```json 401 — missing or invalid API key
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
+}
+```
+
+```json 403 — missing scope or wrong vendor
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "vendorId 100.6.1350 does not belong to this key's vendor"
+}
+```
+
+```json 400 — failure while finalizing or recomputing (server-side, but returned as 4xx)
+{
+  "success": false,
+  "error": "DOMAIN_ERROR",
+  "message": "Failed to finalize sync logs for vendor 100.6.1350"
+}
+```
+
+```json 500 — unhandled error, including malformed JSON
+{
+  "success": false,
+  "error": "INTERNAL_SERVER_ERROR",
+  "message": "An unexpected error occurred. Retry the request."
+}
+```
+</ResponseExample>
+
+<Note>
+  A failure while finalizing rows or recomputing the menu status comes back as **`400 DOMAIN_ERROR`**, not `500`, even though it's a server-side failure (e.g. a transient database error). See [Idempotency & retries](#idempotency--retries): a naive "retry only on `5xx`" policy will **not** retry this case.
+</Note>
+
+## Idempotency & retries
+
+The callback is **safe to re-run**. It keys off the vendor's **pending** rows, so:
+
+| Scenario | Result |
+|---|---|
+| First delivery, rows were pending | `200` with `updated: N` (rows finalized) |
+| Same callback resent after it already finalized | `200` with `updated: 0` (idempotent no-op) |
+| Missing `vendorId` / `type` / `status`, or `status` out of enum | `400 VALIDATION_ERROR`, not retryable, the body is malformed |
+| Failure while finalizing or recomputing (e.g. transient database error) | `400 DOMAIN_ERROR`, **retryable** |
+| Key missing `webhooks:xmart`, or `vendorId` not this key's vendor | `403` |
+| Unhandled error | `500 INTERNAL_SERVER_ERROR`, retryable |
+
+<Warning>
+  Retrying only on `5xx` is **not enough**. The most likely transient failure, Fire finalizing the rows, comes back as `400 DOMAIN_ERROR`, not `500`. Retry on that code too. `400 VALIDATION_ERROR` is the one 400 you should **not** retry: it means the body itself is invalid.
+</Warning>
+
+The endpoint is safe to re-run in all of these cases: a retry after a successful finalize is a clean no-op (`updated: 0`), and a retry after `DOMAIN_ERROR` re-attempts the same finalize.
+
+## Correlation & the vendor lock
+
+**With `eventId`** (aggregator channels): Fire matches the row directly by that id, guarded by `vendorId`. No ambiguity: the callback closes exactly the assignment it refers to.
+
+**Without `eventId`**: the only key is `vendorId`. Fire relies on a **per-vendor lock**: while a publish batch is in flight, the vendor's rows are pending and no second batch can start, so **all** pending rows for the vendor belong to the batch this callback finalizes.
+
+<Warning>
+  The lock is **indefinite**: only a finalizing callback releases it. If the callback never arrives, the vendor stays locked (its next publish cannot start) until manual intervention. Always send the callback, even on `FAILED`.
+</Warning>
+
+## Relation to the publication flow
+
+This callback is the counterpart of the **`autoPublish`** flag Fire sets on the **last publication request per vendor** in a menu/products publication event. That flag tells your integrator to publish the batch downstream; when the publish finishes, your integrator reports the outcome here so Fire can finalize the sync logs and recompute the menu's `syncStatus`.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Menu publication" icon="book-open" href="/en/guides/menu-publication">
+    The publication flow this callback closes: how Fire emits the menu/products a vendor must publish.
+  </Card>
+  <Card title="Aggregator order status" icon="truck" href="/en/api-reference/aggregator-order-status">
+    The sibling inbound webhook for delivery status, same auth model, but asynchronous (queue + polling).
+  </Card>
+  <Card title="Menu updated" icon="utensils" href="/en/webhook-reference/menu-updated">
+    The outbound menu publication event carrying the catalog to publish.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/en/authentication">
+    How API keys, scopes, and vendor binding work.
+  </Card>
+</CardGroup>
