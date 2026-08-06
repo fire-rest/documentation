@@ -1,0 +1,246 @@
+---
+title: "Component health"
+api: "POST https://api.fire.rest/api/v1/fire/external/component-health"
+description: "Heartbeat a kiosk, KDS station or POS sends to report it is alive. Fire infers the outage from the missing heartbeat."
+authMethod: "bearer"
+---
+
+A device can only report that it is **alive**. Nobody announces their own death: an outage is inferred
+from the *absence* of a heartbeat. That is why this contract is a periodic beat and not an alert —
+you POST here every cycle (the fleet runs at 600&nbsp;s), and Fire's availability dashboard reads the
+silence.
+
+<Note>
+  **There is nothing to register first.** A component unknown to Fire is created on its first
+  heartbeat and enters a **trial period** — it is not watched until it has reported in **2 distinct
+  hours**. That is where typos die: a mistyped `componentId` reports once, never returns, and never
+  raises an alert.
+</Note>
+
+## Authentication
+
+This endpoint requires a **vendor-scoped API key with the `component-health:write` scope** (account +
+vendor binding). Keys without the scope, or without a vendor binding, are rejected with `403`.
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire vendor-scoped API key with scope `component-health:write`. Generate one from
+  **Developers → API Management**.
+</ParamField>
+
+The **account and vendor are derived from the key**, never from the body. Do not send `accountId`.
+
+## Request body
+
+<ParamField body="componentType" type="string" required>
+  What kind of device is beating. One of `kiosk`, `kds_station` or `pos`.
+</ParamField>
+
+<ParamField body="componentId" type="string" required>
+  Your id for this device, 1–120 characters. **It must be stable** — it has to survive reboots,
+  updates and reinstalls. If it changes, Fire sees a *different* component: the old one stops beating
+  and is retired after 7 days, the new one starts with no history and re-enters the trial period. Use
+  the hardware serial, an install id persisted to disk, or the terminal id. Never a user-editable
+  name (`Kitchen 1`) or an id regenerated per boot.
+</ParamField>
+
+<ParamField body="storeId" type="string" required>
+  UUID of the store this component belongs to. Validated against your stores — it must exist and
+  belong to the API key's account. Required: a component with no store falls out of the store-level
+  availability calculation, and a store with 3 kiosks where one is misconfigured would be scored over
+  2 — reporting "2 of 2, all good" while one is down.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  `online` or `degraded`. **There is no `down`** — a device cannot declare itself dead; Fire infers
+  that from the missing heartbeat. `degraded` means the device is alive but something it needs is
+  not: the device itself decides that, not Fire.
+</ParamField>
+
+<ParamField body="sentAt" type="string">
+  ISO 8601 timestamp **with offset** of when the device *emitted* the beat — not when it arrived.
+  Without it, everything is dated at the moment the request touched the server, so a beat delayed by
+  the network that lands after the outage was already declared stretches that outage artificially. It
+  also drops out-of-order beats: a `sentAt` older than the last one processed is ignored. Optional,
+  but send it.
+</ParamField>
+
+<ParamField body="intervalSeconds" type="integer">
+  The cadence the device *believes* it has, 60–86400. Informational — the cadence in force is the one
+  Fire returns in `X-Heartbeat-Interval`.
+</ParamField>
+
+<ParamField body="offlineSince" type="string | null">
+  ISO 8601 timestamp with offset of when the device lost connectivity, reported **when it recovers**.
+  This dates the outage when it actually happened rather than when Fire found out — a kiosk with no
+  network keeps selling from its offline queue, and without this field it would be charged downtime
+  it never had.
+</ParamField>
+
+<ParamField body="degradedReason" type="string">
+  Why the device is not `online`, as a **normalized code** (1–60 chars, snake_case, no spaces). This
+  is what makes a deliberately free-form detail analyzable — see the shared vocabulary below.
+</ParamField>
+
+<ParamField body="appVersion" type="string">
+  The device's app version, 1–40 characters. It has its own field — rather than living inside
+  `details` — because it is the only datum universal to all three types, and "this version fails
+  more" is the most common correlation across a fleet.
+</ParamField>
+
+<ParamField body="details" type="object">
+  Free-form context. Stored as-is: Fire **does not interpret any key**, deliberately, so a release on
+  your side never breaks ingestion. Keys are **per component type** — a KDS screen has no printer or
+  pinpad, a POS does. See the key contract below.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/api/v1/fire/external/component-health
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "componentType": "kiosk",
+  "componentId": "K082",
+  "storeId": "9f3a1c22-5f10-4a1e-9a0b-3f7e2b1d4c55",
+  "status": "degraded",
+  "sentAt": "2026-08-06T14:32:05.120-03:00",
+  "intervalSeconds": 600,
+  "degradedReason": "printer_down",
+  "appVersion": "2.14.1",
+  "details": { "printer": "error", "pinpad": "ok", "queuedOrders": 3 }
+}
+```
+</RequestExample>
+
+## Response
+
+On success the endpoint returns **`204 No Content`** — no body. A heartbeat creates no resource you
+would later fetch, and an acknowledgement with a body would only add bytes to a request every device
+makes every cycle.
+
+<ResponseField name="X-Heartbeat-Interval" type="integer">
+  Response header carrying the cadence **in force**, in seconds. If it differs from the one you are
+  using, adopt it on the next cycle. The interval is configurable per device on Fire's side; if
+  devices ignore the header, that control is ours only on paper — we would change the number in the
+  database and the fleet would keep its old rhythm until your next release.
+</ResponseField>
+
+## What we need from each device
+
+Five things. None is optional in practice: without them the system still works, but with worse data —
+and in two cases it **lies towards optimism**, which is the worst direction for a monitor.
+
+### 1. A stable `componentId`
+
+It has to survive reboots, updates and reinstalls. A changing id makes the fleet look like it renews
+itself and keeps uptime from ever stabilizing.
+
+### 2. Jitter on startup
+
+Do not beat on the same second as everyone else. Add a random offset of up to one full interval
+before the first heartbeat, and keep it. Ten thousand devices with the same cadence, all rebooted
+after a regional power cut, stay synchronized forever — the problem is not the average load, it is
+that exact second.
+
+### 3. Obey `X-Heartbeat-Interval`
+
+Every `204` carries the cadence in force. Adopt it on the next cycle. The dashboard's bar granularity
+is derived from that value, so a device that ignores it makes the screen claim a precision the data
+does not have.
+
+### 4. Send `sentAt`
+
+The device's **emission** time, not the arrival time. See the field above for why it changes what
+gets counted as downtime.
+
+### 5. Agree on `degradedReason` — and on what a KDS reports
+
+`details` is free-form on purpose: the device knows what hardware it has, Fire does not. But to
+answer *"what fails most?"* the reasons need a shared vocabulary.
+
+| Code | When |
+|---|---|
+| `printer_down` | The printer is not responding |
+| `pinpad_down` | The pinpad is not responding |
+| `backend_unreachable` | The device cannot reach its own backend |
+| `queue_backlog` | Work queue piled up above the threshold |
+| `peripheral_other` | Another peripheral, detailed in `details` |
+
+`details` keys by component type:
+
+- **`kiosk`** → `printer`, `pinpad`, `queuedOrders`
+- **`pos`** → `printer`, `pinpad`
+- **`kds_station`** → **still to be agreed with the KDS team.** A screen has no sales peripherals;
+  the candidates are its connection to its own backend and the orders left undispatched in queue.
+  Until that is settled, do not assume any key here.
+
+Without the agreement, two teams send different keys for the same thing and the dashboard cannot tell
+what to show. The passthrough allows it; the consistency has to be arranged.
+
+## How Fire reads it
+
+- **Automatic enrollment and trial period.** The first heartbeat creates the component. It is not
+  watched until it has reported in **2 distinct hours**. A mistyped id and a device that was
+  installed and died instantly look identical — neither alerts. The one-off reports stay listed for
+  someone to look at, without polluting the dashboard.
+- **Outage declared after 2 missed intervals**, not after the first one. A single beat lost to the
+  network is not an outage.
+- **Retired after 7 days** without a beat: the component leaves the dashboard on its own. If it comes
+  back, it reappears **with its whole history**.
+- **Outside store hours nothing counts.** Intervals are clipped to that store's real operating day —
+  when it actually opened and closed, not its declared schedule. A kiosk switched off overnight adds
+  no downtime.
+
+## Errors
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `400` | Invalid body, **or** a `storeId` that does not exist / belongs to another account | Read the detail in the response and fix the payload |
+| `401` | Missing or invalid API key | Check the `x-api-key` header |
+| `403` | The key lacks the `component-health:write` scope or a vendor binding | Request the scope |
+| `5xx` | Our failure | Wait for the next cycle |
+
+A store that is not yours comes back as **`400`, not `404`**: from the contract's point of view it is
+an invalid body, and a `404` would confirm to a key that the uuid exists in someone else's account.
+
+**On retrying:** a lost heartbeat is not recoverable. Resending the one from ten minutes ago adds
+nothing, and with a correct `sentAt` it is dropped as out of order. On a `5xx`, wait for the next
+cycle — never accumulate stale beats.
+
+<ResponseExample>
+```json 400 — validation error
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "storeId must be a store of your account."
+}
+```
+
+```json 401 — missing or invalid API key
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
+}
+```
+
+```json 403 — missing scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "component-health:write requires a vendor-scoped API key (account + vendor binding). Generate one from /developers/firepos-api-management."
+}
+```
+</ResponseExample>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="KDS order status" icon="display" href="/en/api-reference/kds-order-status">
+    The other endpoint your kitchen devices call — order lifecycle instead of availability.
+  </Card>
+  <Card title="Introduction" icon="book" href="/en/api-reference/introduction">
+    Base URLs, API keys, scopes and error format.
+  </Card>
+</CardGroup>
