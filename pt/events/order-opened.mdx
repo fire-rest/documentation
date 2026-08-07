@@ -1,0 +1,182 @@
+---
+title: "order.opened"
+description: "Um pedido foi injetado e está ABERTO — ele existe, mas ninguém pagou ainda. A porta de entrada do pagamento diferido: cozinhar, faturar ou despachar antes do dinheiro chegar."
+---
+
+<Tabs>
+  <Tab title="v1 · atual">
+    Você está vendo o contrato **atual (v1)** de `order.opened` — sua **primeira versão**. O evento é novo, então não tem contrato anterior. Nasceu com `data.policy` e `data.lastKnown` já no snapshot.
+  </Tab>
+</Tabs>
+
+`order.opened` dispara quando um pedido é injetado **já aberto**: ele existe no Fire, a cozinha pode começar, mas nenhum pagamento foi confirmado. Carrega o mesmo **snapshot V4** que [`order.completed`](/pt/events/order-completed), então tudo o que você faz com um pedido completado também pode fazer aqui.
+
+Este é o evento que torna o pagamento diferido possível. Sem ele, um pedido não pago seria invisível para suas integrações até o dinheiro chegar.
+
+## Condição de disparo
+
+O Fire emite `order.opened` **uma vez**, na injeção, quando:
+
+- `order.status === "OPEN"`
+
+Essa é a única condição. Diferente de `order.completed`, **não há guarda de pagamento** — `paymentStatus` normalmente vem como `"PENDING"` e isso é o esperado.
+
+<Warning>
+`order.opened` **não** dispara para pedidos injetados como `COMPLETED` ou `CANCELLED`. Esses pedidos nunca "abrem": pulam o ciclo de pagamento diferido por completo e produzem apenas [`order.completed`](/pt/events/order-completed). Emiti-lo para eles arriscaria despachar o mesmo pedido duas vezes para a cozinha.
+</Warning>
+
+| | |
+|---|---|
+| Cobertura | Global (todos os países, todos os canais) |
+| Chave de idempotência | `event.id` (= `flow_executions.id`) |
+| Dispara mais de uma vez? | Não, exceto em retentativa — use `event.id` para deduplicar |
+| Ordem de chegada | Não garantida entre pedidos — ordene por `data.createdAt` se precisar |
+| Retentativas | Até 5 tentativas com backoff exponencial |
+
+## A vida do pedido depois deste evento
+
+`order.opened` é o **primeiro** de até três eventos do mesmo pedido. Conhecer a sequência importa, porque esse pedido vai chegar ao seu endpoint mais de uma vez:
+
+```
+order.opened      o pedido existe, ninguém pagou      status: OPEN
+   ↓  (minutos depois — o entregador cobra, o cliente paga)
+order.completed   a cobrança quitou o total inteiro   status: COMPLETED
+   ↓  (se um documento fiscal for autorizado)
+order.invoiced    SEFAZ autorizou a NFC-e / NF-e      (Brasil)
+```
+
+Um pedido cancelado antes do pagamento produz [`order.cancelled`](/pt/events/order-cancelled) em vez de `order.completed`.
+
+<Note>
+Se o seu fluxo emite um documento fiscal em `order.opened`, o **mesmo pedido** vai passar de novo pelo seu nó fiscal em `order.completed`. Essa segunda passagem é esperada e inofensiva: o Fire detecta o documento existente e devolve um resultado idempotente de "já faturado" em vez de emitir outro. Veja [Política de pagamento diferido](#política-de-pagamento-diferido) abaixo.
+</Note>
+
+## O que vem em `trigger.data`
+
+`trigger.data` é o **snapshot V4** — exatamente a mesma estrutura que `order.completed` carrega, com duas diferenças que você deve esperar:
+
+| Campo | Em `order.opened` | Em `order.completed` |
+|---|---|---|
+| `status` | `"OPEN"` | `"COMPLETED"` |
+| `paymentStatus` | normalmente `"PENDING"` | `"SUCCEEDED"` |
+| `payments.paymentMethods[]` | o que o PDV **declarou** | o que foi realmente **cobrado** |
+
+Essa última linha é a que surpreende os integradores. Leia com atenção.
+
+### O meio declarado não é o meio cobrado
+
+Em `order.opened` ninguém pagou, então `payments.paymentMethods[]` carrega o meio que o PDV **anunciou** ao criar o pedido — frequentemente o marketplace (`IFOOD`, `RAPPI`) ou um placeholder. `transactionStatus` vem como `"PENDING"` e `transactionId` geralmente vazio.
+
+Quando a cobrança entra, o Fire **sobrescreve** esse array com os tenders reais e emite `order.completed`. Mesmo pedido, mesmo campo, significado diferente:
+
+```json order.opened — declarado
+{
+  "paymentMethodCode": "CASH",
+  "processor": "IFOOD",
+  "totalBill": 35.9,
+  "transactionStatus": "PENDING",
+  "transactionId": ""
+}
+```
+
+```json order.completed — realmente cobrado
+{
+  "paymentMethodCode": "CREDIT_CARD",
+  "processor": "CIELO",
+  "card": { "brand": "VISA", "lastFourDigits": "4242" },
+  "totalBill": 35.9,
+  "transactionStatus": "APPROVED",
+  "transactionId": "A1",
+  "authorizationCode": "AUTH-A1"
+}
+```
+
+<Warning>
+Nunca trate `payments.paymentMethods[]` de `order.opened` como evidência de recebimento. É uma intenção, não um fato. Se você precisa saber o que foi realmente arrecadado, aguarde `order.completed` ou chame [Get order](/pt/api-reference/get-order), que expõe `settlement`.
+</Warning>
+
+## Política de pagamento diferido
+
+`data.policy.deferredPayment` é a razão de existir deste evento. Ele diz se o pedido **pode ser trabalhado antes do pagamento**: cozinhado, faturado, despachado.
+
+A política é resolvida **uma única vez**, na injeção, a partir da combinação canal × serviço × meio de pagamento declarado. Depois é **carimbada de forma imutável** no pedido, e todos os eventos seguintes a repetem sem recalcular. Dois eventos do mesmo pedido sempre carregam uma `policy` idêntica.
+
+```json
+"policy": {
+  "deferredPayment": {
+    "eligible": true,
+    "resolvedAt": "2026-08-02T15:55:42.407Z",
+    "configVersion": "fnv1a:3144c6fb",
+    "resolvedFrom": {
+      "channelCode": "APP",
+      "fulfillmentCode": "DELIVERY",
+      "paymentMethod": "CASH"
+    }
+  }
+}
+```
+
+| Campo | Tipo | Significado |
+|---|---|---|
+| `eligible` | `boolean` | `true` → aja agora, o dinheiro vem depois. `false` → o pedido é pré-pago ou a política não pôde ser resolvida; aguarde `order.completed`. |
+| `resolvedAt` | `string` (ISO 8601) | Quando a decisão foi tomada — na injeção, não na emissão. |
+| `configVersion` | `string \| null` | Impressão digital da configuração usada. Para forense: se dois pedidos decidiram diferente, compare isto. `null` quando não pôde ser calculado. |
+| `resolvedFrom` | `object` | As três entradas por trás da decisão. `paymentMethod` é o meio **declarado**, e por isso pode não coincidir com o que foi cobrado no fim. |
+
+**Por que imutável?** Porque a decisão precisa ficar auditável. Se a configuração da loja mudar uma hora depois, um pedido já em voo deve continuar se comportando como foi instruído — e você precisa poder provar por quê. Mesmo padrão de `store.storeFiscalConfig`.
+
+<Note>
+`policy` está presente em **todos** os eventos de pedido (`order.opened`, `order.completed`, `order.invoiced`, `order.cancelled`), não só neste. Um pedido com `eligible: false` também carrega o bloco — ele apenas diz que a resposta foi não.
+</Note>
+
+## Último estado conhecido
+
+`data.lastKnown` é uma foto **orientativa** do que o Fire sabia sobre o estado de cozinha e fiscal do pedido no momento da emissão do evento.
+
+```json
+"lastKnown": {
+  "kds": null,
+  "fiscal": { "status": "processing", "sourceEvent": "fiscal.callback" }
+}
+```
+
+| Campo | Tipo | Significado |
+|---|---|---|
+| `kds` | `object \| null` | Último estado conhecido da cozinha. `null` quando nada rodou ainda. |
+| `fiscal` | `object \| null` | Último estado fiscal conhecido, com o evento que o produziu. `null` quando não há nem se espera documento. |
+
+<Warning>
+**`lastKnown` é uma dica, nunca uma fonte de verdade.** Pode estar desatualizado, e em `order.opened` costuma vir `null` simplesmente porque nada aconteceu ainda. Não condicione uma ação irreversível a este campo — se você está prestes a emitir um documento fiscal, devoluções não são algo que você queira descobrir que precisava. Verifique o estado real, ou confie na idempotência do Fire.
+
+O próprio Fire segue essa regra: seu nó fiscal relê o estado do documento na fonte antes de emitir, e ignora `lastKnown` completamente.
+</Warning>
+
+Valores possíveis de `fiscal.status`: `pending`, `processing`, `authorized`, `contingency`, `cancelling`, `cancelled`, `rejected`, `denied`, `error`. O Fire ainda mantém dois estados internos para pedidos sem documento — esses são reportados aqui como `null`, para não vazar contabilidade interna dentro do seu contrato.
+
+## Todo o resto
+
+Os blocos restantes — `store`, `client`, `channel`, `orderLines`, `fulfillment`, `kds`, `device`, `operator`, `marketing`, `metadata`, `payments.totals` — são idênticos a `order.completed`. Em vez de duplicá-los, veja a [referência de campos de `order.completed`](/pt/events/order-completed#referência-de-campos).
+
+## Erros comuns
+
+<AccordionGroup>
+  <Accordion title="Tratar order.opened como uma venda">
+    Não é. Ninguém pagou. Contar `order.opened` em relatórios de faturamento infla os números e duplica quando `order.completed` chegar para o mesmo `orderId`.
+  </Accordion>
+  <Accordion title="Esperar order.opened para todo pedido">
+    Pedidos pré-pagos (quiosque, checkout web) são injetados já `COMPLETED` e nunca o emitem. Se sua integração depende de `order.opened` chegar primeiro, ela vai pular esses pedidos em silêncio. Assine os dois.
+  </Accordion>
+  <Accordion title="Ler o meio de pagamento como definitivo">
+    Veja [acima](#o-meio-declarado-não-é-o-meio-cobrado). Em `order.opened` é o que o PDV declarou, não o que foi cobrado.
+  </Accordion>
+  <Accordion title="Processar o mesmo pedido duas vezes">
+    O mesmo `orderId` chega em `order.opened` e de novo em `order.completed`. É por design. Faça seu handler idempotente por `(orderId, ação)`, não por `orderId`.
+  </Accordion>
+</AccordionGroup>
+
+## Próximo
+
+- [`order.completed`](/pt/events/order-completed) — o mesmo pedido, quando o dinheiro entra
+- [`order.cancelled`](/pt/events/order-cancelled) — se ele morre antes do pagamento
+- [Confirmar pagamento](/pt/api-reference/confirm-payment) — o endpoint que quita um pedido aberto
+- [Get order](/pt/api-reference/get-order) — leia `settlement` para ver quanto foi realmente arrecadado

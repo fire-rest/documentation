@@ -1,0 +1,248 @@
+---
+title: "Salud de componentes"
+api: "POST https://api.fire.rest/api/v1/fire/external/component-health"
+description: "Latido que un kiosco, una pantalla KDS o una caja POS envía para reportar que está vivo. Fire infiere la caída por la ausencia del latido."
+authMethod: "bearer"
+---
+
+Un equipo **solo puede reportar que está vivo**. Nadie notifica su propia muerte: la caída se infiere
+por la *ausencia* de latido. Por eso el contrato es un latido periódico y no una alerta — le haces
+POST a este endpoint en cada ciclo (la flota corre a 600&nbsp;s) y el tablero de disponibilidad de
+Fire lee el silencio.
+
+<Note>
+  **No hay que registrar nada antes.** Un componente que Fire no conoce se da de alta solo en su
+  primer latido y entra en **período de prueba**: no se lo vigila hasta que reportó en **2 horas
+  distintas**. Ahí muere el typo: un `componentId` mal escrito reporta una vez, no vuelve nunca y
+  nunca llega a alertar.
+</Note>
+
+## Autenticación
+
+Este endpoint requiere una **API key con scope `component-health:write` y binding de vendor** (cuenta
++ vendor). Las keys sin el scope, o sin binding de vendor, se rechazan con `403`.
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con binding de vendor y scope `component-health:write`. Se genera desde
+  **Developers → API Management**.
+</ParamField>
+
+La **cuenta y el vendor se derivan de la key**, nunca del cuerpo. No mandes `accountId`.
+
+## Cuerpo de la solicitud
+
+<ParamField body="componentType" type="string" required>
+  Qué tipo de equipo está latiendo. Uno de `kiosk`, `kds_station` o `pos`.
+</ParamField>
+
+<ParamField body="componentId" type="string" required>
+  Tu identificador del equipo, de 1 a 120 caracteres. **Tiene que ser estable**: debe sobrevivir a
+  reinicios, actualizaciones y reinstalaciones. Si cambia, para Fire es un componente *distinto*: el
+  viejo deja de latir y se da de baja a los 7 días, y el nuevo arranca sin historia y vuelve al
+  período de prueba. Usá el serial del equipo, un id de instalación persistido en disco o el id de su
+  terminal. Nunca un nombre editable por el usuario (`Cocina 1`) ni un id que se regenere en cada
+  arranque.
+</ParamField>
+
+<ParamField body="storeId" type="string" required>
+  UUID de la tienda a la que pertenece el componente. Se valida contra tus tiendas: tiene que existir
+  y ser de la cuenta de la API key. Es obligatorio porque un componente sin tienda queda fuera del
+  cálculo de disponibilidad, y una tienda con 3 tótems donde uno está mal configurado se calcularía
+  sobre 2 — diría "2 de 2, todo bien" mientras uno está caído.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  `online` o `degraded`. **No existe `down`**: un equipo no puede declararse muerto, eso lo infiere
+  Fire por la ausencia de latido. `degraded` significa que el equipo está vivo pero algo que necesita
+  no lo está — y quién decide eso es el propio equipo, no Fire.
+</ParamField>
+
+<ParamField body="sentAt" type="string">
+  Marca de tiempo ISO 8601 **con offset** del momento en que el equipo *emitió* el latido, no de
+  cuando llegó. Sin este dato todo se fecha con el momento en que la solicitud tocó el servidor, así
+  que un latido demorado por la red que llega después de que ya se declaró la caída la alarga
+  artificialmente. También sirve para descartar latidos fuera de orden: un `sentAt` anterior al
+  último procesado se ignora. Es opcional, pero mandalo.
+</ParamField>
+
+<ParamField body="intervalSeconds" type="integer">
+  La cadencia que el equipo *cree* tener, de 60 a 86400. Es informativa: la cadencia vigente es la
+  que Fire devuelve en `X-Heartbeat-Interval`.
+</ParamField>
+
+<ParamField body="offlineSince" type="string | null">
+  Marca de tiempo ISO 8601 con offset del momento en que el equipo perdió conectividad, reportada
+  **al recuperarla**. Con esto la caída se fecha cuando realmente ocurrió y no cuando nos enteramos:
+  un kiosco sin red sigue vendiendo con su cola offline, y sin este campo le cargaríamos downtime que
+  no tuvo.
+</ParamField>
+
+<ParamField body="degradedReason" type="string">
+  Por qué el equipo no está `online`, como **código normalizado** (1 a 60 caracteres, snake_case, sin
+  espacios). Es lo que hace analizable un detalle que por diseño es libre — mirá el vocabulario común de más abajo.
+</ParamField>
+
+<ParamField body="appVersion" type="string">
+  Versión de la app del equipo, de 1 a 40 caracteres. Tiene campo propio — en vez de vivir dentro de
+  `details` — porque es el único dato universal a los tres tipos, y "esta versión falla más" es la
+  correlación más común de una flota.
+</ParamField>
+
+<ParamField body="details" type="object">
+  Contexto libre. Se guarda tal cual: Fire **no interpreta ninguna clave**, deliberadamente, para que
+  una release tuya nunca rompa la ingesta. Las claves son **por tipo de componente**: una pantalla
+  KDS no tiene impresora ni pinpad, una caja POS sí. Mirá el contrato de claves de más abajo.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/api/v1/fire/external/component-health
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "componentType": "kiosk",
+  "componentId": "K082",
+  "storeId": "9f3a1c22-5f10-4a1e-9a0b-3f7e2b1d4c55",
+  "status": "degraded",
+  "sentAt": "2026-08-06T14:32:05.120-03:00",
+  "intervalSeconds": 600,
+  "degradedReason": "printer_down",
+  "appVersion": "2.14.1",
+  "details": { "printer": "error", "pinpad": "ok", "queuedOrders": 3 }
+}
+```
+</RequestExample>
+
+## Respuesta
+
+En caso de éxito el endpoint devuelve **`204 No Content`**, sin cuerpo. Un latido no crea un recurso
+que después vayas a consultar, y un acuse con cuerpo solo agregaría bytes a una solicitud que cada
+equipo hace en cada ciclo.
+
+<ResponseField name="X-Heartbeat-Interval" type="integer">
+  Header de respuesta con la cadencia **vigente**, en segundos. Si difiere de la que estás usando,
+  adoptala en el próximo ciclo. El intervalo es configurable por equipo de nuestro lado; si los
+  equipos ignoran el header, ese control es nuestro solo en el papel — cambiaríamos el número en la
+  base y la flota seguiría con su ritmo viejo hasta tu próxima release.
+</ResponseField>
+
+## Lo que necesitamos de cada equipo
+
+Son cinco cosas. Ninguna es opcional en la práctica: sin ellas el sistema funciona, pero con datos
+peores, y en dos casos **miente hacia el optimismo**, que es el peor lado para un monitor.
+
+### 1. Un `componentId` estable
+
+Tiene que sobrevivir a reinicios, actualizaciones y reinstalaciones. Un id que cambia hace que la
+flota parezca renovarse sola y que el uptime nunca se estabilice.
+
+### 2. Jitter al arrancar
+
+No latir en el mismo segundo que todos los demás. Sumá un desfase aleatorio de hasta un intervalo
+completo antes del primer latido, y mantenelo. Diez mil equipos con la misma cadencia, todos
+reiniciados tras un corte de luz regional, laten sincronizados para siempre — el problema no es la
+carga promedio, es ese segundo exacto.
+
+### 3. Obedecer `X-Heartbeat-Interval`
+
+Cada `204` trae la cadencia vigente. Adoptala en el próximo ciclo. El ancho de las barras del tablero
+se deriva de ese valor, así que un equipo que lo ignora hace que la pantalla afirme una precisión que
+el dato no tiene.
+
+### 4. Mandar `sentAt`
+
+La hora de **emisión** del equipo, no la de llegada. En el campo de arriba está el porqué: cambia qué
+se cuenta como downtime.
+
+### 5. Acordar el vocabulario de `degradedReason` — y qué reporta un KDS
+
+`details` es libre a propósito: el equipo sabe qué hardware tiene, Fire no. Pero para poder responder
+*"¿qué falla más?"* los motivos necesitan un vocabulario común.
+
+| Código | Cuándo |
+|---|---|
+| `printer_down` | La impresora no responde |
+| `pinpad_down` | El pinpad no responde |
+| `backend_unreachable` | El equipo no alcanza a su propio backend |
+| `queue_backlog` | Cola de trabajo acumulada por encima del umbral |
+| `peripheral_other` | Otro periférico, detallado en `details` |
+
+Claves de `details` por tipo de componente:
+
+- **`kiosk`** → `printer`, `pinpad`, `queuedOrders`
+- **`pos`** → `printer`, `pinpad`
+- **`kds_station`** → **todavía a acordar con el equipo de KDS.** Una pantalla no tiene periféricos
+  de venta; lo candidato es su conexión con su propio backend y las órdenes sin despachar en cola.
+  Hasta que eso se cierre, no asumas ninguna clave acá.
+
+Sin ese acuerdo, dos equipos mandan claves distintas para lo mismo y el tablero no sabe qué mostrar.
+El passthrough lo permite; la coherencia hay que pactarla.
+
+## Cómo lo interpreta Fire
+
+- **Alta automática y período de prueba.** El primer latido da de alta el componente. No se lo vigila
+  hasta que reportó en **2 horas distintas**. Un id mal escrito y un equipo que se instaló y murió al
+  instante se ven idénticos: ninguno alerta. Los que reportan una sola vez quedan listados para que
+  alguien los mire, sin ensuciar el tablero.
+- **La caída se declara tras 2 intervalos perdidos**, no al primero. Un latido que se pierde por la
+  red no es una caída.
+- **Baja automática a los 7 días** sin latir: el componente sale solo del tablero. Si vuelve a
+  prenderse, reaparece **con toda su historia**.
+- **Fuera del horario de la tienda no cuenta.** Los tramos se recortan al día operativo real de esa
+  tienda — cuándo abrió y cerró de verdad, no el horario declarado. Un tótem apagado de noche no suma
+  downtime.
+
+## Errores
+
+| Código | Significado | Qué hacer |
+|---|---|---|
+| `400` | Cuerpo inválido, **o** un `storeId` inexistente / de otra cuenta | Leé el detalle en la respuesta y corregí el payload |
+| `401` | API key ausente o inválida | Revisá el header `x-api-key` |
+| `403` | La key no tiene el scope `component-health:write` o le falta el binding de vendor | Pedí el scope |
+| `5xx` | Error nuestro | Esperá al próximo ciclo |
+
+Una tienda ajena vuelve como **`400`, no como `404`**: desde el punto de vista del contrato es un
+cuerpo inválido, y un `404` le confirmaría a una key que ese uuid existe en la cuenta de otro.
+
+**Sobre reintentar:** un latido perdido no se recupera. Reenviar el de hace diez minutos no aporta
+nada, y con un `sentAt` correcto se descarta por fuera de orden. Ante un `5xx`, esperá al próximo
+ciclo — nunca acumules latidos viejos.
+
+<ResponseExample>
+```json 400 — error de validación
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "storeId must be a store of your account."
+}
+```
+
+```json 401 — API key ausente o inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
+}
+```
+
+```json 403 — falta el scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "component-health:write requires a vendor-scoped API key (account + vendor binding). Generate one from /developers/firepos-api-management."
+}
+```
+</ResponseExample>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Estado de orden KDS" icon="display" href="/es/api-reference/kds-order-status">
+    El otro endpoint que llaman tus equipos de cocina — ciclo de vida de la orden en vez de
+    disponibilidad.
+  </Card>
+  <Card title="Introducción" icon="book" href="/es/api-reference/introduction">
+    URLs base, API keys, scopes y formato de errores.
+  </Card>
+</CardGroup>

@@ -1,12 +1,16 @@
 ---
 title: "List stores"
-api: "GET https://app.fire.rest/api/v1/fire/external/stores"
+api: "GET https://api.fire.rest/api/v1/fire/external/stores"
 description: "List the stores of the account and vendor bound to your API key, with pagination and filters."
 authMethod: "bearer"
 ---
 
-Returns the stores of the account + vendor bound to your API key. The response is a slim, stable
-representation of each store — it excludes internal fields (raw settings, drafts, overrides).
+Returns the stores of the account + vendor bound to your API key. Each store comes with its **full
+configuration** — location, services, channels, schedules, tax & contact info, delivery config,
+sales goals, the **fiscal** block, and operational state. Only Fire-internal fields are excluded
+(the derived `effectiveSettings`, drafts/overrides, and audit columns).
+
+Use [field projection](#field-projection) (`?fields=`) to return only the fields you need.
 
 ## Authentication
 
@@ -17,12 +21,11 @@ representation of each store — it excludes internal fields (raw settings, draf
 
 ## Query parameters
 
-<ParamField query="accountId" type="string" required>
-  Account identifier. **Must match** the account bound to your API key, or the request is rejected with `403`.
-</ParamField>
+<Info>The account and vendor are derived from your API key (vendor-scoped) — you do not send them as query params.</Info>
 
-<ParamField query="vendorId" type="string" required>
-  Vendor identifier. **Must match** the vendor bound to your API key, or the request is rejected with `403`.
+<ParamField query="fields" type="string">
+  Comma-separated list of fields to return (projection). See [Field projection](#field-projection).
+  Omit to return every field. An unknown field yields `400`.
 </ParamField>
 
 <ParamField query="status" type="string">
@@ -37,7 +40,6 @@ representation of each store — it excludes internal fields (raw settings, draf
   Filter by sync state: `SYNCED`, `PENDING`, `FAILED`.
 </ParamField>
 
-<ParamField query="countryId" type="string">Filter by country id.</ParamField>
 <ParamField query="cityId" type="string">Filter by city id.</ParamField>
 <ParamField query="channel" type="string">Filter by a published channel code (e.g. `APP`).</ParamField>
 <ParamField query="query" type="string">Free-text search over name, store code and external id.</ParamField>
@@ -49,7 +51,7 @@ representation of each store — it excludes internal fields (raw settings, draf
 
 <RequestExample>
 ```http
-GET https://app.fire.rest/api/v1/fire/external/stores?accountId=100&vendorId=100.1.10&page=1&size=20
+GET https://api.fire.rest/api/v1/fire/external/stores?page=1&size=20
 x-api-key: <your_api_key>
 ```
 </RequestExample>
@@ -67,17 +69,56 @@ x-api-key: <your_api_key>
     <ResponseField name="externalId" type="string | null">External identifier controlled by Fire.</ResponseField>
     <ResponseField name="status" type="string">`DRAFT` | `PUBLISHED` | `PARTIALLY_PUBLISHED` | `ARCHIVED`.</ResponseField>
     <ResponseField name="active" type="string">`ACTIVE` | `INACTIVE` | `SUSPENDED`.</ResponseField>
-    <ResponseField name="timezone" type="string | null">IANA timezone (e.g. `America/Guayaquil`).</ResponseField>
+    <ResponseField name="timezone" type="string | null">IANA timezone (e.g. `America/Guayaquil`). Falls back to `location.timezone`.</ResponseField>
     <ResponseField name="location" type="object | null">
       <Expandable title="location">
         <ResponseField name="countryId" type="string">Country id.</ResponseField>
         <ResponseField name="countryCode" type="string">ISO 3166-1 alpha-2.</ResponseField>
+        <ResponseField name="countryName" type="string | null">Country name.</ResponseField>
         <ResponseField name="cityId" type="string">City id.</ResponseField>
+        <ResponseField name="cityCode" type="string | null">City code.</ResponseField>
         <ResponseField name="cityName" type="string">City name.</ResponseField>
         <ResponseField name="address" type="string">Full address.</ResponseField>
+        <ResponseField name="latitude" type="number | null">Latitude.</ResponseField>
+        <ResponseField name="longitude" type="number | null">Longitude.</ResponseField>
+        <ResponseField name="timezone" type="string | null">IANA timezone.</ResponseField>
+        <ResponseField name="currencyCode" type="string | null">ISO 4217 currency code.</ResponseField>
       </Expandable>
     </ResponseField>
-    <ResponseField name="publishedChannels" type="string[]">Published channel codes.</ResponseField>
+    <ResponseField name="services" type="object[] | null">Store service configuration (dine-in, takeout, delivery…). Passthrough from the store settings.</ResponseField>
+    <ResponseField name="channels" type="object[] | null">Per-channel configuration — each entry carries `code`, `enabled`, `fulfillmentTypes` and schedules.</ResponseField>
+    <ResponseField name="publishedChannels" type="string[]">Published channel codes (e.g. `["APP"]`).</ResponseField>
+    <ResponseField name="operationSchedule" type="object[] | null">Operating hours per day/interval.</ResponseField>
+    <ResponseField name="salesSchedule" type="object[] | null">Sales hours per day/interval.</ResponseField>
+    <ResponseField name="schedulesByChannel" type="object[] | null">Schedules overridden per channel.</ResponseField>
+    <ResponseField name="taxesInfo" type="object | null">Tax configuration (e.g. `taxRate`, `vatRatePercentage`).</ResponseField>
+    <ResponseField name="contactInfo" type="object | null">Store contact details (e.g. `phone`).</ResponseField>
+    <ResponseField name="deliveryInfo" type="object | null">Delivery configuration.</ResponseField>
+    <ResponseField name="salesGoals" type="object | null">Sales goals configuration.</ResponseField>
+    <ResponseField name="fiscal" type="object | null">
+      Fiscal configuration — same shape as `store.storeFiscalConfig` in the `order.completed` event
+      (both are projected by the same function). `null` when the store has no fiscal setup. See
+      [The fiscal block](#the-fiscal-block).
+      <Expandable title="fiscal">
+        <ResponseField name="enabled" type="boolean">Whether fiscal emission is enabled.</ResponseField>
+        <ResponseField name="company" type="object">
+          <Expandable title="company">
+            <ResponseField name="govIdType" type="string">Tax ID type (`CNPJ`, `RUC`, `NIT`, `RUT`, `CUIT`, `RIF`).</ResponseField>
+            <ResponseField name="govIdNumber" type="string">Tax ID number.</ResponseField>
+            <ResponseField name="legalName" type="string">Legal name.</ResponseField>
+            <ResponseField name="tradeName" type="string">Trade name.</ResponseField>
+          </Expandable>
+        </ResponseField>
+        <ResponseField name="govIdType" type="string">Primary tax ID type (root-level, legacy convenience).</ResponseField>
+        <ResponseField name="govIdNumber" type="string">Primary tax ID number.</ResponseField>
+        <ResponseField name="secondaryGovIdType" type="string | null">Secondary tax ID type — **Brazil only** (`INSCRICAO_ESTADUAL`). Omitted for other countries.</ResponseField>
+        <ResponseField name="secondaryGovIdNumber" type="string | null">Secondary tax ID number — **Brazil only**. Omitted for other countries.</ResponseField>
+        <ResponseField name="metadata" type="object | null">Country-specific extras — **Brazil only**. Omitted for other countries. See [The fiscal block](#the-fiscal-block).</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="operational" type="object | null">
+      Runtime state — e.g. `{ isBusinessDayOpen, businessDayDate, activeChannels }`.
+    </ResponseField>
     <ResponseField name="syncStatus" type="string">`SYNCED` | `PENDING` | `FAILED`.</ResponseField>
     <ResponseField name="lastSyncedAt" type="string | null">ISO 8601 datetime.</ResponseField>
     <ResponseField name="createdAt" type="string">ISO 8601 datetime.</ResponseField>
@@ -108,11 +149,44 @@ x-api-key: <your_api_key>
       "location": {
         "countryId": "1",
         "countryCode": "EC",
+        "countryName": "Ecuador",
         "cityId": "2",
+        "cityCode": "UIO",
         "cityName": "Quito",
-        "address": "Av. Amazonas N32-14"
+        "address": "Av. Amazonas N32-14",
+        "latitude": -0.18,
+        "longitude": -78.47,
+        "timezone": "America/Guayaquil",
+        "currencyCode": "USD"
       },
+      "services": [],
+      "channels": [
+        { "code": "APP", "enabled": true, "fulfillmentTypes": ["DELIVERY", "PICKUP"] }
+      ],
       "publishedChannels": ["APP"],
+      "operationSchedule": [],
+      "salesSchedule": [],
+      "schedulesByChannel": [],
+      "taxesInfo": { "taxRate": 0, "vatRatePercentage": 12 },
+      "contactInfo": { "phone": "+593 2 000 0000" },
+      "deliveryInfo": null,
+      "salesGoals": null,
+      "fiscal": {
+        "enabled": true,
+        "company": {
+          "govIdType": "RUC",
+          "govIdNumber": "1790012345001",
+          "legalName": "Sandbox Ecuador Cia. Ltda.",
+          "tradeName": "Sandbox EC"
+        },
+        "govIdType": "RUC",
+        "govIdNumber": "1790012345001"
+      },
+      "operational": {
+        "isBusinessDayOpen": true,
+        "businessDayDate": "2026-07-01",
+        "activeChannels": ["APP"]
+      },
       "syncStatus": "SYNCED",
       "lastSyncedAt": "2026-07-01T00:00:00Z",
       "createdAt": "2026-06-01T00:00:00Z",
@@ -142,6 +216,42 @@ x-api-key: <your_api_key>
 }
 ```
 </ResponseExample>
+
+## The fiscal block
+
+`fiscal` mirrors `store.storeFiscalConfig` in the `order.completed` event — both are projected by
+the same function, so a fiscal integrator gets the exact same shape from either path (including the
+legacy root-level fallbacks `govIdType` / `govIdNumber`). `fiscal` is `null` for stores with no
+fiscal configuration.
+
+The `fiscal` block is **country-specific**: the Brazil-only fields (`secondaryGovIdType`,
+`secondaryGovIdNumber`, `metadata`) are included **only for Brazilian stores** and are **omitted
+entirely** — the keys are absent, not `null` — for every other country. Same convention as
+`orders.fiscal.metadata`. The country comes from `location.countryCode` (a legacy `govIdType === "CNPJ"` fallback applies to older Brazilian stores without it).
+
+| Country | `govIdType` | Brazil-only fields (`secondaryGovId*`, `metadata`) |
+|---|---|---|
+| BR | `CNPJ` | included — `secondaryGovIdType: INSCRICAO_ESTADUAL`, `metadata: { storeCode3S, serialNumber, neverstop }` |
+| EC | `RUC` | omitted |
+| CO | `NIT` | omitted |
+| CL | `RUT` | omitted |
+| AR | `CUIT` | omitted |
+| VE | `RIF` | omitted |
+
+## Field projection
+
+Choose which fields each store returns, similar to MongoDB projection or the Elasticsearch
+`_source` parameter. Applies to both the list and the [single store](/en/api-reference/get-store).
+
+- No `fields` → every field is returned.
+- `fields=id,storeCode,name,fiscal` → only those.
+- A field outside the catalog → `400` with the list of allowed fields.
+
+**Available fields**: `id`, `storeNumber`, `storeCode`, `accountId`, `vendorId`, `name`,
+`externalId`, `status`, `active`, `timezone`, `location`, `services`, `channels`,
+`publishedChannels`, `operationSchedule`, `salesSchedule`, `schedulesByChannel`, `taxesInfo`,
+`contactInfo`, `deliveryInfo`, `salesGoals`, `fiscal`, `operational`, `syncStatus`, `lastSyncedAt`,
+`createdAt`, `updatedAt`.
 
 ## Related
 

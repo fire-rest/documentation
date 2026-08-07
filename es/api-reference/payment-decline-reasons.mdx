@@ -1,0 +1,154 @@
+---
+title: "Motivos de rechazo"
+api: "GET https://api.fire.rest/api/v1/fire/external/payment-decline-reasons"
+description: "Catálogo agrupado de motivos de rechazo de pago. Traducí los códigos de tu adquirente a estos y mandá el nuestro."
+authMethod: "bearer"
+---
+
+Devuelve el catálogo con el que Fire clasifica los pagos rechazados que le enviás en
+[Confirmar pago](/es/api-reference/confirm-payment).
+
+## Cómo se usa
+
+Tu adquirente (Rede, Cielo, Stone…) te devuelve **su** código cuando una tarjeta se rechaza: `51`,
+`insufficient_funds`, `NSF`. Cada uno lo escribe a su manera.
+
+Este catálogo es el vocabulario de Fire. **Vos hacés la traducción de tu lado, una sola vez**, y en
+`decline_reason` mandás el código de Fire:
+
+```
+tu adquirente dice  "51"   →   vos mandás  "INSUFFICIENT_FUNDS"
+```
+
+<Note>
+  Funciona igual que los motivos de cancelación: descargás el catálogo y mandás uno de sus códigos.
+  Fire no guarda los códigos de cada adquirente — vos tenés la documentación de Rede o Cielo, y
+  mantener el vocabulario de cada proveedor en cada país no sería sostenible.
+
+  Por eso el endpoint tampoco cuelga de una orden: es el mismo para toda tu cuenta.
+</Note>
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `orders:read`.
+</ParamField>
+
+## Petición
+
+<RequestExample>
+```http
+GET https://api.fire.rest/api/v1/fire/external/payment-decline-reasons
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+## Respuesta
+
+Grupos ordenados, cada uno con sus motivos. Los grupos sin motivos activos no se devuelven.
+
+| campo | qué significa |
+| --- | --- |
+| `code` | el código de Fire. **Es el que tenés que enviar** en `decline_reason` |
+| `label` | texto en `en`, `es` y `pt` |
+
+El catálogo trae **código, etiqueta y grupo. Nada más.** No te dice si conviene reintentar ni quién
+debería actuar: esa decisión es tuya y de tu adquirente, que son los que ven la transacción.
+
+Grupos disponibles: `funds`, `card`, `security`, `technical`, `operational`.
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "groups": [
+      {
+        "code": "funds",
+        "label": { "en": "Funds", "es": "Fondos", "pt": "Fundos" },
+        "displayOrder": 1,
+        "reasons": [
+          {
+            "code": "INSUFFICIENT_FUNDS",
+            "groupCode": "funds",
+            "label": {
+              "en": "Insufficient funds",
+              "es": "Fondos insuficientes",
+              "pt": "Saldo insuficiente"
+            },
+            "displayOrder": 1
+          }
+        ]
+      },
+      {
+        "code": "technical",
+        "label": { "en": "Technical", "es": "Técnico", "pt": "Técnico" },
+        "displayOrder": 4,
+        "reasons": [
+          {
+            "code": "ISSUER_UNAVAILABLE",
+            "groupCode": "technical",
+            "label": {
+              "en": "Issuer unavailable",
+              "es": "Emisor no disponible",
+              "pt": "Emissor indisponível"
+            },
+            "displayOrder": 1
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+```json 401 — API key inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — la key no tiene el scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have the required scope: orders:read"
+}
+```
+</ResponseExample>
+
+## Qué guarda Fire
+
+Cuando enviás un pago rechazado, Fire busca ese código en el catálogo y guarda el grupo y el
+grupo junto con lo que mandaste:
+
+```jsonc
+"declineReason":     "DO_NOT_HONOR",   // lo que mandaste
+"declineReasonCode": "DO_NOT_HONOR",   // encontrado en el catálogo
+"declineGroup":      "security"
+```
+
+Se guarda al registrar y no se recalcula al consultar, así tus métricas históricas no cambian solas
+cuando el catálogo se amplía.
+
+<Warning>
+  **Un código que no está en el catálogo no hace fallar el cobro.** Se guarda tal cual, sin grupo, y
+  esos registros quedan fuera de cualquier agrupado por motivo.
+
+  [Confirmar pago](/es/api-reference/confirm-payment) te lo avisa en la respuesta con
+  `resolvedTo: null`. **Revisalo en tu primera integración**: si tu mapeo tiene un código mal
+  escrito, todos tus rechazos entran sin clasificar y nada falla.
+</Warning>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Confirmar pago" icon="credit-card" href="/es/api-reference/confirm-payment">
+    Registrá el cobro, con los medios aprobados y los rechazados.
+  </Card>
+  <Card title="Obtener orden" icon="receipt" href="/es/api-reference/get-order">
+    Consultá el estado de la orden y su total.
+  </Card>
+</CardGroup>

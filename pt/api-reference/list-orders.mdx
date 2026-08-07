@@ -1,6 +1,6 @@
 ---
 title: "Listar pedidos"
-api: "GET https://app.fire.rest/api/v1/fire/external/orders"
+api: "GET https://api.fire.rest/api/v1/fire/external/orders"
 description: "Lista os pedidos do account e vendor vinculados à sua API key, com paginação, filtros e projeção de campos."
 authMethod: "bearer"
 ---
@@ -18,13 +18,7 @@ listar os pedidos de uma única loja, use [Listar pedidos da loja](/pt/api-refer
 
 ## Query params
 
-<ParamField query="accountId" type="string" required>
-  Identificador do account. **Deve coincidir** com o account da sua API key, ou a requisição é rejeitada com `403`.
-</ParamField>
-
-<ParamField query="vendorId" type="string" required>
-  Identificador do vendor. **Deve coincidir** com o vendor da sua API key, ou a requisição é rejeitada com `403`.
-</ParamField>
+<Info>O account e o vendor são derivados da sua API key (vendor-scoped) — não são enviados por query.</Info>
 
 <ParamField query="fields" type="string">
   Lista de campos a retornar separados por vírgula (projeção). Veja [Projeção de campos](#projecao-de-campos).
@@ -50,7 +44,7 @@ listar os pedidos de uma única loja, use [Listar pedidos da loja](/pt/api-refer
 
 <RequestExample>
 ```http
-GET https://app.fire.rest/api/v1/fire/external/orders?accountId=100&vendorId=100.1.10&fields=id,orderCode,status,totals&page=1&size=20
+GET https://api.fire.rest/api/v1/fire/external/orders?fields=id,orderCode,status,totals&page=1&size=20
 x-api-key: <sua_api_key>
 ```
 </RequestExample>
@@ -64,15 +58,293 @@ O consumidor decide quais campos cada pedido retorna, similar à projeção do M
 - `fields=id,orderCode,totals` → apenas esses campos.
 - Um campo fora do catálogo → `400` com a lista de campos permitidos.
 
-**Campos disponíveis**: `id`, `orderCode`, `accountId`, `vendorId`, `storeId`, `status`,
-`paymentStatus`, `channel`, `businessDayDate`, `createdAt`, `updatedAt`, `store`, `customer`,
-`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `metadata`, `fiscal`.
+**Campos disponíveis**: `id`, `orderCode`, `orderExternal`, `accountId`, `vendorId`, `storeId`,
+`stationId`, `anonymousCustomerId`, `customerId`, `billingId`, `status`, `paymentStatus`, `channel`,
+`businessDayDate`, `createdAt`, `updatedAt`, `completedAt`, `deletedAt`, `store`, `customer`,
+`billing`, `fulfillment`, `orderLines`, `totals`, `paymentMethods`, `settlement`, `payments`,
+`metadata`, `kitchen`, `aggregator`, `fiscal`.
+
+<Note>
+  `channel` é o id de catálogo do pedido (`orders.catalog_id`), exposto sob o nome `channel`.
+</Note>
 
 <Note>
   Os snapshots JSONB (`totals`, `orderLines`, `paymentMethods`, `store`, `customer`, `fulfillment`,
   `metadata`, `fiscal`) são retornados no formato de persistência interno do Fire (por exemplo, os
   valores de `totals` estão em escala ×10000).
 </Note>
+
+## Progresso da cobrança: `settlement` e `payments`
+
+Quando um pedido é cobrado **depois** de aberto, `status` e `paymentStatus` só informam se ele foi
+cobrado. Dizem `OPEN` e `PENDING` tanto para um pedido que ninguém tentou cobrar quanto para um cujo
+cartão foi recusado duas vezes — e são situações bem diferentes para quem está olhando.
+
+| o pedido | `status` | `paymentStatus` | `settlement.status` |
+| --- | --- | --- | --- |
+| aberto, nada tentado | `OPEN` | `PENDING` | `pending` |
+| **uma peça foi recusada** | `OPEN` | `PENDING` | **`declined`** |
+| cobrado por completo | `COMPLETED` | `SUCCEEDED` | `settled` |
+
+Leia `settlement` para saber **se e como** foi cobrado, e `payments` para saber **com o quê**.
+
+A cobrança é tudo ou nada (veja [Confirmar pagamento](/pt/api-reference/confirm-payment)), então
+`paidSoFar` é `0` ou o total inteiro — nunca algo no meio.
+
+<Warning>
+  Enquanto o pedido está aberto, `paymentMethods` é o que o POS **declarou** na criação do pedido —
+  não o que foi cobrado. Só é sobrescrito com as peças reais quando o pedido liquida. Somá-lo para
+  calcular o progresso dá o número errado. Use `settlement.paidSoFar`.
+</Warning>
+
+```json order.settlement (shape)
+{
+  "settlement": {
+    "status": "settled",
+    "origin": "ledger",
+    "paidSoFar": "359000",
+    "total": "359000",
+    "currencyCode": "BRL",
+    "tenderCount": 2,
+    "declinedCount": 1,
+    "amountMismatch": false,
+    "declaredMethods": ["IFOOD"]
+  }
+}
+```
+
+`status` é um de `pending`, `declined`, `settled`. `paidSoFar` e `total` usam a mesma escala ×10000
+de `totals` — acima, 35,90 cobrados em duas peças, depois de uma recusa anterior. `tenderCount` conta
+apenas as peças aprovadas; as recusadas estão em `declinedCount`.
+
+`amountMismatch` é sempre `false`: uma cobrança que não soma o total é rejeitada de saída, então um
+pedido liquidado sempre bate. O campo é mantido por compatibilidade.
+
+`origin` informa de onde vem `paidSoFar`, e os dois não têm o mesmo respaldo: `ledger` significa que
+as peças foram contadas uma a uma conforme chegaram; `intake` significa que o pedido foi criado já se
+declarando pago e o Fire acreditou. `settlement` é `null` nos pedidos criados antes de este campo
+existir.
+
+`declaredMethods` é com o que o pedido **disse** que seria pago, quando foi criado. Compare com
+`paymentMethods` para ver se pagaram com o que anunciaram: um pedido criado como `IFOOD` e cobrado
+com `CREDIT` mostra `declaredMethods: ["IFOOD"]` e `paymentMethods` com `CREDIT`. É o único lugar
+onde o meio declarado sobrevive, porque ao liquidar o `paymentMethods` é sobrescrito com as peças
+reais. Só os códigos viajam: os valores declarados vêm do POS em unidades (`"35.9"`) enquanto
+`paidSoFar` vai ×10000, e misturar as duas escalas no mesmo objeto convida ao erro.
+
+### `payments` — as peças uma a uma
+
+Os pedaços da cobrança, do mais antigo ao mais recente. As peças recusadas entram também:
+`settlement.declinedCount` diz quantas foram, `payments` diz quais e por quê.
+
+```jsonc
+"payments": [
+  {
+    "status": "approved",           // só as peças aprovadas somam em paidSoFar
+    "amount": "200000",             // ×10000, a mesma escala de totals
+    "currencyCode": "BRL",
+    "method": "CASH",               // uma das duas peças de uma cobrança dividida
+    "transactionId": "POS-0001",    // a chave de idempotência do POS
+    "occurredAt": "2026-07-30T16:20:04.000Z"
+  },
+  {
+    "status": "declined",
+    "amount": "159000",
+    "currencyCode": "BRL",
+    "method": "CREDIT",
+    "transactionId": "POS-0002",
+    "declineReason": "51",                      // código cru do adquirente
+    "declineReasonCode": "INSUFFICIENT_FUNDS",  // ausente quando não bateu com o catálogo
+    "declineGroup": "FUNDS",
+    "occurredAt": "2026-07-30T16:22:47.000Z"
+  }
+]
+```
+
+Um pedido que nunca passou por [Confirmar pagamento](/pt/api-reference/confirm-payment) — um pré-pago,
+por exemplo — retorna `payments: []`, nunca `null`.
+
+`completedAt` é o momento em que a cobrança fechou o pedido, e é `null` enquanto ele continua aberto.
+
+## O bloco `fiscal` por país
+
+Quando um pedido possui um documento fiscal, o campo `fiscal` carrega seu estado atual. Seu
+sub-objeto `metadata` contém os campos comuns mais **apenas os identificadores correspondentes a
+`fiscal.countryCode`** — os identificadores dos outros países não são incluídos. Leia
+`fiscal.countryCode` para saber quais identificadores esperar.
+
+```json order.fiscal (shape)
+{
+  "id": "7e2b8c10-…",
+  "status": "COMPLETED",
+  "fiscal": {
+    "status": "authorized",
+    "countryCode": "CO",
+    "company": { "govIdType": "NIT", "govIdNumber": "9001234561", "legalName": "…", "tradeName": "…" },
+    "store":   { "code": "CO-BOG-001", "name": "…", "govIdType": "NIT", "govIdNumber": "900123456-7" },
+    "buyer":   { "isFinalConsumer": true, "name": null, "govIdType": null, "govIdNumber": null },
+    "metadata": { "…": "see per-country tabs below" }
+  }
+}
+```
+
+`status` diz onde o pedido está fiscalmente. Agrupe pelo que você pode fazer a respeito:
+
+| Grupo | Valores | O que significa |
+|---|---|---|
+| **Sem documento** | `awaiting_payment`, `not_issued` | Nada foi emitido. `awaiting_payment` = o pedido está aberto e não pago, então ainda não cabe emitir. `not_issued` = o pedido fechou sem nunca ter sido faturado (cancelado antes do pagamento). |
+| **Em voo** | `pending`, `processing`, `contingency`, `cancelling` | Há uma operação em curso e o desfecho é desconhecido. Não assuma sucesso nem falha — aguarde. `contingency` é um documento legalmente emitido pendente de transmissão. |
+| **Resolvido** | `authorized`, `cancelled` | Terminal. Há documento válido, ou ele foi cancelado. |
+| **Falhou** | `rejected`, `denied`, `error` | Não há documento válido. `fiscal.error` (`{ code, message }`) também está presente. |
+| **Entrega** | `fiscal_graphic` | O provedor está entregando o artefato imprimível. Não é aprovação nem estado terminal. |
+
+<Note>
+`awaiting_payment` e `not_issued` descrevem o estado fiscal do **pedido**, não de um documento — em nenhum dos dois casos existe documento. Existem porque `processing` significava duas coisas incompatíveis: "há uma emissão em voo" e "este pedido ainda não chegou a ser faturado". Aparecem em pedidos abertos e não pagos, então são mais frequentes junto com o pagamento diferido. **Não** viajam nos eventos de pedido; lá `lastKnown.fiscal` reporta `null`.
+</Note>
+
+Os **campos comuns** de `metadata` (todos os países): `docType`, `docSubtype`, `providerDocId`,
+`pdfUrl`, `xmlUrl`, `emittedAt`, `cancelledAt`, `totalAmount`, `taxAmount`, `currencyCode`. Os
+identificadores específicos abaixo são adicionados por cima, mas `metadata` carrega **apenas os
+identificadores do país do próprio documento** — os dos outros países não são incluídos.
+
+<Tabs>
+  <Tab title="Colombia (CO)">
+    ```json metadata — CO (DIAN)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "pdfUrl": "https://…/co.pdf",
+      "xmlUrl": "https://…/co.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 95000,
+      "taxAmount": 15170,
+      "currencyCode": "COP",
+      "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
+      "prefijo": "FE-CO",
+      "numeroDian": "FE-CO-1001"
+    }
+    ```
+  </Tab>
+  <Tab title="Ecuador (EC)">
+    ```json metadata — EC (SRI)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "pdfUrl": "https://…/ec.pdf",
+      "xmlUrl": "https://…/ec.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 2450,
+      "taxAmount": 315,
+      "currencyCode": "USD",
+      "claveAcceso": "0102030405060708091011121314151617181920212223242",
+      "numeroAutorizacion": "AUT-EC-1001"
+    }
+    ```
+    <Note>O `qrCode` (CO) e o `ambiente` (EC) do callback **não** são persistidos em `fiscal.metadata` — apenas os identificadores listados aqui são.</Note>
+  </Tab>
+  <Tab title="Chile (CL)">
+    ```json metadata — CL (SII)
+    {
+      "docType": "invoice",
+      "docSubtype": "boleta",
+      "pdfUrl": "https://…/cl.pdf",
+      "xmlUrl": "https://…/cl.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 18900,
+      "taxAmount": 3019,
+      "currencyCode": "CLP",
+      "folio": 12345,
+      "ted": "<TED>…</TED>",
+      "tipoDte": 39,
+      "trackId": "SII-TRK-998877"
+    }
+    ```
+  </Tab>
+  <Tab title="Argentina (AR)">
+    ```json metadata — AR (AFIP)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura_b",
+      "pdfUrl": "https://…/ar.pdf",
+      "xmlUrl": "https://…/ar.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 12100,
+      "taxAmount": 2100,
+      "currencyCode": "ARS",
+      "cae": "74256178925412",
+      "fechaVtoCae": "2026-05-31",
+      "puntoVenta": 1,
+      "numeroComprobante": 12345,
+      "tipoComprobante": 6
+    }
+    ```
+  </Tab>
+  <Tab title="Venezuela (VE)">
+    ```json metadata — VE (SENIAT)
+    {
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "pdfUrl": "https://…/ve.pdf",
+      "xmlUrl": "https://…/ve.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 480,
+      "taxAmount": 76,
+      "currencyCode": "VES",
+      "numeroControl": "00-00012345",
+      "numeroFactura": "12345",
+      "rifEmisor": "J-12345678-9"
+    }
+    ```
+  </Tab>
+  <Tab title="Brazil (BR)">
+    ```json metadata — BR (SEFAZ, non-PlugNotas)
+    {
+      "docType": "invoice",
+      "docSubtype": "nfce",
+      "pdfUrl": "https://…/br.pdf",
+      "xmlUrl": "https://…/br.xml",
+      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 14290,
+      "taxAmount": 1857,
+      "currencyCode": "BRL",
+      "chaveAcesso": "35260229062609000177650500000000011000000010",
+      "protocolo": "141210001176277",
+      "numero": 1,
+      "serie": 50,
+      "modelo": 65,
+      "cnpjEmitente": "29062609000177"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### O bloco `fiscal` traz o percurso completo do documento
+
+`fiscal` segue o mesmo padrão de `kitchen`: o top-level é o estado **vigente**, e
+`fiscal.history[]` lista cada parada do documento fiscal, em ordem cronológica.
+
+```jsonc
+"fiscal": {
+  "countryCode": "BR",
+  "status": "cancelled",              // estado vigente
+  "occurredAt": "2026-07-21T18:00:00Z",
+  "company": { … }, "store": { … },   // emissor + loja, herdados
+  "metadata": { … },                  // metadata do estado vigente
+  "history": [
+    { "status": "processing",     "occurredAt": "…" },
+    { "status": "fiscal_graphic", "occurredAt": "…", "metadata": { "pdfUrl": "…" } },
+    { "status": "authorized",     "occurredAt": "…", "metadata": { "chaveAcesso": "…" } },
+    { "status": "cancelled",      "occurredAt": "…", "metadata": { "protocoloCancelamento": "…" } }
+  ]
+}
+```
+
+Status possíveis: `pending`, `processing`, `contingency`, `fiscal_graphic`, `error`, `authorized`,
+`rejected`, `denied`, `cancelling`, `cancelled`. Veja
+[Callback fiscal](/pt/api-reference/fiscal-callback) para o significado de cada um.
+
+Ler o top-level continua funcionando como antes — `history` é aditivo. Use quando precisar dos
+dados de autorização de um documento que depois foi cancelado: eles vivem na entrada `authorized`.
 
 ## Resposta
 
@@ -107,7 +379,7 @@ O consumidor decide quais campos cada pedido retorna, similar à projeção do M
 {
   "success": false,
   "error": "VALIDATION_ERROR",
-  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, accountId, vendorId, storeId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, metadata, fiscal"
+  "message": "Unknown field(s) in projection: totls. Allowed: id, orderCode, orderExternal, accountId, vendorId, storeId, stationId, anonymousCustomerId, customerId, billingId, status, paymentStatus, channel, businessDayDate, createdAt, updatedAt, completedAt, deletedAt, store, customer, billing, fulfillment, orderLines, totals, paymentMethods, settlement, payments, metadata, kitchen, aggregator, fiscal"
 }
 ```
 
