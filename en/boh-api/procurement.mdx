@@ -1,0 +1,162 @@
+---
+title: "Procurement"
+description: "Manage par levels and retrieve suggested reorder quantities for each store."
+---
+
+The procurement endpoints let you define minimum stock targets (par levels) and retrieve an automatically calculated suggested purchase order based on current stock vs. those targets.
+
+**Required scopes:** `catalog:read` (reads), `catalog:write` (upsert par levels).
+
+---
+
+## Par levels
+
+A **par level** defines the target stock quantity for an item at a specific store, expressed in the item's base unit. When actual stock falls below the par, the item appears in the suggested order.
+
+### List par levels
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/par-levels</api>
+
+<ParamField path="vendorId" type="string" required>Vendor UUID.</ParamField>
+<ParamField query="store_id" type="string">Filter by store UUID.</ParamField>
+<ParamField query="limit" type="number">Results per page (1–200, default 50).</ParamField>
+<ParamField query="offset" type="number">Pagination offset (default 0).</ParamField>
+
+<ResponseField name="items" type="object[]">
+  Par level records: `id`, `account_id`, `vendor_id`, `store_id`, `item_id`, `par_qty_base`, `metadata`, `created_at`, `updated_at`.
+</ResponseField>
+<ResponseField name="total" type="number">Total matching records.</ResponseField>
+<ResponseField name="limit" type="number">Current page size.</ResponseField>
+<ResponseField name="offset" type="number">Current offset.</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": "par_01...",
+      "account_id": "acc_01...",
+      "vendor_id": "vnd_01...",
+      "store_id": "str_main_01...",
+      "item_id": "itm_chicken_01...",
+      "par_qty_base": 10000,
+      "metadata": {},
+      "created_at": "2026-08-01T00:00:00.000Z",
+      "updated_at": "2026-08-01T00:00:00.000Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+</ResponseExample>
+
+---
+
+### Upsert par levels
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/par-levels</api>
+
+Bulk-upserts par levels for a given store. Items in the payload are created or updated; items not in the payload are left unchanged (this is not a replace — use `par_qty_base: 0` to effectively zero out an item's par).
+
+<ParamField path="vendorId" type="string" required>Vendor UUID.</ParamField>
+
+<ParamField body="store_id" type="string" required>UUID of the store for these par levels.</ParamField>
+<ParamField body="levels" type="object[]" required>
+  Par level entries (at least 1):
+  <Expandable title="level entry fields">
+    <ParamField body="item_id" type="string" required>UUID of the item.</ParamField>
+    <ParamField body="par_qty_base" type="number" required>Target stock quantity in the item's base unit (must be > 0).</ParamField>
+    <ParamField body="metadata" type="object">Free-form extra data.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="items" type="object[]">
+  All upserted par level records with full detail.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "store_id": "str_main_01...",
+  "levels": [
+    {
+      "item_id": "itm_chicken_01...",
+      "par_qty_base": 10000
+    },
+    {
+      "item_id": "itm_rice_01...",
+      "par_qty_base": 5000
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": "par_01...",
+      "account_id": "acc_01...",
+      "vendor_id": "vnd_01...",
+      "store_id": "str_main_01...",
+      "item_id": "itm_chicken_01...",
+      "par_qty_base": 10000,
+      "metadata": {},
+      "created_at": "2026-08-01T00:00:00.000Z",
+      "updated_at": "2026-08-07T14:00:00.000Z"
+    },
+    {
+      "id": "par_02...",
+      "account_id": "acc_01...",
+      "vendor_id": "vnd_01...",
+      "store_id": "str_main_01...",
+      "item_id": "itm_rice_01...",
+      "par_qty_base": 5000,
+      "metadata": {},
+      "created_at": "2026-08-07T14:00:00.000Z",
+      "updated_at": "2026-08-07T14:00:00.000Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Suggested order
+
+### Get suggested order
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/suggested-order</api>
+
+Returns a recommended purchase order: items whose current stock is below their par level, with the gap quantity expressed in base units. Optionally filtered by supplier.
+
+<ParamField path="vendorId" type="string" required>Vendor UUID.</ParamField>
+<ParamField query="store_id" type="string" required>UUID of the store to compute suggestions for.</ParamField>
+<ParamField query="supplier_id" type="string">Filter suggestions to items supplied by this supplier UUID.</ParamField>
+
+<ResponseField name="items" type="object[]">
+  Suggested reorder lines. Each entry includes `item_id`, `item_name`, current balance, par level, gap quantity, and the suggested unit details.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "item_id": "itm_chicken_01...",
+      "item_name": "Chicken breast",
+      "current_qty_base": 3000,
+      "par_qty_base": 10000,
+      "gap_qty_base": 7000,
+      "base_unit_id": "unit_g_01...",
+      "base_unit_symbol": "g"
+    }
+  ]
+}
+```
+</ResponseExample>

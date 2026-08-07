@@ -1,0 +1,176 @@
+---
+title: "Recetas"
+description: "Administra recetas de venta, producción y subrecetas — las definiciones que impulsan el consumo de inventario en BOH."
+---
+
+Una **receta** define cómo una venta, un lote de producción o una subreceta consume ítems de inventario. BOH usa las recetas para calcular el consumo cuando llegan órdenes o se registra producción.
+
+**Scopes requeridos:** `recipes:read` (lecturas), `recipes:write` (escrituras).
+
+## Tipos de receta
+
+| Tipo | Qué representa |
+|---|---|
+| `SALES_RECIPE` | Vinculada a un producto/variante del POS. Se consume cuando llega una línea de orden. |
+| `PRODUCTION_RECIPE` | Vinculada a un ítem producido. Se consume al registrar un lote de producción; el ítem de salida se agrega al stock. |
+| `SUBRECIPE` | Conjunto de ingredientes reutilizable referenciado por otras recetas vía `consume_by: SUBRECIPE`. No está vinculado directamente a un producto. |
+
+## Ciclo de vida de la receta
+
+Las recetas comienzan como **DRAFT**, requieren al menos una línea y deben **publicarse** antes de que BOH las use para consumo. Los borradores se pueden editar libremente. La publicación es inmutable — crea un nuevo borrador para revisar una receta publicada.
+
+```
+DRAFT → PUBLISHED → ARCHIVED
+```
+
+## Líneas con scope de canal
+
+Las líneas en una `SALES_RECIPE` pueden llevar un array opcional `service_codes`. Cuando no está vacío, esa línea solo se consume si el service code de la orden (ej. `DELIVERY`, `DINE_IN`) coincide con uno de los códigos del array. Las líneas sin `service_codes` (o con el array vacío) aplican a todos los canales.
+
+---
+
+## Listar recetas
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes</api>
+
+<ParamField header="x-api-key" type="string" required>API key de BOH con scope `recipes:read`.</ParamField>
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+<ParamField query="recipe_type" type="string">Filtro: `SALES_RECIPE`, `PRODUCTION_RECIPE` o `SUBRECIPE`.</ParamField>
+<ParamField query="status" type="string">Estado: `DRAFT`, `PUBLISHED` o `ARCHIVED`.</ParamField>
+<ParamField query="external_product_id" type="string">Tu ID de producto — devuelve recetas vinculadas a ese producto.</ParamField>
+<ParamField query="service_code" type="string">Devuelve recetas que tienen al menos una línea que coincide con este service code.</ParamField>
+<ParamField query="limit" type="integer" default="50">Tamaño de página (1–200).</ParamField>
+<ParamField query="offset" type="integer" default="0">Paginación por offset.</ParamField>
+<ParamField query="cursor" type="string">Paginación por cursor.</ParamField>
+
+---
+
+## Crear receta (borrador)
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes</api>
+
+Crea una nueva receta en estado DRAFT.
+
+<ParamField header="x-api-key" type="string" required>API key de BOH con scope `recipes:write`.</ParamField>
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+<ParamField body="recipe_type" type="string" required>`SALES_RECIPE`, `PRODUCTION_RECIPE` o `SUBRECIPE`.</ParamField>
+<ParamField body="recipe_name" type="string" required>Nombre para mostrar de la receta.</ParamField>
+<ParamField body="store_id" type="string">UUID de tienda BOH. Null para una receta que aplica a todas las tiendas.</ParamField>
+<ParamField body="external_product_id" type="string">Tu ID de producto del POS. Requerido para `SALES_RECIPE` con vinculación automática.</ParamField>
+<ParamField body="output_item_id" type="string">UUID del ítem producido. Requerido para `PRODUCTION_RECIPE` y `SUBRECIPE`.</ParamField>
+<ParamField body="recipe_code" type="string">Código corto para referenciar esta receta como subreceta.</ParamField>
+<ParamField body="recipe" type="object" required>
+  Contenido de la receta:
+  <Expandable title="campos de recipe">
+    <ParamField body="output" type="object">Para `PRODUCTION_RECIPE`: cantidad de salida planificada (`qty_base` + `base_unit_id`).</ParamField>
+    <ParamField body="lines" type="object[]" required>
+      Líneas de ingredientes. Cada línea tiene `consume_by` (`ITEM`, `ITEM_TAG` o `SUBRECIPE`), `qty_base`, `base_unit_id` y opcionalmente `service_codes`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+<RequestExample>
+```json Receta de venta con líneas por canal
+{
+  "recipe_type": "SALES_RECIPE",
+  "recipe_name": "Hamburguesa clásica",
+  "external_product_id": "prod-burger-001",
+  "recipe": {
+    "lines": [
+      {
+        "consume_by": "ITEM",
+        "item_id": "itm_carne_01...",
+        "qty_base": 180,
+        "base_unit_id": "unit_g_01..."
+      },
+      {
+        "consume_by": "ITEM",
+        "item_id": "itm_caja_delivery_01...",
+        "qty_base": 1,
+        "base_unit_id": "unit_ea_01...",
+        "service_codes": ["DELIVERY"]
+      }
+    ]
+  },
+  "external_user_id": "user_chef_99"
+}
+```
+</RequestExample>
+
+---
+
+## Obtener receta
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes/{recipeId}</api>
+
+Devuelve un único snapshot de receta por ID.
+
+---
+
+## Actualizar receta (solo borradores)
+
+<api>PATCH https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes/{recipeId}</api>
+
+Actualiza una receta en estado DRAFT. Actualización parcial. No se puede actualizar una receta PUBLISHED o ARCHIVED.
+
+---
+
+## Publicar receta
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes/{recipeId}/publish</api>
+
+Publica una receta DRAFT. Una vez publicada, no se puede editar — crea un nuevo borrador para revisarla.
+
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+---
+
+## Archivar receta
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes/{recipeId}/archive</api>
+
+Archiva una receta. BOH deja de usarla para consumo después del archivo.
+
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+Devuelve `{ "ok": true }`.
+
+---
+
+## Duplicar receta como borrador
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes/{recipeId}/duplicate-as-draft</api>
+
+Crea una nueva receta DRAFT como copia de la receta fuente, lista para editar.
+
+---
+
+## Expandir receta (resolución de ingredientes)
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes/{recipeId}/expansion</api>
+
+Resuelve recursivamente todas las referencias a subrecetas en una receta publicada, devolviendo una lista plana de líneas de ítems con la cantidad efectiva a consumir.
+
+<ParamField query="service_code" type="string">
+  Cuando se proporciona, solo se incluyen las líneas que coinciden con este service code (o que no tienen `service_codes`).
+</ParamField>
+
+<ResponseField name="recipe_id" type="string">UUID de la receta resuelta.</ResponseField>
+<ResponseField name="lines" type="object[]">Lista plana de líneas de ingredientes resueltas con `consume_by`, `item_id` o `item_tag_id`, `qty_base`, `base_unit_id` y `source_trace`.</ResponseField>
+<ResponseField name="trace" type="object">Árbol que muestra cómo se expandieron las subrecetas, con ratios y conteos de líneas por nodo.</ResponseField>
+
+---
+
+## Buscar receta publicada por producto
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/recipes/published</api>
+
+Encuentra la receta actualmente publicada para una combinación de producto/variante/servicio.
+
+<ParamField query="external_product_id" type="string">Tu ID de producto del POS.</ParamField>
+<ParamField query="external_variant_id" type="string">Tu ID de variante del POS.</ParamField>
+<ParamField query="store_id" type="string">UUID de tienda BOH.</ParamField>
+<ParamField query="service_code" type="string">Código de servicio/canal.</ParamField>
+
+Devuelve el `RecipeSnapshotResponse` de la receta encontrada o `404` si no se encuentra ninguna.

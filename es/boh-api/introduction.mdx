@@ -1,0 +1,151 @@
+---
+title: "Referencia de la BOH API"
+description: "API REST de Fire BOH — administra el catálogo de inventario, recetas, documentos operativos y webhooks de forma programática."
+---
+
+La **BOH API** es una API REST que te permite administrar el inventario Back of House de forma programática: sincronizar tu catálogo, publicar recetas, registrar documentos operativos (recepciones, mermas, conteos), leer reportes y configurar webhooks.
+
+<CardGroup cols={2}>
+  <Card title="Identidad" icon="building" href="/es/boh-api/identity">
+    Resuelve tu cuenta, lista vendors, establecimientos y proveedores.
+  </Card>
+  <Card title="Catálogo: Ítems" icon="box" href="/es/boh-api/catalog-items">
+    Crear, listar, actualizar, archivar y sincronizar ítems de inventario.
+  </Card>
+  <Card title="Catálogo: Sync masivo" icon="arrows-rotate" href="/es/boh-api/catalog-sync">
+    Sincronizar unidades, proveedores y asignaciones de clasificación en masa.
+  </Card>
+  <Card title="Recetas" icon="chef-hat" href="/es/boh-api/recipes">
+    Administrar recetas de venta, producción y subrecetas.
+  </Card>
+  <Card title="Operaciones" icon="arrow-left-right" href="/es/boh-api/operations">
+    Registrar recepciones, conteos, mermas, transferencias y producción.
+  </Card>
+  <Card title="Compras" icon="cart-shopping" href="/es/boh-api/procurement">
+    Gestionar niveles par y obtener cantidades de reorden sugeridas.
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/es/boh-api/webhooks">
+    Suscribirse a eventos de transacciones de inventario y órdenes de compra.
+  </Card>
+</CardGroup>
+
+## URL base
+
+```
+https://boh.api.fire.rest
+```
+
+Todos los endpoints tienen el prefijo `/api/v1/public/`.
+
+<Note>
+  La URL base es proporcionada por Fire al configurar tu integración. Usa `https://stg.boh.api.fire.rest` para staging y la URL de producción para operaciones en vivo.
+</Note>
+
+## Autenticación
+
+Cada solicitud requiere una **API key** en el header `x-api-key`. Las API keys se crean y administran desde la pantalla **Cuenta y accesos → API keys** del backoffice de BOH, o a través de los endpoints de [API Keys](/es/boh-api/api-keys).
+
+```http
+x-api-key: boh_live_xxxxxxxxxxxxxxxx
+```
+
+No se requiere Bearer token ni cookie de sesión. La key resuelve la cuenta; **no** necesitas pasar un header `account`.
+
+### Scopes de la key
+
+Cada key tiene uno o más scopes que restringen qué endpoints puede llamar. Una key con el scope comodín `*` puede llamar a todo.
+
+| Scope | Qué desbloquea |
+|---|---|
+| `catalog:read` | Listar y obtener ítems, unidades, etiquetas de ítems, clasificaciones |
+| `catalog:write` | Crear, actualizar, archivar recursos del catálogo |
+| `recipes:read` | Listar y obtener recetas; expandir a líneas de ingredientes |
+| `recipes:write` | Crear, actualizar, publicar, archivar recetas |
+| `inventory:read` | Leer documentos operativos (recepciones, mermas, conteos…), balances, movimientos |
+| `inventory:write` | Crear documentos operativos |
+| `reports:read` | Consultar reportes de inventario (usos, mermas, rendimiento, balance a fecha) |
+| `admin:keys` | Crear, rotar y revocar API keys |
+| `admin:accounts` | Actualizar configuración de la cuenta (moneda, modo de consumo) |
+| `admin:webhooks` | Crear, actualizar, eliminar y probar endpoints de webhook |
+
+## El vendor ID
+
+La mayoría de las rutas incluyen el parámetro de ruta `{vendorId}`. Un **vendor** representa una entidad configurada en BOH (una marca de restaurante o unidad operativa). Obtén tu vendor ID desde [Listar vendors](/es/boh-api/identity#listar-vendors) o el backoffice.
+
+```
+GET /api/v1/public/vendors/{vendorId}/catalog/items
+```
+
+## Formato de solicitud y respuesta
+
+- Todos los cuerpos de solicitud usan `Content-Type: application/json`.
+- Todas las respuestas son JSON.
+- Los timestamps usan ISO 8601 (`2026-08-07T14:30:00.000Z`).
+- Los montos monetarios usan la moneda de la cuenta (configurada en Configuración de cuenta).
+
+## Modelo de escritura asíncrona
+
+La mayoría de las operaciones de escritura (recepciones, conteos, mermas, transferencias, lotes de producción) son **asíncronas**. La respuesta es inmediata, pero los movimientos de stock se registran en unos segundos.
+
+Una escritura exitosa devuelve un `tracking_id`:
+
+```json
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "goods_receipt_id": "rcpt_01j5k...",
+  "idempotent": false
+}
+```
+
+Consulta `GET /api/v1/public/operations/transactions/{trackingId}` o `GET /api/v1/public/operations/transactions` para seguir el estado del procesamiento.
+
+### Idempotencia
+
+Envía el mismo string `idempotency_key` dos veces; la segunda llamada devuelve la respuesta original con `"idempotent": true` sin reprocesar. Las claves de idempotencia expiran después de 24 horas.
+
+## Errores
+
+Todas las respuestas de error comparten el mismo envelope:
+
+```json
+{
+  "error": {
+    "kind": "codigo_de_error_snake_case",
+    "message": "Descripción legible (para depuración, no para mostrar)",
+    "details": {}
+  }
+}
+```
+
+| Estado HTTP | Significado |
+|---|---|
+| `400` | Error de validación — `kind` describe el campo o restricción que falló |
+| `401` | API key faltante o inválida |
+| `403` | Scope o vendor incorrecto |
+| `404` | Recurso no encontrado |
+| `409` | Conflicto — ej., clave de idempotencia duplicada con payload diferente |
+| `422` | Violación de regla de negocio |
+| `429` | Límite de tasa excedido |
+| `5xx` | Error de servidor — reintentar con backoff exponencial |
+
+<Warning>
+  Los valores de `message` son para depuración y registro. No están localizados. Traduce `kind` a cadenas orientadas al usuario en tu aplicación.
+</Warning>
+
+## Límites de tasa
+
+Límites de tasa predeterminados por scope:
+
+| Scope | Solicitudes / min |
+|---|---|
+| `catalog:read`, `catalog:write`, `recipes:*`, `inventory:*` | 1 000 |
+| `orders:write` | 5 000 |
+| `reports:read` | 100 |
+| `admin:keys`, `admin:accounts` | 60 |
+
+Cuando se supera el límite, la respuesta es `429` e incluye los headers `Retry-After` y `X-RateLimit-*`. Los límites pueden sobreescribirse por key a través del soporte de Fire.
+
+## external_user_id
+
+Los endpoints que crean o modifican documentos operativos aceptan un string opcional `external_user_id` en el cuerpo. BOH lo almacena como el actor humano para auditoría. Para CRUD de catálogo es opcional; para documentos operativos se recomienda encarecidamente.

@@ -1,0 +1,486 @@
+---
+title: "Operaciones"
+description: "Registra y consulta movimientos de inventario: recepciones de mercancía, conteos, mermas, transferencias y lotes de producción."
+---
+
+Las **operaciones** son las transacciones de inventario que mueven stock físicamente: mercancía que llega de un proveedor, un conteo físico que reconcilia saldos, merma desechada, stock transferido entre establecimientos, y producciones que convierten ingredientes en un producto terminado.
+
+Todas las escrituras son **asíncronas** (HTTP 202). Responden de inmediato con un `tracking_id`; los movimientos de stock se procesan en segundos. Consulta `GET /api/v1/public/operations/transactions/{trackingId}` para seguir el estado.
+
+**Scopes requeridos:** `inventory:read` (lectura), `inventory:write` (escritura).
+
+---
+
+## Recepciones de mercancía
+
+### Crear una recepción de mercancía
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/goods-receipts</api>
+
+Registra inventario que llega de un proveedor. Cada línea puede vincular una orden de compra (opcional) y agrega stock.
+
+<ParamField header="x-api-key" type="string" required>API key con scope `inventory:write`.</ParamField>
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+
+<ParamField body="idempotency_key" type="string" required>Clave de idempotencia (1–128 chars). Envíos duplicados devuelven la respuesta original con `"idempotent": true`.</ParamField>
+<ParamField body="external_user_id" type="string" required>Identificador del actor para auditoría.</ParamField>
+<ParamField body="store_id" type="string">UUID del establecimiento receptor. Se requiere exactamente uno de `store_id` o `external_store_id`.</ParamField>
+<ParamField body="external_store_id" type="string">Identificador del establecimiento en tu sistema.</ParamField>
+<ParamField body="supplier_id" type="string">UUID del proveedor en BOH.</ParamField>
+<ParamField body="external_supplier_id" type="string">Identificador del proveedor en tu sistema.</ParamField>
+<ParamField body="reference" type="string">Número de factura o albarán (máx. 200 chars).</ParamField>
+<ParamField body="purchase_order_id" type="string">UUID de la orden de compra que esta recepción cumple (opcional).</ParamField>
+<ParamField body="lines" type="object[]" required>
+  Líneas de artículos (1–500 líneas):
+  <Expandable title="campos de la línea">
+    <ParamField body="item_id" type="string">UUID del ítem en BOH. Se requiere exactamente uno de `item_id` o `external_item_id`.</ParamField>
+    <ParamField body="external_item_id" type="string">Identificador del ítem en tu sistema.</ParamField>
+    <ParamField body="purchase_order_line_id" type="string">UUID de la línea de OC que se está cumpliendo.</ParamField>
+    <ParamField body="qty" type="number" required>Cantidad recibida en la unidad indicada.</ParamField>
+    <ParamField body="qty_base" type="number" required>Cantidad convertida a la unidad base del ítem.</ParamField>
+    <ParamField body="base_unit_id" type="string" required>UUID de la unidad base.</ParamField>
+    <ParamField body="unit_id" type="string">UUID de la unidad usada para `qty`.</ParamField>
+    <ParamField body="unit_label" type="string">Etiqueta de la unidad (para visualización).</ParamField>
+    <ParamField body="unit_to_base_factor" type="number" required>Factor de conversión de `unit_id` a `base_unit_id`.</ParamField>
+    <ParamField body="unit_cost" type="number" required>Costo por unidad (en la moneda de la cuenta, ≥ 0).</ParamField>
+    <ParamField body="total_cost" type="number">Costo total precalculado. Por defecto `qty × unit_cost`.</ParamField>
+    <ParamField body="metadata" type="object">Datos adicionales libres.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="tracking_id" type="string">Úsalo para consultar el estado de procesamiento final.</ResponseField>
+<ResponseField name="inventory_transaction_id" type="string">UUID de la transacción de inventario creada.</ResponseField>
+<ResponseField name="goods_receipt_id" type="string">UUID de la recepción creada.</ResponseField>
+<ResponseField name="idempotent" type="boolean">`true` si se encontró un envío previo idéntico.</ResponseField>
+
+<RequestExample>
+```json
+{
+  "idempotency_key": "rcpt-2026-08-07-001",
+  "external_user_id": "usuario_recepcion",
+  "store_id": "str_principal_01...",
+  "supplier_id": "sup_proveedor_01...",
+  "reference": "FAC-2026-1234",
+  "lines": [
+    {
+      "item_id": "itm_pollo_01...",
+      "qty": 10,
+      "qty_base": 10000,
+      "base_unit_id": "unit_g_01...",
+      "unit_id": "unit_kg_01...",
+      "unit_label": "kg",
+      "unit_to_base_factor": 1000,
+      "unit_cost": 4.5
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "goods_receipt_id": "rcpt_01j5k...",
+  "idempotent": false
+}
+```
+</ResponseExample>
+
+---
+
+### Listar recepciones de mercancía
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/goods-receipts</api>
+
+<ParamField query="limit" type="number">Resultados por página (1–200, default 50).</ParamField>
+<ParamField query="offset" type="number">Offset de paginación (default 0).</ParamField>
+<ParamField query="purchase_order_id" type="string">Filtrar por UUID de orden de compra.</ParamField>
+<ParamField query="reference" type="string">Filtrar por referencia.</ParamField>
+<ParamField query="include_cancelled" type="boolean">Incluir canceladas (default `false`).</ParamField>
+
+---
+
+### Obtener una recepción de mercancía
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/goods-receipts/{receiptId}</api>
+
+Devuelve una recepción con todas sus líneas.
+
+---
+
+## Conteos de inventario
+
+### Crear un conteo de inventario
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/stock-counts</api>
+
+Envía un conteo físico de inventario. Para `scope: "FULL"`, BOH reconcilia el saldo completo del establecimiento; para `PARTIAL`, solo se ajustan los ítems contados.
+
+<ParamField body="idempotency_key" type="string" required>Clave de idempotencia.</ParamField>
+<ParamField body="external_user_id" type="string" required>Actor para auditoría.</ParamField>
+<ParamField body="store_id" type="string" required>UUID del establecimiento contado.</ParamField>
+<ParamField body="scope" type="string" required>`FULL` o `PARTIAL`.</ParamField>
+<ParamField body="count_type" type="string">`DAILY`, `WEEKLY`, `MONTHLY` o `AUDIT`.</ParamField>
+<ParamField body="counted_at" type="string">Timestamp ISO 8601 de cuándo se realizó el conteo (por defecto `now()`).</ParamField>
+<ParamField body="area_breakdown" type="object">Mapa de código de área → item\_id → cantidad contada en unidades base. Usado para la vista de conteo colaborativo por áreas.</ParamField>
+<ParamField body="notes" type="string">Notas libres (máx. 500 chars).</ParamField>
+<ParamField body="metadata" type="object">Datos adicionales libres.</ParamField>
+<ParamField body="entries" type="object[]" required>
+  Líneas contadas (al menos 1):
+  <Expandable title="campos de la entrada">
+    <ParamField body="item_id" type="string" required>UUID del ítem contado.</ParamField>
+    <ParamField body="counted_quantity" type="number" required>Cantidad en la unidad de visualización.</ParamField>
+    <ParamField body="counted_qty_base" type="number" required>Cantidad convertida a la unidad base del ítem.</ParamField>
+    <ParamField body="base_unit_id" type="string" required>UUID de la unidad base.</ParamField>
+    <ParamField body="unit_id" type="string">UUID de la unidad de visualización.</ParamField>
+    <ParamField body="unit_label" type="string">Etiqueta de la unidad.</ParamField>
+    <ParamField body="unit_to_base_factor" type="number" required>Factor de conversión.</ParamField>
+    <ParamField body="lot_id" type="string">UUID del lote (si se rastrean lotes).</ParamField>
+    <ParamField body="metadata" type="object">Datos extra por línea.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="tracking_id" type="string">Token de consulta.</ResponseField>
+<ResponseField name="inventory_transaction_id" type="string">UUID de la transacción.</ResponseField>
+<ResponseField name="stock_count_id" type="string">UUID del conteo creado.</ResponseField>
+<ResponseField name="idempotent" type="boolean">`true` si es duplicado.</ResponseField>
+
+<RequestExample>
+```json
+{
+  "idempotency_key": "conteo-2026-08-07-principal",
+  "external_user_id": "usuario_almacen",
+  "store_id": "str_principal_01...",
+  "scope": "PARTIAL",
+  "count_type": "DAILY",
+  "counted_at": "2026-08-07T06:00:00.000Z",
+  "entries": [
+    {
+      "item_id": "itm_pollo_01...",
+      "counted_quantity": 3.5,
+      "counted_qty_base": 3500,
+      "base_unit_id": "unit_g_01...",
+      "unit_id": "unit_kg_01...",
+      "unit_label": "kg",
+      "unit_to_base_factor": 1000
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "stock_count_id": "cnt_01j5k...",
+  "idempotent": false
+}
+```
+</ResponseExample>
+
+---
+
+### Listar conteos de inventario
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/stock-counts</api>
+
+<ParamField query="limit" type="number">Resultados por página (1–200).</ParamField>
+<ParamField query="offset" type="number">Offset de paginación.</ParamField>
+<ParamField query="include_cancelled" type="boolean">Default `false`.</ParamField>
+
+---
+
+## Mermas
+
+### Crear una merma
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/waste-events</api>
+
+Registra inventario desechado o consumido fuera de una venta normal. Las líneas pueden referenciar ítems individuales, grupos de ítems (item tags) o snapshots de subrecetas.
+
+<ParamField body="idempotency_key" type="string" required>Clave de idempotencia.</ParamField>
+<ParamField body="external_user_id" type="string" required>Actor para auditoría.</ParamField>
+<ParamField body="store_id" type="string" required>UUID del establecimiento donde ocurrió la merma.</ParamField>
+<ParamField body="waste_reason_id" type="string" required>UUID del motivo de merma (configurado en Catálogo → Motivos de merma).</ParamField>
+<ParamField body="notes" type="string">Notas opcionales.</ParamField>
+<ParamField body="lines" type="object[]" required>
+  Líneas de merma (al menos 1). Cada línea tiene un discriminador `consume_by`:
+  <Expandable title="Línea por ítem">
+    <ParamField body="consume_by" type="string" required>`"ITEM"`</ParamField>
+    <ParamField body="item_id" type="string" required>UUID del ítem.</ParamField>
+    <ParamField body="qty" type="number" required>Cantidad en unidad de visualización.</ParamField>
+    <ParamField body="qty_base" type="number" required>Cantidad en unidad base.</ParamField>
+    <ParamField body="base_unit_id" type="string" required>UUID de la unidad base.</ParamField>
+    <ParamField body="unit_id" type="string">UUID de la unidad de visualización.</ParamField>
+    <ParamField body="unit_label" type="string">Etiqueta de la unidad.</ParamField>
+    <ParamField body="unit_to_base_factor" type="number" required>Factor de conversión.</ParamField>
+    <ParamField body="unit_cost" type="number">Costo por unidad para valorización.</ParamField>
+    <ParamField body="inventory_lot_id" type="string">UUID del lote.</ParamField>
+  </Expandable>
+  <Expandable title="Línea por tag de ítem">
+    <ParamField body="consume_by" type="string" required>`"ITEM_TAG"`</ParamField>
+    <ParamField body="item_tag_id" type="string" required>UUID del tag de ítems.</ParamField>
+    <ParamField body="qty_base" type="number" required>Cantidad en unidad base a mermar entre todos los ítems del tag.</ParamField>
+    <ParamField body="base_unit_id" type="string" required>UUID de la unidad base.</ParamField>
+  </Expandable>
+  <Expandable title="Línea por subreceta">
+    <ParamField body="consume_by" type="string" required>`"SUBRECIPE"`</ParamField>
+    <ParamField body="subrecipe_snapshot_id" type="string" required>UUID del snapshot de subreceta publicado.</ParamField>
+    <ParamField body="qty" type="number" required>Número de porciones de subreceta mermaadas.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="tracking_id" type="string">Token de consulta.</ResponseField>
+<ResponseField name="inventory_transaction_id" type="string">UUID de la transacción.</ResponseField>
+<ResponseField name="waste_event_id" type="string">UUID de la merma creada.</ResponseField>
+<ResponseField name="idempotent" type="boolean">`true` si es duplicado.</ResponseField>
+
+<RequestExample>
+```json
+{
+  "idempotency_key": "merma-2026-08-07-001",
+  "external_user_id": "usuario_cocina",
+  "store_id": "str_principal_01...",
+  "waste_reason_id": "wr_vencido_01...",
+  "notes": "Encontrado durante la preparación matutina",
+  "lines": [
+    {
+      "consume_by": "ITEM",
+      "item_id": "itm_tomate_01...",
+      "qty": 2,
+      "qty_base": 2000,
+      "base_unit_id": "unit_g_01...",
+      "unit_id": "unit_kg_01...",
+      "unit_label": "kg",
+      "unit_to_base_factor": 1000
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "waste_event_id": "wst_01j5k...",
+  "idempotent": false
+}
+```
+</ResponseExample>
+
+---
+
+### Listar mermas
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/waste-events</api>
+
+<ParamField query="limit" type="number">Resultados por página (1–200).</ParamField>
+<ParamField query="offset" type="number">Offset de paginación.</ParamField>
+
+---
+
+## Transferencias
+
+### Crear una transferencia
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/transfers</api>
+
+Mueve stock de un establecimiento a otro. Debita `from_store_id` y acredita `to_store_id` de forma atómica.
+
+<ParamField body="idempotency_key" type="string" required>Clave de idempotencia.</ParamField>
+<ParamField body="external_user_id" type="string" required>Actor para auditoría.</ParamField>
+<ParamField body="from_store_id" type="string" required>UUID del establecimiento de origen.</ParamField>
+<ParamField body="to_store_id" type="string" required>UUID del establecimiento de destino.</ParamField>
+<ParamField body="external_reference" type="string">Número de referencia en tu sistema.</ParamField>
+<ParamField body="initiated_at" type="string">Timestamp ISO 8601 de cuándo se inició la transferencia físicamente.</ParamField>
+<ParamField body="notes" type="string">Notas opcionales (máx. 500 chars).</ParamField>
+<ParamField body="metadata" type="object">Datos adicionales libres.</ParamField>
+<ParamField body="lines" type="object[]" required>
+  Ítems a transferir (1–500 líneas):
+  <Expandable title="campos de la línea">
+    <ParamField body="item_id" type="string" required>UUID del ítem.</ParamField>
+    <ParamField body="qty" type="number" required>Cantidad en unidad de visualización.</ParamField>
+    <ParamField body="qty_base" type="number" required>Cantidad en unidad base.</ParamField>
+    <ParamField body="base_unit_id" type="string" required>UUID de la unidad base.</ParamField>
+    <ParamField body="unit_id" type="string">UUID de la unidad de visualización.</ParamField>
+    <ParamField body="unit_label" type="string">Etiqueta de la unidad.</ParamField>
+    <ParamField body="unit_to_base_factor" type="number" required>Factor de conversión.</ParamField>
+    <ParamField body="lot_id" type="string">UUID del lote.</ParamField>
+    <ParamField body="metadata" type="object">Datos extra por línea.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="tracking_id" type="string">Token de consulta.</ResponseField>
+<ResponseField name="inventory_transaction_id" type="string">UUID de la transacción.</ResponseField>
+<ResponseField name="transfer_id" type="string">UUID de la transferencia creada.</ResponseField>
+<ResponseField name="idempotent" type="boolean">`true` si es duplicado.</ResponseField>
+
+<RequestExample>
+```json
+{
+  "idempotency_key": "transf-2026-08-07-001",
+  "external_user_id": "usuario_gerente",
+  "from_store_id": "str_principal_01...",
+  "to_store_id": "str_satelite_01...",
+  "external_reference": "TRF-2026-0042",
+  "lines": [
+    {
+      "item_id": "itm_pollo_01...",
+      "qty": 5,
+      "qty_base": 5000,
+      "base_unit_id": "unit_g_01...",
+      "unit_id": "unit_kg_01...",
+      "unit_label": "kg",
+      "unit_to_base_factor": 1000
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "transfer_id": "xfr_01j5k...",
+  "idempotent": false
+}
+```
+</ResponseExample>
+
+---
+
+### Listar transferencias
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/transfers</api>
+
+<ParamField query="limit" type="number">Resultados por página (1–200).</ParamField>
+<ParamField query="offset" type="number">Offset de paginación.</ParamField>
+<ParamField query="include_cancelled" type="boolean">Default `false`.</ParamField>
+
+---
+
+## Lotes de producción
+
+### Crear un lote de producción
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/production-batches</api>
+
+Registra la producción de un artículo terminado a partir de una receta. Consume inventario de ingredientes y agrega la producción al stock.
+
+<ParamField body="idempotency_key" type="string" required>Clave de idempotencia.</ParamField>
+<ParamField body="external_user_id" type="string" required>Actor para auditoría.</ParamField>
+<ParamField body="store_id" type="string" required>UUID del establecimiento donde ocurrió la producción.</ParamField>
+<ParamField body="recipe_snapshot_id" type="string" required>UUID del snapshot de receta publicado que se usó. Obtén este ID desde el [endpoint de lookup de recetas](/es/boh-api/recipes#get-a-snapshot-by-vendor-and-sku).</ParamField>
+<ParamField body="actual_output" type="object" required>
+  La cantidad realmente producida:
+  <Expandable title="campos de actual_output">
+    <ParamField body="quantity" type="number" required>Cantidad producida en unidad de visualización.</ParamField>
+    <ParamField body="unit_id" type="string">UUID de la unidad de visualización.</ParamField>
+    <ParamField body="unit_label" type="string">Etiqueta de la unidad.</ParamField>
+    <ParamField body="unit_to_base_factor" type="number" required>Factor de conversión a unidad base.</ParamField>
+    <ParamField body="base_unit_id" type="string" required>UUID de la unidad base.</ParamField>
+    <ParamField body="qty_base" type="number" required>Cantidad producida en unidad base.</ParamField>
+  </Expandable>
+</ParamField>
+<ParamField body="produced_at" type="string">Timestamp ISO 8601 de la producción (por defecto `now()`).</ParamField>
+<ParamField body="output_lot_code" type="string">Código de lote para el output producido (máx. 128 chars).</ParamField>
+<ParamField body="output_expires_at" type="string">Timestamp de vencimiento del lote producido.</ParamField>
+<ParamField body="input_overrides" type="object[]">
+  Anular las cantidades de consumo predeterminadas de ingredientes:
+  <Expandable title="campos del override">
+    <ParamField body="ingredient_kind" type="string" required>`ITEM` o `ITEM_TAG`.</ParamField>
+    <ParamField body="ingredient_item_id" type="string" required>UUID del ingrediente.</ParamField>
+    <ParamField body="quantity_override_base" type="number">Cantidad en unidades base. Reemplaza el default de la receta.</ParamField>
+    <ParamField body="lot_id_hint" type="string">UUID del lote preferido para consumir.</ParamField>
+  </Expandable>
+</ParamField>
+<ParamField body="notes" type="string">Notas opcionales (máx. 500 chars).</ParamField>
+<ParamField body="metadata" type="object">Datos adicionales libres.</ParamField>
+
+<ResponseField name="tracking_id" type="string">Token de consulta.</ResponseField>
+<ResponseField name="inventory_transaction_id" type="string">UUID de la transacción.</ResponseField>
+<ResponseField name="production_batch_id" type="string">UUID del lote de producción creado.</ResponseField>
+<ResponseField name="idempotent" type="boolean">`true` si es duplicado.</ResponseField>
+
+<RequestExample>
+```json
+{
+  "idempotency_key": "prod-2026-08-07-001",
+  "external_user_id": "usuario_cocina",
+  "store_id": "str_principal_01...",
+  "recipe_snapshot_id": "snap_mole_v3_01...",
+  "actual_output": {
+    "quantity": 2,
+    "unit_id": "unit_lt_01...",
+    "unit_label": "lt",
+    "unit_to_base_factor": 1000,
+    "base_unit_id": "unit_ml_01...",
+    "qty_base": 2000
+  },
+  "produced_at": "2026-08-07T07:00:00.000Z",
+  "notes": "Preparación matutina"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "production_batch_id": "prd_01j5k...",
+  "idempotent": false
+}
+```
+</ResponseExample>
+
+---
+
+### Listar lotes de producción
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/production-batches</api>
+
+<ParamField query="limit" type="number">Resultados por página (1–200).</ParamField>
+<ParamField query="offset" type="number">Offset de paginación.</ParamField>
+<ParamField query="include_cancelled" type="boolean">Default `false`.</ParamField>
+
+---
+
+### Obtener un lote de producción
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/production-batches/{batchId}</api>
+
+Devuelve un único lote de producción con detalle completo.
+
+---
+
+## Seguimiento de transacciones
+
+### Obtener el estado de una transacción
+
+<api>GET https://boh.api.fire.rest/api/v1/public/operations/transactions/{trackingId}</api>
+
+Consulta el estado de procesamiento de cualquier escritura asíncrona. Usa el `tracking_id` devuelto por el endpoint de creación.
+
+<ResponseField name="status" type="string">`PENDING`, `PROCESSING`, `COMPLETED` o `FAILED`.</ResponseField>
+<ResponseField name="error" type="object">Presente solo cuando `status` es `FAILED`. Contiene `kind` y `message`.</ResponseField>
+
+---
+
+### Listar transacciones
+
+<api>GET https://boh.api.fire.rest/api/v1/public/operations/transactions</api>
+
+Lista las transacciones de inventario recientes de la cuenta.
+
+<ParamField query="limit" type="number">Resultados por página.</ParamField>
+<ParamField query="offset" type="number">Offset de paginación.</ParamField>
+<ParamField query="status" type="string">Filtrar por estado: `PENDING`, `PROCESSING`, `COMPLETED` o `FAILED`.</ParamField>

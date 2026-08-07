@@ -1,0 +1,282 @@
+---
+title: "Catálogo: Ítems"
+description: "Listar, crear, actualizar, sincronizar y archivar ítems de inventario en el catálogo de BOH."
+---
+
+Los ítems son los insumos e ingredientes físicos que rastreas en BOH. Cada ítem pertenece a un grupo de unidades, tiene una unidad base y puede vincularse a proveedores, etiquetas de ítems y valores de clasificación.
+
+**Scopes requeridos:** `catalog:read` (lecturas), `catalog:write` (escrituras).
+
+---
+
+## Listar ítems
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items</api>
+
+Devuelve ítems del vendor con filtros opcionales. Soporta **paginación por offset** (por defecto, devuelve `total`) y **paginación por cursor** (pasa `cursor`, devuelve `next_cursor` y `has_more`).
+
+<ParamField header="x-api-key" type="string" required>
+  API key de BOH con scope `catalog:read`.
+</ParamField>
+
+<ParamField path="vendorId" type="string" required>
+  UUID del vendor (entidad BOH).
+</ParamField>
+
+<ParamField query="search" type="string">
+  Coincidencia parcial en nombre o código del ítem (1–256 caracteres).
+</ParamField>
+
+<ParamField query="status" type="string" default="ACTIVE">
+  Filtrar por estado: `ACTIVE`, `ARCHIVED` o `ALL`.
+</ParamField>
+
+<ParamField query="procurement_type" type="string">
+  `PURCHASED`, `PRODUCED` o `PURCHASED_AND_PRODUCED`.
+</ParamField>
+
+<ParamField query="count_frequency" type="string">
+  `DAILY`, `WEEKLY` o `MONTHLY`.
+</ParamField>
+
+<ParamField query="tag_id" type="string">
+  UUID de una etiqueta de ítems — devuelve solo los ítems que pertenecen a esa etiqueta.
+</ParamField>
+
+<ParamField query="include" type="string">
+  Sideloads separados por coma: `tags`, `unit_group`, `memberships`.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Tamaño de página (1–200).
+</ParamField>
+
+<ParamField query="offset" type="integer" default="0">
+  Offset para paginación basada en páginas.
+</ParamField>
+
+<ParamField query="cursor" type="string">
+  Cursor opaco para paginación por cursor. Mutuamente exclusivo con `offset`.
+</ParamField>
+
+<RequestExample>
+```http
+GET /api/v1/public/vendors/vnd_abc123/catalog/items?status=ACTIVE&include=tags&limit=20
+x-api-key: boh_live_xxxxxxxx
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": "itm_01j5k...",
+      "account_id": "acc_01j...",
+      "external_item_id": "SKU-001",
+      "code": "HARINA-KG",
+      "name": "Harina de trigo",
+      "type": "INGREDIENT",
+      "procurement_type": "PURCHASED",
+      "unit_group_id": "ug_masa_01...",
+      "base_unit_id": "unit_g_01...",
+      "is_inventory_tracked": true,
+      "is_active": true,
+      "count_frequency": "WEEKLY",
+      "created_at": "2026-01-10T09:00:00.000Z",
+      "updated_at": "2026-07-01T12:00:00.000Z",
+      "tags": [
+        { "id": "tag_dry_01...", "code": "SECOS", "name": "Secos" }
+      ]
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+</ResponseExample>
+
+---
+
+## Crear ítem
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items</api>
+
+Crea un nuevo ítem en el catálogo.
+
+<ParamField header="x-api-key" type="string" required>
+  API key de BOH con scope `catalog:write`.
+</ParamField>
+
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+
+<ParamField body="name" type="string" required>Nombre para mostrar (1–256 caracteres).</ParamField>
+
+<ParamField body="type" type="string" required>
+  Tipo de ítem: `INGREDIENT`, `PACKAGING`, `SUPPLY`, `PREPARED_ITEM` o `FINISHED_GOOD`.
+</ParamField>
+
+<ParamField body="procurement_type" type="string" required>
+  Cómo se obtiene: `PURCHASED`, `PRODUCED` o `PURCHASED_AND_PRODUCED`.
+</ParamField>
+
+<ParamField body="unit_group_id" type="string" required>
+  UUID del grupo de unidades (ej. masa, volumen, conteo). No se puede cambiar tras la creación.
+</ParamField>
+
+<ParamField body="base_unit_id" type="string" required>
+  UUID de la unidad base dentro del grupo (ej. gramos dentro de masa). No se puede cambiar tras la creación.
+</ParamField>
+
+<ParamField body="external_item_id" type="string">
+  Identificador de tu sistema para este ítem (1–128 caracteres). Se usa para reconciliación en sync.
+</ParamField>
+
+<ParamField body="code" type="string">
+  Código alfanumérico corto (1–64 caracteres). Debe ser único dentro del vendor.
+</ParamField>
+
+<ParamField body="is_inventory_tracked" type="boolean" default="true">
+  Si BOH registra movimientos de stock para este ítem.
+</ParamField>
+
+<ParamField body="count_frequency" type="string | null">
+  Ciclo de conteo físico sugerido: `DAILY`, `WEEKLY`, `MONTHLY` o `null`.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Almacén de clave-valor libre para datos extra de tu sistema.
+</ParamField>
+
+<ParamField body="external_user_id" type="string">
+  ID del usuario que realiza esta acción en tu sistema (para auditoría).
+</ParamField>
+
+<RequestExample>
+```json
+{
+  "name": "Harina de trigo",
+  "type": "INGREDIENT",
+  "procurement_type": "PURCHASED",
+  "unit_group_id": "ug_masa_01...",
+  "base_unit_id": "unit_g_01...",
+  "external_item_id": "SKU-001",
+  "code": "HARINA-KG",
+  "is_inventory_tracked": true,
+  "count_frequency": "WEEKLY",
+  "external_user_id": "user_jane_42"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": "itm_01j5k...",
+  "account_id": "acc_01j...",
+  "external_item_id": "SKU-001",
+  "code": "HARINA-KG",
+  "name": "Harina de trigo",
+  "type": "INGREDIENT",
+  "procurement_type": "PURCHASED",
+  "unit_group_id": "ug_masa_01...",
+  "base_unit_id": "unit_g_01...",
+  "is_inventory_tracked": true,
+  "is_active": true,
+  "count_frequency": "WEEKLY",
+  "metadata": {},
+  "created_at": "2026-08-07T14:30:00.000Z",
+  "updated_at": "2026-08-07T14:30:00.000Z"
+}
+```
+</ResponseExample>
+
+---
+
+## Sincronizar ítems (bulk upsert)
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items</api>
+
+Upsert de hasta **200 ítems** en una sola llamada usando `external_item_id` como clave de coincidencia. Los ítems se crean o actualizan; los ítems existentes cuyo `external_item_id` no esté en el batch no se tocan. Para archivar un ítem vía sync, coloca `"archived": true` en su fila.
+
+<ParamField body="items" type="object[]" required>
+  Array de 1–200 filas de ítems. Cada fila:
+  <Expandable title="campos de fila de ítem">
+    <ParamField body="external_item_id" type="string" required>Clave única en tu sistema (1–128 chars).</ParamField>
+    <ParamField body="name" type="string" required>Nombre para mostrar (1–256 chars).</ParamField>
+    <ParamField body="type" type="string" required>`INGREDIENT`, `PACKAGING`, `SUPPLY`, `PREPARED_ITEM` o `FINISHED_GOOD`.</ParamField>
+    <ParamField body="procurement_type" type="string" required>`PURCHASED`, `PRODUCED` o `PURCHASED_AND_PRODUCED`.</ParamField>
+    <ParamField body="unit_group_code" type="string" required>Código del grupo de unidades (resuelto por BOH).</ParamField>
+    <ParamField body="base_unit_code" type="string" required>Código de la unidad base dentro del grupo.</ParamField>
+    <ParamField body="code" type="string">Código alfanumérico corto.</ParamField>
+    <ParamField body="is_inventory_tracked" type="boolean">Por defecto `true`.</ParamField>
+    <ParamField body="count_frequency" type="string | null">`DAILY`, `WEEKLY`, `MONTHLY` o `null`.</ParamField>
+    <ParamField body="tags" type="string[]">Array de códigos de etiquetas de ítems a asignar.</ParamField>
+    <ParamField body="archived" type="boolean">Coloca `true` para archivar este ítem.</ParamField>
+    <ParamField body="metadata" type="object">Datos extra libres.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">
+  ID del usuario que realiza esta acción en tu sistema.
+</ParamField>
+
+<ResponseField name="results" type="object[]">
+  Una entrada por fila de entrada: `external_item_id`, `id` y `action` (`created`, `updated` o `unchanged`).
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  Conteos `{ created, updated, unchanged }`.
+</ResponseField>
+
+---
+
+## Obtener ítem
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}</api>
+
+Devuelve un único ítem con su detalle completo incluyendo `metadata`.
+
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+<ParamField path="itemId" type="string" required>UUID del ítem.</ParamField>
+
+---
+
+## Actualizar ítem
+
+<api>PATCH https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}</api>
+
+Actualiza parcialmente un ítem. Solo se cambian los campos que envías. `unit_group_id` y `base_unit_id` no se pueden cambiar tras la creación.
+
+<ParamField body="name" type="string">Nuevo nombre.</ParamField>
+<ParamField body="type" type="string">Nuevo tipo.</ParamField>
+<ParamField body="procurement_type" type="string">Nuevo tipo de abastecimiento.</ParamField>
+<ParamField body="is_inventory_tracked" type="boolean">Alternar seguimiento de stock.</ParamField>
+<ParamField body="count_frequency" type="string | null">Nuevo ciclo de conteo.</ParamField>
+<ParamField body="metadata" type="object">Reemplaza el objeto metadata existente.</ParamField>
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+---
+
+## Archivar ítem
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}/archive</api>
+
+Eliminación lógica del ítem. Los ítems archivados no aparecen en listados por defecto (`status=ACTIVE`). Las recetas y movimientos históricos que hacen referencia al ítem no se ven afectados.
+
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+Devuelve `{ "ok": true }` en caso de éxito.
+
+---
+
+## Desarchivar ítem
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}/unarchive</api>
+
+Restaura un ítem archivado al estado activo.
+
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+Devuelve `{ "ok": true }` en caso de éxito.

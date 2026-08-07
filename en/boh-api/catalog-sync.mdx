@@ -1,0 +1,238 @@
+---
+title: "Catalog: Bulk sync"
+description: "Bulk-upsert units, suppliers, and classification assignments via PUT endpoints."
+---
+
+BOH exposes `PUT` bulk-sync endpoints for resources that are typically managed from an external system of record. All sync operations use `code` or an `external_*_id` field as the idempotency key and return a `{ results, summary }` response.
+
+**Required scope:** `catalog:write`.
+
+---
+
+## Sync units
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/units</api>
+
+Upserts units by `code` + `unit_group_code`. Units that match an existing record are updated; new ones are created. Global (system-defined) units are returned as `action: "skipped_global"` and not modified.
+
+<ParamField header="x-api-key" type="string" required>BOH API key with `catalog:write` scope.</ParamField>
+<ParamField path="vendorId" type="string" required>Vendor UUID.</ParamField>
+
+<ParamField body="units" type="object[]" required>
+  Array of unit rows:
+  <Expandable title="unit row fields">
+    <ParamField body="code" type="string" required>Unique alphanumeric code within the unit group (1–64 chars).</ParamField>
+    <ParamField body="name" type="string" required>Display name.</ParamField>
+    <ParamField body="unit_group_code" type="string" required>Code of the parent unit group (e.g. `MASS`, `VOLUME`, `COUNT`).</ParamField>
+    <ParamField body="conversion_factor_to_base" type="number" required>How many base units one unit of this type equals (e.g. `1000` for kg when base is g).</ParamField>
+    <ParamField body="symbol" type="string">Display symbol (e.g. `kg`, `ml`).</ParamField>
+    <ParamField body="system" type="string">`METRIC`, `IMPERIAL`, or `OTHER`.</ParamField>
+    <ParamField body="archived" type="boolean">Set `true` to archive the unit.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">Actor for audit.</ParamField>
+
+<ResponseField name="results" type="object[]">
+  One entry per input row: `code`, `unit_group_code`, `id`, and `action` (`created`, `updated`, `unchanged`, or `skipped_global`).
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  `{ created, updated, unchanged, skipped_global }` counts.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "units": [
+    {
+      "code": "KG",
+      "name": "Kilogram",
+      "unit_group_code": "MASS",
+      "conversion_factor_to_base": 1000,
+      "symbol": "kg",
+      "system": "METRIC"
+    },
+    {
+      "code": "LB",
+      "name": "Pound",
+      "unit_group_code": "MASS",
+      "conversion_factor_to_base": 453.592,
+      "symbol": "lb",
+      "system": "IMPERIAL"
+    }
+  ],
+  "external_user_id": "user_setup_01"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "results": [
+    { "code": "KG", "unit_group_code": "MASS", "id": "unit_kg_01...", "action": "unchanged" },
+    { "code": "LB", "unit_group_code": "MASS", "id": "unit_lb_01...", "action": "created" }
+  ],
+  "summary": { "created": 1, "updated": 0, "unchanged": 1, "skipped_global": 0 }
+}
+```
+</ResponseExample>
+
+---
+
+## Sync suppliers
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/identity/suppliers</api>
+
+Upserts suppliers by `external_supplier_id`. Suppliers whose `external_supplier_id` is not in the batch are left untouched.
+
+<ParamField header="x-api-key" type="string" required>BOH API key with `catalog:write` scope.</ParamField>
+<ParamField path="vendorId" type="string" required>Vendor UUID.</ParamField>
+
+<ParamField body="suppliers" type="object[]" required>
+  Array of supplier rows:
+  <Expandable title="supplier row fields">
+    <ParamField body="external_supplier_id" type="string" required>Unique key in your system (1–128 chars). Used as match key.</ParamField>
+    <ParamField body="name" type="string" required>Display name.</ParamField>
+    <ParamField body="code" type="string">Short alphanumeric code.</ParamField>
+    <ParamField body="email" type="string">Contact email.</ParamField>
+    <ParamField body="phone" type="string">Contact phone.</ParamField>
+    <ParamField body="tax_id" type="string">Tax/fiscal identifier.</ParamField>
+    <ParamField body="archived" type="boolean">Set `true` to archive the supplier.</ParamField>
+    <ParamField body="metadata" type="object">Free-form extra data.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">Actor for audit.</ParamField>
+
+<ResponseField name="results" type="object[]">
+  One entry per row: `external_supplier_id`, `id`, `action` (`created`, `updated`, `unchanged`).
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  `{ created, updated, unchanged }` counts.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "suppliers": [
+    {
+      "external_supplier_id": "SUP-001",
+      "name": "Best Foods Co.",
+      "code": "BEST-FOODS",
+      "email": "orders@bestfoods.com",
+      "tax_id": "12-3456789"
+    },
+    {
+      "external_supplier_id": "SUP-002",
+      "name": "Old Supplier",
+      "archived": true
+    }
+  ],
+  "external_user_id": "user_setup_01"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "results": [
+    { "external_supplier_id": "SUP-001", "id": "sup_01...", "action": "created" },
+    { "external_supplier_id": "SUP-002", "id": "sup_02...", "action": "updated" }
+  ],
+  "summary": { "created": 1, "updated": 1, "unchanged": 0 }
+}
+```
+</ResponseExample>
+
+---
+
+## Replace classification assignments
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/classifications/assignments</api>
+
+**Replaces** all classification assignments for a single entity (item or store). This is a destructive operation: existing assignments for the entity that are not in the request are deleted. Use `GET /catalog/classifications/assignments?entity_type=ITEM&entity_id={id}` first if you want to read the current state.
+
+<ParamField header="x-api-key" type="string" required>BOH API key with `catalog:write` scope.</ParamField>
+<ParamField path="vendorId" type="string" required>Vendor UUID.</ParamField>
+
+<ParamField body="entity_type" type="string" required>
+  `ITEM` or `STORE`.
+</ParamField>
+
+<ParamField body="entity_id" type="string" required>
+  UUID of the item or store being classified.
+</ParamField>
+
+<ParamField body="assignments" type="object[]" required>
+  One entry per classification category:
+  <Expandable title="assignment entry fields">
+    <ParamField body="classification_category_id" type="string" required>UUID of the classification category.</ParamField>
+    <ParamField body="classification_ids" type="string[]" required>UUIDs of the values to assign within this category. Pass `[]` to clear the category.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">Actor for audit.</ParamField>
+
+<ResponseField name="items" type="object[]">
+  The complete list of assignments now in effect for the entity. Each entry: `id`, `classification_category_id`, `classification_id`, `entity_type`, `entity_id`.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "entity_type": "ITEM",
+  "entity_id": "itm_01j5k...",
+  "assignments": [
+    {
+      "classification_category_id": "cat_familia_01...",
+      "classification_ids": ["val_proteinas_01..."]
+    },
+    {
+      "classification_category_id": "cat_temp_01...",
+      "classification_ids": ["val_refrigerado_01...", "val_congelado_01..."]
+    }
+  ],
+  "external_user_id": "user_setup_01"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": "asgn_01...",
+      "account_id": "acc_01...",
+      "vendor_id": "vnd_01...",
+      "classification_category_id": "cat_familia_01...",
+      "classification_id": "val_proteinas_01...",
+      "entity_type": "ITEM",
+      "entity_id": "itm_01j5k...",
+      "metadata": {},
+      "created_at": "2026-08-07T14:30:00.000Z",
+      "updated_at": "2026-08-07T14:30:00.000Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+<Warning>
+  This endpoint deletes all existing assignments for the entity that are not in the request. If you only want to add or update one category, you must include all other categories you want to keep.
+</Warning>
+
+---
+
+## Read classification assignments
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/classifications/assignments</api>
+
+Returns all classification assignments filtered by entity.
+
+<ParamField query="entity_type" type="string">`ITEM` or `STORE`.</ParamField>
+<ParamField query="entity_id" type="string">UUID of the entity.</ParamField>
