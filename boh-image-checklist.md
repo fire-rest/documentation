@@ -7,7 +7,8 @@ Las imágenes se comparten entre los 3 idiomas. Guárdalas exactamente con la ru
 ## admin-overview
 
 - [ ] `images/manuals/boh/admin-overview/01-boh-home.png` — Dashboard de inicio del módulo BOH (`/boh/admin`), con el flujo de stock y accesos rápidos.
-- [ ] `images/manuals/boh/admin-overview/02-boh-menu.png` — Sidebar con las secciones del menú BOH desplegadas (Catálogo, Recetas, Reportes, Abastecimiento, Movimientos).
+- [ ] `images/manuals/boh/admin-overview/02-boh-menu.png` — Sidebar con las secciones del menú BOH desplegadas (Inicio, Establecimientos, Catálogo, Recetas, Abastecimiento, Movimientos, Reportes, Sistema, Cuenta y accesos).
+- [ ] `images/manuals/boh/admin-overview/03-operations-hub.png` — Hub de operaciones con una tarjeta por tipo de documento, indicadores de salud y contador de cola (**Movimientos → Operaciones**, `/boh/admin/operations`).
 
 ## stores-suppliers
 
@@ -23,20 +24,23 @@ Las imágenes se comparten entre los 3 idiomas. Guárdalas exactamente con la ru
 - [ ] `images/manuals/boh/catalog/03-item-form.png` — Formulario de creación de ítem con unidad base y opciones de seguimiento (`/boh/admin/items/new`).
 - [ ] `images/manuals/boh/catalog/04-item-tag.png` — Detalle de una etiqueta de ítems con miembros y estrategia de selección (`/boh/admin/item-tags/{id}`).
 - [ ] `images/manuals/boh/catalog/05-classifications.png` — Pantallas de categorías y valores de clasificación (`/boh/admin/classifications/categories`).
-- [ ] `images/manuals/boh/catalog/06-account-currency.png` — Pantalla de configuración de moneda de la cuenta (`/boh/admin/account/currency`), con el selector de moneda ISO 4217.
+- [ ] `images/manuals/boh/catalog/06-account-currency.png` — Configuración de cuenta con el selector de moneda ISO 4217 (**Cuenta y accesos → Configuración de cuenta**, `/boh/admin/me`).
 
 ## recipes
 
-- [ ] `images/manuals/boh/recipes/01-recipes-list.png` — Lista de recetas con filtro por tipo (`/boh/admin/recipes`).
-- [ ] `images/manuals/boh/recipes/02-recipe-form.png` — Formulario de receta con líneas de consumo; incluye el campo `service_codes` en una línea de ejemplo (`/boh/admin/recipes/new`).
+- [ ] `images/manuals/boh/recipes/01-recipes-list.png` — Lista de recetas con filtro por tipo; idealmente con recetas de los 3 tipos visibles (venta, producción, subreceta) (`/boh/admin/recipes`).
+- [ ] `images/manuals/boh/recipes/02-recipe-form.png` — Formulario de **receta de venta** con producto y tienda seleccionados; las líneas deben mostrar los 3 tipos de consumo (ítem, etiqueta, subreceta) y al menos una línea con `service_codes` (ej. `DELIVERY`) (`/boh/admin/recipes/new`).
 - [ ] `images/manuals/boh/recipes/03-recipe-detail.png` — Detalle de receta con historial de versiones y botón Publicar (`/boh/admin/recipes/{id}`).
 - [ ] `images/manuals/boh/recipes/04-simulate-sale.png` — Simulador de venta: selector de tipo de servicio visible y la expansión de ingredientes resultante según el canal seleccionado (`/boh/admin/recipes/effective`).
+- [ ] `images/manuals/boh/recipes/05-production-recipe-form.png` — Formulario de **receta de producción** con el ítem de salida y la cantidad producida seleccionados (`/boh/admin/recipes/new` con tipo Production).
+- [ ] `images/manuals/boh/recipes/06-subrecipe-form.png` — Formulario de **subreceta** con su código reutilizable (`/boh/admin/recipes/new` con tipo Subrecipe).
 
 ## procurement
 
 - [ ] `images/manuals/boh/procurement/01-schedules.png` — Lista de programaciones de recepción (`/boh/admin/procurement/schedules`).
 - [ ] `images/manuals/boh/procurement/02-po-detail.png` — Detalle de orden de compra con líneas y acciones de ciclo de vida (`/boh/admin/procurement/orders/{id}`).
-- [ ] `images/manuals/boh/procurement/03-suggested-order.png` — Pedido sugerido según niveles par y stock actual.
+- [ ] `images/manuals/boh/procurement/03-suggested-order.png` — Pedido sugerido según niveles par y stock actual (`/boh/admin/procurement/suggested-order`).
+- [ ] `images/manuals/boh/procurement/04-par-levels.png` — Stock objetivo (niveles par) por ítem y tienda (`/boh/admin/procurement/par-levels`).
 
 ## goods-receipts-returns
 
@@ -46,7 +50,7 @@ Las imágenes se comparten entre los 3 idiomas. Guárdalas exactamente con la ru
 
 ## waste-consumption
 
-- [ ] `images/manuals/boh/waste-consumption/01-waste-reasons.png` — Catálogo de razones de merma (`/boh/admin/operations/waste-reasons`).
+- [ ] `images/manuals/boh/waste-consumption/01-waste-reasons.png` — Catálogo de razones de merma (**Catálogo → Razones de merma**, `/boh/admin/operations/waste-reasons`).
 - [ ] `images/manuals/boh/waste-consumption/02-waste-form.png` — Formulario de merma con razón por línea (`/boh/admin/operations/waste-events/new`).
 - [ ] `images/manuals/boh/waste-consumption/03-internal-consumption.png` — Formulario de consumo interno (`/boh/admin/operations/internal-consumptions/new`).
 
@@ -57,7 +61,7 @@ Las imágenes se comparten entre los 3 idiomas. Guárdalas exactamente con la ru
 
 ## stock-counts
 
-- [ ] `images/manuals/boh/stock-counts/01-inventory-areas.png` — Lista de áreas de inventario de una tienda (`/boh/admin/operations/inventory-areas`).
+- [ ] `images/manuals/boh/stock-counts/01-inventory-areas.png` — Lista de áreas de inventario de una tienda (**Establecimientos → Áreas de inventario**, `/boh/admin/operations/inventory-areas`).
 - [ ] `images/manuals/boh/stock-counts/02-count-detail.png` — Detalle de conteo con diferencias contra el balance teórico (`/boh/admin/operations/stock-counts/{id}`).
 - [ ] `images/manuals/boh/stock-counts/03-mobile-count.png` — Pantalla de sesión de conteo individual en la app móvil (`/count`): selector de tienda y entrada ítem por ítem.
 - [ ] `images/manuals/boh/stock-counts/04-field-count-session.png` — Sesión de conteo colaborativo en la app móvil (`/count`): varios dispositivos visibles con sus áreas reclamadas, al menos un área marcada como "Área lista" y un participante en rol admin. Muestra el estado de la sesión (fase conteo o revisión).
@@ -70,12 +74,23 @@ Las imágenes se comparten entre los 3 idiomas. Guárdalas exactamente con la ru
 - [ ] `images/manuals/boh/reports/04-yield-report.png` — Reporte de rendimiento de producción (`/boh/admin/reports/inventory/yield`).
 - [ ] `images/manuals/boh/reports/05-balance-at.png` — Balance histórico a una fecha (`/boh/admin/reports/inventory/at`).
 
-**Total: 37 capturas.** (34 originales + 3 nuevas: `catalog/06-account-currency`, actualización de `recipes/02-recipe-form` y `recipes/04-simulate-sale` para reflejar channel-scoped lines, y `stock-counts/04-field-count-session`)
+**Total: 40 capturas.** (34 originales + 6 nuevas: `admin-overview/03-operations-hub`, `catalog/06-account-currency`, `procurement/04-par-levels`, `stock-counts/04-field-count-session`, `recipes/05-production-recipe-form` y `recipes/06-subrecipe-form`)
+
+Conteo por sección: admin-overview 3 · stores-suppliers 4 · catalog 6 · recipes 6 · procurement 4 · goods-receipts-returns 3 · waste-consumption 3 · transfers-production 2 · stock-counts 4 · reports 5.
 
 ---
 
 ## Notas sobre capturas actualizadas
 
+- **`admin-overview/02-boh-menu`** — re-capturar con el menú nuevo de 9 secciones (Inicio, Establecimientos, Catálogo, Recetas, Abastecimiento, Movimientos, Reportes, Sistema, Cuenta y accesos).
 - **`recipes/02-recipe-form`** — re-capturar para mostrar el campo `service_codes` en al menos una línea del formulario.
 - **`recipes/04-simulate-sale`** — re-capturar para que se vea el selector de tipo de servicio y cómo cambia la lista de ingredientes según el canal elegido.
 - **`stock-counts/03-mobile-count`** — el nombre se mantiene igual; si la pantalla cambió para soportar las sesiones colaborativas, volver a capturar.
+- **`catalog/06-account-currency`** — la ruta correcta es `/boh/admin/me` (no existe `/boh/admin/account/currency`).
+
+## Pantallas que existen pero no requieren captura (referencia)
+
+- Grupos de unidad (`/boh/admin/unit-groups`) — la captura `catalog/01-units-list` ya muestra las unidades agrupadas.
+- Subrecetas (`/boh/admin/subrecipes`) — lista filtrada equivalente a `recipes/01-recipes-list`.
+- Ajustes manuales, cola asíncrona, inspector de transacciones, ops de snapshots, webhooks, API keys — herramientas técnicas mencionadas en el manual sin captura dedicada.
+- Valores de clasificación (`/boh/admin/classifications/values`) — cubierto por `catalog/05-classifications` junto con las categorías.
