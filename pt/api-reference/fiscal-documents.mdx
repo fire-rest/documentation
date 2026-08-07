@@ -1,0 +1,552 @@
+---
+title: "Solicitar documento fiscal"
+api: "POST /api/v1/fiscal/documents"
+description: "Obtém os identificadores fiscais que o ponto de venda precisa para imprimir o comprovante. É síncrono e o resultado enriquece o pedido que você injeta depois."
+authMethod: "bearer"
+---
+
+Chame **depois de cobrar e antes de injetar o pedido**. O Fire resolve internamente qual
+provedor fiscal corresponde ao país da loja, solicita a numeração e devolve os dados prontos
+para imprimir.
+
+<Info>
+  **Três coisas importantes antes de integrar:**
+
+  1. O corpo é **o mesmo que você já envia para [Injetar pedido](/pt/api-reference/orders)**,
+     com um único campo a mais: `device.externalId`.
+  2. A resposta **não significa que o documento está autorizado**. Significa que há números
+     para imprimir. A autorização do fisco chega depois, de forma assíncrona.
+  3. Essa resposta **enriquece o corpo da injeção** (veja
+     [Enriquecer o pedido](#enriquecer-o-pedido)). É copiar e colar, sem transformação.
+</Info>
+
+## Quando chamar
+
+<Steps>
+  <Step title="Você cobra">
+    O cliente paga no PDV ou no quiosque.
+  </Step>
+  <Step title="Você solicita o documento fiscal">
+    Chame este endpoint com o corpo do pedido.
+  </Step>
+  <Step title="Você imprime">
+    Conforme `printing.mode`, imprima o comprovante fiscal ou um ticket provisório.
+  </Step>
+  <Step title="Você injeta o pedido">
+    Adicione a resposta ao corpo, no campo `fiscal`, e chame
+    [Injetar pedido](/pt/api-reference/orders).
+  </Step>
+</Steps>
+
+<Warning>
+  **A venda nunca é bloqueada pela fiscalização.** Se o provedor não responder a tempo, este
+  endpoint devolve `202` com um status explícito: imprima um ticket provisório, injete o
+  pedido mesmo assim e o Fire completa a numeração por conta própria. O que não se deve fazer
+  é repetir a chamada em loop nem segurar a venda.
+</Warning>
+
+## Headers
+
+<ParamField header="Authorization" type="string" required>
+  Token Bearer obtido em [POST /login](/pt/api-reference/login). Formato: `Bearer <accessToken>`.
+</ParamField>
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire.
+</ParamField>
+
+<ParamField header="x-client-channel" type="string" required>
+  Deve ser `integration`.
+</ParamField>
+
+<ParamField header="account" type="string" required>
+  Identificador da conta à qual a requisição pertence.
+</ParamField>
+
+<ParamField header="Idempotency-Key" type="string" required>
+  UUID que identifica **esta operação fiscal**. Se você repetir a chamada por uma falha de
+  rede, envie o **mesmo** valor: recebe o resultado anterior em vez de um documento novo.
+
+  Gere uma vez por pedido e guarde junto com o pedido até injetá-lo.
+</ParamField>
+
+## Corpo
+
+Envie **o mesmo corpo de [Injetar pedido](/pt/api-reference/orders)**. O Fire ignora o que não
+precisa para fiscalizar (`order.products`, `payments`, `shippingMethod`, `marketing`…), então
+você não precisa montar um payload diferente: reutiliza o que já construiu.
+
+Abaixo estão documentados os campos que **de fato** são usados para emitir o documento.
+
+<ParamField body="orderId" type="string" required>
+  Identificador único do pedido no seu sistema.
+
+  É a **chave de idempotência fiscal**: o mesmo pedido solicitado duas vezes devolve o mesmo
+  documento. Precisa ser **o mesmo valor** que você envia depois em `orderId` ao injetar o
+  pedido — se forem diferentes, saem dois comprovantes para uma única venda.
+</ParamField>
+
+<ParamField body="orderCode" type="string">
+  Código legível do pedido. Informativo.
+</ParamField>
+
+<ParamField body="createdAt" type="string" required>
+  Data e hora de criação do pedido. Daqui sai a **data de emissão** do comprovante, convertida
+  para o fuso horário da loja.
+
+  Sem fuso (`2026-08-06 17:26:09`) é interpretado como **UTC**. Prefira ISO 8601 com offset
+  (`2026-08-06T17:26:09.386Z`).
+</ParamField>
+
+<ParamField body="documentType" type="string" default="SALE_INVOICE">
+  Tipo de documento a emitir. Um de: `SALE_INVOICE`, `CREDIT_NOTE`.
+
+  Para uma nota de crédito não envie chaves fiscais: o Fire encontra sozinho o documento
+  original desse mesmo pedido.
+</ParamField>
+
+<ParamField body="reason" type="string">
+  Motivo da nota de crédito. Só se aplica com `documentType: "CREDIT_NOTE"`.
+</ParamField>
+
+<ParamField body="store" type="object" required>
+  A loja emissora. Pelo `code`, o Fire resolve o país, o identificador tributário do emissor e
+  o estabelecimento — não os envie.
+  <Expandable title="store">
+    <ParamField body="code" type="string" required>Código da loja no Fire (ex. `K097`).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="device" type="object" required>
+  O dispositivo emissor. **É o único bloco que muda em relação à injeção de pedidos**:
+  acrescenta-se `externalId`.
+  <Expandable title="device">
+    <ParamField body="externalId" type="string" required>
+      Identificador do **ponto de emissão** pelo qual esse aparelho fatura. O Fire o procura na
+      configuração fiscal da loja e usa o código que tem registrado.
+
+      Dois caixas da mesma loja numeram de forma independente, por isso não dá para deduzir
+      nem compartilhar: cada dispositivo declara o seu. Se o dispositivo não estiver associado
+      a nenhum ponto de emissão, a resposta é `422`.
+    </ParamField>
+    <ParamField body="uid" type="string" required>UID do dispositivo.</ParamField>
+    <ParamField body="name" type="string">Nome de exibição (ex. `KIOSK`).</ParamField>
+    <ParamField body="metadata" type="object">Metadados adicionais do dispositivo.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="client" type="object">
+  Dados do comprador. O Fire homologa `govIdType` e `govIdNumber` ao catálogo do fisco de cada
+  país — envie seu vocabulário habitual (`FINAL_CONSUMER`, `TAX_ID`, `NATIONAL_ID`,
+  `PASSPORT`, `FOREIGN_ID`).
+
+  Sem identificação, o comprovante é emitido para consumidor final.
+  <Expandable title="client">
+    <ParamField body="govIdType" type="string">Tipo de documento do comprador.</ParamField>
+    <ParamField body="govIdNumber" type="string">Número do documento do comprador.</ParamField>
+    <ParamField body="name" type="string">Nome.</ParamField>
+    <ParamField body="lastName" type="string">Sobrenome.</ParamField>
+    <ParamField body="email" type="string">E-mail.</ParamField>
+    <ParamField body="phone" type="string">Telefone.</ParamField>
+    <ParamField body="billingInformation" type="object">Dados de faturamento, quando diferentes.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="channel" type="object">
+  Canal de venda, igual à injeção.
+  <Expandable title="channel">
+    <ParamField body="code" type="string" required>Código do canal (`KIOSK`, `POS`, …).</ParamField>
+    <ParamField body="uid" type="string">UID do canal no Fire.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="operator" type="object">
+  Operador ou caixa, igual à injeção.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Dados fiscais adicionais exigidos pelo país. **No Equador vai vazio**: qualquer chave
+  produz um `400`.
+
+  Nos países que exigem, apenas os campos que o ponto de venda conhece — o resto vem da
+  configuração da loja.
+</ParamField>
+
+## Resposta
+
+A resposta tem **três camadas**, e convém programar contra a primeira:
+
+<CardGroup cols={3}>
+  <Card title="Núcleo" icon="box">
+    Igual em todos os países e provedores. É o que sua integração deve ler.
+  </Card>
+  <Card title="País" icon="flag">
+    `countryIdentifiers`. Muda conforme o fisco. Para backoffice e conciliação.
+  </Card>
+  <Card title="Provedor" icon="plug">
+    `providerMetadata`. Opaco, para suporte. Não programe contra isso.
+  </Card>
+</CardGroup>
+
+<ResponseField name="fiscalRequestId" type="string">
+  Identificador da solicitação fiscal no Fire. Guarde: é com ele que você consulta o status
+  depois.
+</ResponseField>
+
+<ResponseField name="orderId" type="string">
+  Eco do `orderId` enviado.
+</ResponseField>
+
+<ResponseField name="reused" type="boolean">
+  `true` se a solicitação já existia e a anterior foi devolvida. Trate como uma nova.
+</ResponseField>
+
+<ResponseField name="countryCode" type="string">
+  País da loja emissora (`EC`, `VE`, `BR`).
+</ResponseField>
+
+<ResponseField name="requestStatus" type="string">
+  Resultado da **numeração**: há números para imprimir?
+
+  <Expandable title="valores">
+    <ResponseField name="GENERATED" type="—">Há documento. Imprima.</ResponseField>
+    <ResponseField name="PENDING" type="—">O provedor não respondeu a tempo. O Fire completa depois.</ResponseField>
+    <ResponseField name="FAILED_RETRYABLE" type="—">Falha temporária. O Fire tenta de novo sozinho.</ResponseField>
+    <ResponseField name="FAILED_FINAL" type="—">Rejeição definitiva. Repetir não resolve.</ResponseField>
+    <ResponseField name="UNAVAILABLE" type="—">Serviço fiscal do país indisponível.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="documentStatus" type="string">
+  Status do **documento perante o fisco**: `PENDING`, `AUTHORIZED`, `REJECTED`, `CANCELLED`.
+
+  Nesta resposta é **sempre `PENDING`**: a autorização acontece depois. Não interprete como
+  venda autorizada e não envie este campo ao injetar o pedido.
+</ResponseField>
+
+<ResponseField name="retryable" type="boolean">
+  Se a falha admite nova tentativa. Informativo: as tentativas são do Fire, não da sua
+  integração.
+</ResponseField>
+
+<ResponseField name="document" type="object">
+  O documento emitido. `null` quando não houve numeração.
+  <Expandable title="document">
+    <ResponseField name="documentType" type="string">`SALE_INVOICE` ou `CREDIT_NOTE`.</ResponseField>
+    <ResponseField name="documentNumber" type="string">
+      Número visível, já formatado conforme o país (`097-107-000000001`). **É para imprimir**:
+      para buscar ou conciliar use `sequential`, `serie` e `countryIdentifiers`.
+    </ResponseField>
+    <ResponseField name="sequential" type="string">Número sequencial do documento.</ResponseField>
+    <ResponseField name="serie" type="string">Série. Pode ser `null` — há países que não usam.</ResponseField>
+    <ResponseField name="authorizationMode" type="string">`ONLINE`, `OFFLINE` ou `BATCH`. Pode ser `null`.</ResponseField>
+    <ResponseField name="issuedAt" type="string">Data e hora de emissão (UTC).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="printing" type="object">
+  **O que imprimir.** O Fire resolve aqui a regra legal de cada país para que sua integração
+  não precise conhecê-la.
+  <Expandable title="printing">
+    <ResponseField name="printable" type="boolean">Se há comprovante fiscal para entregar.</ResponseField>
+    <ResponseField name="mode" type="string">
+      `FISCAL_DOCUMENT` — imprima o comprovante fiscal completo.
+      `PROVISIONAL_RECEIPT` — imprima um ticket não fiscal / "em processamento".
+      `NONE` — nada a imprimir.
+    </ResponseField>
+    <ResponseField name="reason" type="string">
+      Motivo, quando aplicável: `ISSUED_OFFLINE` (emitido em contingência, autorizado depois),
+      `AWAITING_FISCAL_NUMBERING`, `FISCAL_REJECTED`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="graphic" type="object">
+  O que é desenhado ou baixado.
+  <Expandable title="graphic">
+    <ResponseField name="code" type="object">
+      Código a imprimir: `{ "format": "QR" | "PDF417", "content": "..." }`. Se for `null`, não
+      desenhe nada — há países que não usam código.
+    </ResponseField>
+    <ResponseField name="lookupUrl" type="string">URL pública de consulta do comprovante.</ResponseField>
+    <ResponseField name="pdfUrl" type="string">
+      Representação gráfica em PDF. Chega **depois**, com a autorização: nesta resposta é
+      `null`.
+    </ResponseField>
+    <ResponseField name="xmlUrl" type="string">Documento legal em XML. Também chega depois.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="countryIdentifiers" type="object">
+  Identificadores próprios do fisco de cada país. Mudam conforme `countryCode`:
+
+  Equador `{ accessKey }` · Venezuela `{ accessKey: null, controlNumber }` ·
+  Brasil `{ accessKey, protocolo, modelo }`.
+
+  <Warning>
+    `accessKey` **pode ser `null`**. A Venezuela não emite chave de acesso: o identificador é
+    o `controlNumber`. Se sua integração assume que ela sempre vem, quebra ao abrir esse país.
+  </Warning>
+</ResponseField>
+
+<ResponseField name="failure" type="object">
+  Por que não há documento. `null` quando deu certo.
+  <Expandable title="failure">
+    <ResponseField name="code" type="string">Código do erro.</ResponseField>
+    <ResponseField name="scope" type="string">
+      `TECHNICAL` — problema de comunicação; imprima o provisório e siga.
+      `FUNCTIONAL` — um dado do documento está errado; repetir não resolve.
+    </ResponseField>
+    <ResponseField name="message" type="string">Descrição legível.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="providerMetadata" type="object">
+  Dados do provedor fiscal, para suporte e rastreabilidade. Não use para operar.
+</ResponseField>
+
+<ResponseField name="timestamps" type="object">
+  `requestedAt`, `respondedAt` e `providerLatencyMs`.
+</ResponseField>
+
+## Enriquecer o pedido
+
+A resposta entra no corpo de [Injetar pedido](/pt/api-reference/orders) no campo `fiscal`.
+**Copie o objeto `data` inteiro, sem transformar** — o Fire pega o que precisa e ignora o
+resto.
+
+```json Corpo da injeção, enriquecido {3-11}
+{
+  "orderId": "EC-K097-42-1786037102",
+  "fiscal": {
+    "fiscalRequestId": "fr_01HZ8N4K2P7QY3V6R0S9TG",
+    "requestStatus": "GENERATED",
+    "countryCode": "EC",
+    "document": { "documentNumber": "097-107-000000001", "sequential": "000000001", "serie": "097107" },
+    "countryIdentifiers": { "countryCode": "EC", "accessKey": "0408…818" },
+    "graphic": { "code": { "format": "QR", "content": "0408…818" } },
+    "providerMetadata": { "code": "hio" }
+  },
+  "store": { "code": "K097" },
+  "device": { "uid": "92ef49e315423aec", "externalId": "107" },
+  "order": { "products": [] },
+  "payments": {}
+}
+```
+
+<Check>
+  **Injete o pedido sempre**, com o status fiscal que tiver recebido — inclusive `PENDING` ou
+  `FAILED_FINAL`. Uma venda cobrada precisa chegar ao Fire; o status fiscal se resolve depois
+  e o Fire atualiza o pedido sozinho.
+</Check>
+
+<Note>
+  Se por algum motivo você não chamou este endpoint, injete o pedido **sem** o campo `fiscal`.
+  O Fire resolve a fiscalização por conta própria; o que se perde é apenas a impressão
+  imediata do comprovante.
+</Note>
+
+## O que fazer com cada resposta
+
+<AccordionGroup>
+  <Accordion title="requestStatus: GENERATED — o caso normal">
+    Imprima o comprovante fiscal com `document.documentNumber` e, se `graphic.code` não for
+    `null`, desenhe o código. Adicione a resposta ao pedido e injete.
+
+    Se `printing.reason` for `ISSUED_OFFLINE`, o comprovante é válido mas foi emitido em
+    contingência: imprima a legenda que aquele país exigir.
+  </Accordion>
+
+  <Accordion title="requestStatus: PENDING ou FAILED_RETRYABLE — o provedor não respondeu">
+    `printing.mode` vem como `PROVISIONAL_RECEIPT`. Imprima um ticket não fiscal e injete o
+    pedido mesmo assim, com o bloco `fiscal` exatamente como chegou.
+
+    **Não repita esta chamada.** O Fire completa a numeração de forma assíncrona e atualiza o
+    pedido. Se precisar mostrar o resultado, consulte pelo `fiscalRequestId`.
+  </Accordion>
+
+  <Accordion title="requestStatus: FAILED_FINAL — o fisco rejeitou">
+    Há um dado do documento que o fisco não aceita e repetir não resolve: leia
+    `failure.message`. Imprima o ticket provisório, injete o pedido e acione o suporte com o
+    `fiscalRequestId`.
+  </Accordion>
+
+  <Accordion title="4xx — o problema está na requisição">
+    `400` corpo inválido · `401` / `403` credenciais · `409` mesma `Idempotency-Key` com corpo
+    diferente · `422` a loja ou o dispositivo não estão configurados para emitir.
+
+    Nesses casos **nenhuma solicitação fiscal foi criada**. Corrija e chame de novo.
+  </Accordion>
+</AccordionGroup>
+
+## Consultar uma solicitação
+
+`GET /api/v1/fiscal/documents/{fiscalRequestId}` devolve **o mesmo corpo**, com o status
+atualizado: quando o fisco autoriza, `documentStatus` passa a `AUTHORIZED` e `graphic.pdfUrl`
+e `graphic.xmlUrl` são preenchidos.
+
+Também é possível buscar por pedido:
+`GET /api/v1/fiscal/documents?orderId=EC-K097-42-1786037102`.
+
+<RequestExample>
+```json Equador
+{
+  "orderId": "EC-K097-42-1786037102",
+  "orderCode": "EC-000001",
+  "createdAt": "2026-08-06T17:26:09.386Z",
+  "documentType": "SALE_INVOICE",
+  "store": {
+    "id": "100.6.1350.2",
+    "code": "K097",
+    "name": "KFC Quicentro",
+    "vendorId": "100.6.1350"
+  },
+  "device": {
+    "uid": "92ef49e315423aec",
+    "externalId": "107",
+    "name": "KIOSK",
+    "metadata": { "ip": "10.32.43.192" }
+  },
+  "channel": { "uid": "c784d4ba-23c7-4929-b2f0-1a1960d9cdc2", "code": "KIOSK" },
+  "client": {
+    "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+    "name": "CONSUMIDOR",
+    "lastName": "FINAL",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000"
+  },
+  "operator": { "uid": "92ef49e315423aec", "name": "92ef49e315423aec-KIOSK" },
+  "metadata": {}
+}
+```
+
+```json Nota de crédito
+{
+  "orderId": "EC-K097-42-1786037102",
+  "createdAt": "2026-08-07T14:02:11.000Z",
+  "documentType": "CREDIT_NOTE",
+  "reason": "Devolução total — produto avariado",
+  "store": { "code": "K097" },
+  "device": { "uid": "92ef49e315423aec", "externalId": "107" },
+  "metadata": {}
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "fr_01HZ8N4K2P7QY3V6R0S9TG",
+    "orderId": "EC-K097-42-1786037102",
+    "idempotencyKey": "9f2a4c1e-6b18-4f0a-9d2e-77c1f5a3e410",
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "GENERATED",
+    "documentStatus": "PENDING",
+    "retryable": false,
+    "document": {
+      "documentType": "SALE_INVOICE",
+      "documentNumber": "097-107-000000001",
+      "sequential": "000000001",
+      "serie": "097107",
+      "authorizationMode": "ONLINE",
+      "issuedAt": "2026-08-06T20:30:01.512Z"
+    },
+    "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+    "graphic": {
+      "code": {
+        "format": "QR",
+        "content": "0408202601179141513200120971070000000011234567818"
+      },
+      "lookupUrl": "https://srienlinea.sri.gob.ec/comprobantes/0408202601179141513200120971070000000011234567818",
+      "pdfUrl": null,
+      "xmlUrl": null
+    },
+    "countryIdentifiers": {
+      "countryCode": "EC",
+      "accessKey": "0408202601179141513200120971070000000011234567818"
+    },
+    "failure": null,
+    "providerMetadata": {
+      "code": "hio",
+      "name": "hio.fiscalization",
+      "version": "1.0.0",
+      "reference": "EC:EC-K097-42-1786037102:01"
+    },
+    "timestamps": {
+      "requestedAt": "2026-08-06T20:30:00.100Z",
+      "respondedAt": "2026-08-06T20:30:01.612Z",
+      "providerLatencyMs": 1420
+    }
+  }
+}
+```
+
+```json 202
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "fr_01HZ8N4K2P7QY3V6R0S9TG",
+    "orderId": "EC-K097-42-1786037102",
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "PENDING",
+    "documentStatus": "PENDING",
+    "retryable": true,
+    "document": null,
+    "printing": {
+      "printable": false,
+      "mode": "PROVISIONAL_RECEIPT",
+      "reason": "AWAITING_FISCAL_NUMBERING"
+    },
+    "graphic": null,
+    "countryIdentifiers": null,
+    "failure": {
+      "code": "PROVIDER_TIMEOUT",
+      "scope": "TECHNICAL",
+      "message": "O provedor fiscal não respondeu dentro do tempo configurado."
+    },
+    "providerMetadata": { "code": "hio", "name": null, "version": null, "reference": null }
+  }
+}
+```
+
+```json 200 (rejeitado)
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "fr_01HZ8N4K2P7QY3V6R0S9TG",
+    "orderId": "VE-K201-7-1786037102",
+    "reused": false,
+    "countryCode": "VE",
+    "requestStatus": "FAILED_FINAL",
+    "documentStatus": "PENDING",
+    "retryable": false,
+    "document": null,
+    "printing": {
+      "printable": false,
+      "mode": "PROVISIONAL_RECEIPT",
+      "reason": "FISCAL_REJECTED"
+    },
+    "graphic": null,
+    "countryIdentifiers": null,
+    "failure": {
+      "code": "FISCAL_BUSINESS_RULE",
+      "scope": "FUNCTIONAL",
+      "message": "A taxa de câmbio do dia é obrigatória"
+    },
+    "providerMetadata": { "code": "hio", "name": "unidigital", "version": "1.0.0" }
+  }
+}
+```
+
+```json 422
+{
+  "success": false,
+  "error": "FiscalConfigError",
+  "message": "O dispositivo não está associado a nenhum ponto de emissão da loja"
+}
+```
+</ResponseExample>
