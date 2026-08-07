@@ -1,0 +1,162 @@
+---
+title: "Compras"
+description: "Gerencie níveis par e consulte quantidades de reabastecimento sugeridas para cada estabelecimento."
+---
+
+Os endpoints de compras permitem definir metas mínimas de estoque (níveis par) e obter uma ordem de compra sugerida calculada automaticamente com base no estoque atual versus essas metas.
+
+**Scopes necessários:** `catalog:read` (leitura), `catalog:write` (upsert de níveis par).
+
+---
+
+## Níveis par
+
+Um **nível par** define a quantidade alvo de estoque para um item em um estabelecimento específico, expressa na unidade base do item. Quando o estoque real cai abaixo do par, o item aparece no pedido sugerido.
+
+### Listar níveis par
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/par-levels</api>
+
+<ParamField path="vendorId" type="string" required>UUID do vendor.</ParamField>
+<ParamField query="store_id" type="string">Filtrar por UUID de estabelecimento.</ParamField>
+<ParamField query="limit" type="number">Resultados por página (1–200, padrão 50).</ParamField>
+<ParamField query="offset" type="number">Offset de paginação (padrão 0).</ParamField>
+
+<ResponseField name="items" type="object[]">
+  Registros de nível par: `id`, `account_id`, `vendor_id`, `store_id`, `item_id`, `par_qty_base`, `metadata`, `created_at`, `updated_at`.
+</ResponseField>
+<ResponseField name="total" type="number">Total de registros correspondentes.</ResponseField>
+<ResponseField name="limit" type="number">Tamanho de página atual.</ResponseField>
+<ResponseField name="offset" type="number">Offset atual.</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": "par_01...",
+      "account_id": "acc_01...",
+      "vendor_id": "vnd_01...",
+      "store_id": "str_principal_01...",
+      "item_id": "itm_frango_01...",
+      "par_qty_base": 10000,
+      "metadata": {},
+      "created_at": "2026-08-01T00:00:00.000Z",
+      "updated_at": "2026-08-01T00:00:00.000Z"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+</ResponseExample>
+
+---
+
+### Upsert de níveis par
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/par-levels</api>
+
+Upsert em massa de níveis par para um estabelecimento específico. Os itens no payload são criados ou atualizados; os que não estão no payload são deixados intactos (não é uma substituição — use `par_qty_base: 0` para efetivamente zerar o par de um item).
+
+<ParamField path="vendorId" type="string" required>UUID do vendor.</ParamField>
+
+<ParamField body="store_id" type="string" required>UUID do estabelecimento para estes níveis par.</ParamField>
+<ParamField body="levels" type="object[]" required>
+  Entradas de nível par (pelo menos 1):
+  <Expandable title="campos da entrada">
+    <ParamField body="item_id" type="string" required>UUID do item.</ParamField>
+    <ParamField body="par_qty_base" type="number" required>Quantidade alvo de estoque na unidade base do item (deve ser > 0).</ParamField>
+    <ParamField body="metadata" type="object">Dados extras livres.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="items" type="object[]">
+  Todos os registros de nível par atualizados com detalhes completos.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "store_id": "str_principal_01...",
+  "levels": [
+    {
+      "item_id": "itm_frango_01...",
+      "par_qty_base": 10000
+    },
+    {
+      "item_id": "itm_arroz_01...",
+      "par_qty_base": 5000
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": "par_01...",
+      "account_id": "acc_01...",
+      "vendor_id": "vnd_01...",
+      "store_id": "str_principal_01...",
+      "item_id": "itm_frango_01...",
+      "par_qty_base": 10000,
+      "metadata": {},
+      "created_at": "2026-08-01T00:00:00.000Z",
+      "updated_at": "2026-08-07T14:00:00.000Z"
+    },
+    {
+      "id": "par_02...",
+      "account_id": "acc_01...",
+      "vendor_id": "vnd_01...",
+      "store_id": "str_principal_01...",
+      "item_id": "itm_arroz_01...",
+      "par_qty_base": 5000,
+      "metadata": {},
+      "created_at": "2026-08-07T14:00:00.000Z",
+      "updated_at": "2026-08-07T14:00:00.000Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Pedido sugerido
+
+### Obter o pedido sugerido
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/suggested-order</api>
+
+Retorna uma ordem de compra recomendada: itens cujo estoque atual está abaixo do nível par, com a quantidade de diferença expressa em unidades base. Opcionalmente filtrada por fornecedor.
+
+<ParamField path="vendorId" type="string" required>UUID do vendor.</ParamField>
+<ParamField query="store_id" type="string" required>UUID do estabelecimento para calcular as sugestões.</ParamField>
+<ParamField query="supplier_id" type="string">Filtrar sugestões aos itens fornecidos por este UUID de fornecedor.</ParamField>
+
+<ResponseField name="items" type="object[]">
+  Linhas de reabastecimento sugeridas. Cada entrada inclui `item_id`, `item_name`, saldo atual, nível par, quantidade de diferença e detalhes da unidade sugerida.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "item_id": "itm_frango_01...",
+      "item_name": "Peito de frango",
+      "current_qty_base": 3000,
+      "par_qty_base": 10000,
+      "gap_qty_base": 7000,
+      "base_unit_id": "unit_g_01...",
+      "base_unit_symbol": "g"
+    }
+  ]
+}
+```
+</ResponseExample>

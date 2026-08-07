@@ -1,0 +1,151 @@
+---
+title: "BOH API reference"
+description: "Fire BOH REST API — manage inventory catalog, recipes, operational documents, and webhooks programmatically."
+---
+
+The **BOH API** is a REST API that lets you manage Back of House inventory programmatically: sync your catalog, publish recipes, record operational documents (receipts, waste, counts), read reports, and configure webhooks.
+
+<CardGroup cols={2}>
+  <Card title="Identity" icon="building" href="/en/boh-api/identity">
+    Resolve your account, list vendors, stores, and suppliers.
+  </Card>
+  <Card title="Catalog: Items" icon="box" href="/en/boh-api/catalog-items">
+    Create, list, update, archive, and bulk-sync inventory items.
+  </Card>
+  <Card title="Catalog: Bulk sync" icon="arrows-rotate" href="/en/boh-api/catalog-sync">
+    Sync units, suppliers, and classification assignments in bulk.
+  </Card>
+  <Card title="Recipes" icon="chef-hat" href="/en/boh-api/recipes">
+    Manage sales, production, and subrecipe definitions.
+  </Card>
+  <Card title="Operations" icon="arrow-left-right" href="/en/boh-api/operations">
+    Record goods receipts, stock counts, waste, transfers, and production.
+  </Card>
+  <Card title="Procurement" icon="cart-shopping" href="/en/boh-api/procurement">
+    Manage par levels and get suggested reorder quantities.
+  </Card>
+  <Card title="Webhooks" icon="webhook" href="/en/boh-api/webhooks">
+    Subscribe to inventory transaction and purchase order events.
+  </Card>
+</CardGroup>
+
+## Base URL
+
+```
+https://boh.api.fire.rest
+```
+
+All endpoints are prefixed with `/api/v1/public/`.
+
+<Note>
+  The base URL is provided by Fire when you set up your integration. Use `https://stg.boh.api.fire.rest` for staging and the production URL for live operations.
+</Note>
+
+## Authentication
+
+Every request requires an **API key** in the `x-api-key` header. API keys are created and managed from the **Account & access → API keys** screen in the BOH backoffice, or via the [API Keys endpoints](/en/boh-api/api-keys).
+
+```http
+x-api-key: boh_live_xxxxxxxxxxxxxxxx
+```
+
+No Bearer token or session cookie is required. The key resolves the account; you do **not** need to pass an `account` header.
+
+### Key scopes
+
+Each key is granted one or more scopes that restrict which endpoints it can call. A key with the `*` wildcard scope can call everything.
+
+| Scope | What it unlocks |
+|---|---|
+| `catalog:read` | List and get items, units, item tags, classifications |
+| `catalog:write` | Create, update, archive catalog resources |
+| `recipes:read` | List and get recipes; expand to ingredient lines |
+| `recipes:write` | Create, update, publish, archive recipes |
+| `inventory:read` | Read operational documents (receipts, waste, counts…), balances, movements |
+| `inventory:write` | Create operational documents |
+| `reports:read` | Query inventory reports (usage, waste, yield, at-date) |
+| `admin:keys` | Create, rotate, and revoke API keys |
+| `admin:accounts` | Update account settings (currency, consumption mode) |
+| `admin:webhooks` | Create, update, delete, and test webhook endpoints |
+
+## The vendor ID
+
+Most routes include a `{vendorId}` path parameter. A **vendor** represents a BOH-configured entity (a restaurant brand or operating unit). Retrieve your vendor ID from [List vendors](/en/boh-api/identity#list-vendors) or the backoffice.
+
+```
+GET /api/v1/public/vendors/{vendorId}/catalog/items
+```
+
+## Request and response format
+
+- All request bodies use `Content-Type: application/json`.
+- All responses are JSON.
+- Timestamps are ISO 8601 (`2026-08-07T14:30:00.000Z`).
+- Monetary amounts use the account currency (configured in Account settings).
+
+## Async write model
+
+Most write operations (goods receipts, stock counts, waste events, transfers, production batches) are **asynchronous**. The response is immediate but the stock movements are posted within seconds.
+
+A successful write returns a `tracking_id`:
+
+```json
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "goods_receipt_id": "rcpt_01j5k...",
+  "idempotent": false
+}
+```
+
+Poll `GET /api/v1/public/operations/transactions/{trackingId}` or `GET /api/v1/public/operations/transactions` to follow the processing status.
+
+### Idempotency
+
+Submit the same `idempotency_key` string twice; the second call returns the original response with `"idempotent": true` and does not reprocess. Idempotency keys expire after 24 hours.
+
+## Errors
+
+All error responses share the same envelope:
+
+```json
+{
+  "error": {
+    "kind": "snake_case_error_kind",
+    "message": "Human-readable description (for debugging, not display)",
+    "details": {}
+  }
+}
+```
+
+| HTTP status | Meaning |
+|---|---|
+| `400` | Validation error — `kind` describes the field or constraint that failed |
+| `401` | Missing or invalid API key |
+| `403` | Scope or vendor mismatch |
+| `404` | Resource not found |
+| `409` | Conflict — e.g., duplicate idempotency key with different payload |
+| `422` | Business rule violation |
+| `429` | Rate limit exceeded |
+| `5xx` | Server error — retry with exponential backoff |
+
+<Warning>
+  Error `message` values are intended for debugging and logging. They are not localized. Translate `kind` to user-facing strings in your application.
+</Warning>
+
+## Rate limits
+
+Default rate limits by scope:
+
+| Scope | Requests / min |
+|---|---|
+| `catalog:read`, `catalog:write`, `recipes:*`, `inventory:*` | 1 000 |
+| `orders:write` | 5 000 |
+| `reports:read` | 100 |
+| `admin:keys`, `admin:accounts` | 60 |
+
+When the limit is exceeded the response is `429` and includes `Retry-After` and `X-RateLimit-*` headers. Limits can be overridden per key by Fire support.
+
+## external_user_id
+
+Endpoints that create or mutate operational documents accept an optional `external_user_id` string in the body. BOH stores it as the human actor for audit purposes. For catalog CRUD it is optional; for operational documents it is strongly recommended.

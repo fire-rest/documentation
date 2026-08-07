@@ -1,0 +1,197 @@
+---
+title: "Catálogo: Sincronización masiva"
+description: "Upsert masivo de unidades, proveedores y asignaciones de clasificación mediante endpoints PUT."
+---
+
+BOH expone endpoints PUT de sincronización masiva para recursos que suelen administrarse desde un sistema de registro externo. Todas las operaciones de sync usan `code` o un campo `external_*_id` como clave de idempotencia y devuelven una respuesta `{ results, summary }`.
+
+**Scope requerido:** `catalog:write`.
+
+---
+
+## Sincronizar unidades
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/units</api>
+
+Upsert de unidades por `code` + `unit_group_code`. Las que coinciden con un registro existente se actualizan; las nuevas se crean. Las unidades globales (definidas por el sistema) se devuelven como `action: "skipped_global"` y no se modifican.
+
+<ParamField header="x-api-key" type="string" required>API key de BOH con scope `catalog:write`.</ParamField>
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+
+<ParamField body="units" type="object[]" required>
+  Array de filas de unidades:
+  <Expandable title="campos de la fila de unidad">
+    <ParamField body="code" type="string" required>Código alfanumérico único dentro del grupo de unidades (1–64 chars).</ParamField>
+    <ParamField body="name" type="string" required>Nombre de visualización.</ParamField>
+    <ParamField body="unit_group_code" type="string" required>Código del grupo de unidades padre (ej. `MASS`, `VOLUME`, `COUNT`).</ParamField>
+    <ParamField body="conversion_factor_to_base" type="number" required>Cuántas unidades base equivale una unidad de este tipo (ej. `1000` para kg cuando la base es g).</ParamField>
+    <ParamField body="symbol" type="string">Símbolo de visualización (ej. `kg`, `ml`).</ParamField>
+    <ParamField body="system" type="string">`METRIC`, `IMPERIAL` u `OTHER`.</ParamField>
+    <ParamField body="archived" type="boolean">Enviar `true` para archivar la unidad.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+<ResponseField name="results" type="object[]">
+  Una entrada por fila de entrada: `code`, `unit_group_code`, `id` y `action` (`created`, `updated`, `unchanged` o `skipped_global`).
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  Conteos `{ created, updated, unchanged, skipped_global }`.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "units": [
+    {
+      "code": "KG",
+      "name": "Kilogramo",
+      "unit_group_code": "MASS",
+      "conversion_factor_to_base": 1000,
+      "symbol": "kg",
+      "system": "METRIC"
+    },
+    {
+      "code": "LB",
+      "name": "Libra",
+      "unit_group_code": "MASS",
+      "conversion_factor_to_base": 453.592,
+      "symbol": "lb",
+      "system": "IMPERIAL"
+    }
+  ],
+  "external_user_id": "user_setup_01"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "results": [
+    { "code": "KG", "unit_group_code": "MASS", "id": "unit_kg_01...", "action": "unchanged" },
+    { "code": "LB", "unit_group_code": "MASS", "id": "unit_lb_01...", "action": "created" }
+  ],
+  "summary": { "created": 1, "updated": 0, "unchanged": 1, "skipped_global": 0 }
+}
+```
+</ResponseExample>
+
+---
+
+## Sincronizar proveedores
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/identity/suppliers</api>
+
+Upsert de proveedores por `external_supplier_id`. Los proveedores cuyo `external_supplier_id` no está en el lote se dejan intactos.
+
+<ParamField header="x-api-key" type="string" required>API key de BOH con scope `catalog:write`.</ParamField>
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+
+<ParamField body="suppliers" type="object[]" required>
+  Array de filas de proveedores:
+  <Expandable title="campos de la fila de proveedor">
+    <ParamField body="external_supplier_id" type="string" required>Clave única en tu sistema (1–128 chars). Se usa como clave de coincidencia.</ParamField>
+    <ParamField body="name" type="string" required>Nombre de visualización.</ParamField>
+    <ParamField body="code" type="string">Código alfanumérico corto.</ParamField>
+    <ParamField body="email" type="string">Correo de contacto.</ParamField>
+    <ParamField body="phone" type="string">Teléfono de contacto.</ParamField>
+    <ParamField body="tax_id" type="string">Identificador fiscal.</ParamField>
+    <ParamField body="archived" type="boolean">Enviar `true` para archivar el proveedor.</ParamField>
+    <ParamField body="metadata" type="object">Datos adicionales libres.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+<ResponseField name="results" type="object[]">
+  Una entrada por fila: `external_supplier_id`, `id`, `action` (`created`, `updated`, `unchanged`).
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  Conteos `{ created, updated, unchanged }`.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "suppliers": [
+    {
+      "external_supplier_id": "PROV-001",
+      "name": "Alimentos del Norte S.A.",
+      "code": "ALT-NORTE",
+      "email": "pedidos@alimentosnorte.com",
+      "tax_id": "RFC-ALT-NORTE-001"
+    },
+    {
+      "external_supplier_id": "PROV-002",
+      "name": "Proveedor Antiguo",
+      "archived": true
+    }
+  ],
+  "external_user_id": "user_setup_01"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "results": [
+    { "external_supplier_id": "PROV-001", "id": "sup_01...", "action": "created" },
+    { "external_supplier_id": "PROV-002", "id": "sup_02...", "action": "updated" }
+  ],
+  "summary": { "created": 1, "updated": 1, "unchanged": 0 }
+}
+```
+</ResponseExample>
+
+---
+
+## Reemplazar asignaciones de clasificación
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/classifications/assignments</api>
+
+**Reemplaza** todas las asignaciones de clasificación para una entidad (ítem o establecimiento). Esta es una operación destructiva: las asignaciones existentes de la entidad que no estén en la solicitud se eliminan. Usa `GET /catalog/classifications/assignments?entity_type=ITEM&entity_id={id}` primero si quieres leer el estado actual.
+
+<ParamField header="x-api-key" type="string" required>API key de BOH con scope `catalog:write`.</ParamField>
+<ParamField path="vendorId" type="string" required>UUID del vendor.</ParamField>
+
+<ParamField body="entity_type" type="string" required>
+  `ITEM` o `STORE`.
+</ParamField>
+
+<ParamField body="entity_id" type="string" required>
+  UUID del ítem o establecimiento a clasificar.
+</ParamField>
+
+<ParamField body="assignments" type="object[]" required>
+  Una entrada por categoría de clasificación:
+  <Expandable title="campos de entrada de asignación">
+    <ParamField body="classification_category_id" type="string" required>UUID de la categoría de clasificación.</ParamField>
+    <ParamField body="classification_ids" type="string[]" required>UUIDs de los valores a asignar dentro de esta categoría. Envía `[]` para limpiar la categoría.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">Actor para auditoría.</ParamField>
+
+<ResponseField name="items" type="object[]">
+  La lista completa de asignaciones ahora vigentes para la entidad.
+</ResponseField>
+
+<Warning>
+  Este endpoint elimina todas las asignaciones existentes de la entidad que no estén en la solicitud. Si solo quieres agregar o actualizar una categoría, debes incluir también todas las demás categorías que quieres conservar.
+</Warning>
+
+---
+
+## Leer asignaciones de clasificación
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/classifications/assignments</api>
+
+Devuelve todas las asignaciones de clasificación filtradas por entidad.
+
+<ParamField query="entity_type" type="string">`ITEM` o `STORE`.</ParamField>
+<ParamField query="entity_id" type="string">UUID de la entidad.</ParamField>

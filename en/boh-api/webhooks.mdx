@@ -1,0 +1,238 @@
+---
+title: "Webhooks"
+description: "Subscribe to BOH events — inventory transaction completions, failures, and purchase order status changes."
+---
+
+BOH webhooks deliver event notifications to your HTTPS endpoint. Each event fires a `POST` request with a JSON payload and a signature you can verify.
+
+**Required scope:** `admin:webhooks`.
+
+**Limit:** up to **10 webhook endpoints** per account.
+
+## Supported events
+
+| Event type | When it fires |
+|---|---|
+| `inventory_transaction.completed` | An async inventory transaction (goods receipt, waste event, stock count, transfer, production batch, manual adjustment) has been successfully processed and stock balances have been updated. |
+| `inventory_transaction.failed` | An async transaction failed processing and will not be retried. The transaction is marked `FAILED`. |
+| `purchase_order.status_changed` | A purchase order moved to a new lifecycle status (`DRAFT`, `SENT`, `PARTIAL`, `RECEIVED`, `CANCELLED`). |
+| `api_key.expiring` | An API key will expire within 7 days. Sent daily until expiry or renewal. |
+| `ping` | Test event sent when you trigger a webhook test. |
+
+## Event payload envelope
+
+Every event shares the same outer envelope:
+
+```json
+{
+  "event_id": "evt_01j5k...",
+  "event_type": "inventory_transaction.completed",
+  "created_at": "2026-08-07T14:30:00.000Z",
+  "api_version": "v1",
+  "data": { ... }
+}
+```
+
+## Delivery and retries
+
+BOH attempts delivery immediately. If your endpoint returns a non-2xx response or times out, BOH retries with exponential backoff. After **20 consecutive failures** the endpoint is automatically disabled (`is_active: false`). Re-enable it by calling the [Update webhook](#update-webhook) endpoint.
+
+---
+
+## List webhooks
+
+<api>GET https://boh.api.fire.rest/api/v1/public/admin/webhooks</api>
+
+Returns all webhook endpoints for the account.
+
+<ParamField header="x-api-key" type="string" required>BOH API key with `admin:webhooks` scope.</ParamField>
+
+<ResponseField name="endpoints" type="object[]">
+  Array of endpoint objects. See [Webhook endpoint object](#webhook-endpoint-object).
+</ResponseField>
+
+<RequestExample>
+```http
+GET /api/v1/public/admin/webhooks
+x-api-key: boh_live_xxxxxxxx
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "endpoints": [
+    {
+      "id": "wep_01j5k...",
+      "url": "https://yourapp.com/webhooks/boh",
+      "events": ["inventory_transaction.completed", "purchase_order.status_changed"],
+      "is_active": true,
+      "disabled_reason": null,
+      "consecutive_failures": 0,
+      "created_at": "2026-07-01T09:00:00.000Z",
+      "updated_at": "2026-07-01T09:00:00.000Z"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+---
+
+## Create webhook
+
+<api>POST https://boh.api.fire.rest/api/v1/public/admin/webhooks</api>
+
+Registers a new webhook endpoint. The response includes the **signing secret** — store it securely; it is shown only once.
+
+<ParamField header="x-api-key" type="string" required>BOH API key with `admin:webhooks` scope.</ParamField>
+
+<ParamField body="url" type="string" required>
+  HTTPS URL that will receive POST requests. Must start with `https://`.
+</ParamField>
+
+<ParamField body="events" type="string[]" required>
+  One or more event types to subscribe to. See [Supported events](#supported-events).
+</ParamField>
+
+<ResponseField name="endpoint" type="object">The created endpoint. See [Webhook endpoint object](#webhook-endpoint-object).</ResponseField>
+<ResponseField name="secret" type="string">
+  Signing secret (`whsec_...`). **Shown only once.** Store it in your secrets manager immediately.
+</ResponseField>
+
+<RequestExample>
+```json
+{
+  "url": "https://yourapp.com/webhooks/boh",
+  "events": [
+    "inventory_transaction.completed",
+    "inventory_transaction.failed",
+    "purchase_order.status_changed"
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "endpoint": {
+    "id": "wep_01j5k...",
+    "url": "https://yourapp.com/webhooks/boh",
+    "events": [
+      "inventory_transaction.completed",
+      "inventory_transaction.failed",
+      "purchase_order.status_changed"
+    ],
+    "is_active": true,
+    "disabled_reason": null,
+    "consecutive_failures": 0,
+    "created_at": "2026-08-07T14:30:00.000Z",
+    "updated_at": "2026-08-07T14:30:00.000Z"
+  },
+  "secret": "whsec_xxxxxxxxxxxxxxxxxxxxxxxx"
+}
+```
+</ResponseExample>
+
+---
+
+## Get webhook
+
+<api>GET https://boh.api.fire.rest/api/v1/public/admin/webhooks/{webhookId}</api>
+
+Returns a single endpoint by ID. The secret is not returned after creation.
+
+<ParamField path="webhookId" type="string" required>Webhook endpoint UUID.</ParamField>
+
+---
+
+## Update webhook
+
+<api>PATCH https://boh.api.fire.rest/api/v1/public/admin/webhooks/{webhookId}</api>
+
+Partially updates a webhook endpoint. Use this to change the URL, update the event list, or re-enable an auto-disabled endpoint.
+
+<ParamField path="webhookId" type="string" required>Webhook endpoint UUID.</ParamField>
+
+<ParamField body="url" type="string">New HTTPS URL.</ParamField>
+<ParamField body="events" type="string[]">New event subscription list (replaces the existing list).</ParamField>
+<ParamField body="is_active" type="boolean">
+  Set `true` to re-enable an auto-disabled endpoint. Setting `false` manually disables it.
+</ParamField>
+
+---
+
+## Delete webhook
+
+<api>DELETE https://boh.api.fire.rest/api/v1/public/admin/webhooks/{webhookId}</api>
+
+Permanently removes the endpoint. No more events will be delivered to that URL.
+
+<ParamField path="webhookId" type="string" required>Webhook endpoint UUID.</ParamField>
+
+---
+
+## List deliveries
+
+<api>GET https://boh.api.fire.rest/api/v1/public/admin/webhooks/{webhookId}/deliveries</api>
+
+Returns recent delivery attempts for an endpoint, most recent first.
+
+<ParamField path="webhookId" type="string" required>Webhook endpoint UUID.</ParamField>
+<ParamField query="limit" type="integer" default="50">Number of deliveries to return (1–100).</ParamField>
+
+<ResponseField name="deliveries" type="object[]">
+  <Expandable title="delivery fields">
+    <ResponseField name="id" type="string">Delivery UUID.</ResponseField>
+    <ResponseField name="event_id" type="string">Source event UUID.</ResponseField>
+    <ResponseField name="event_type" type="string">Event type string.</ResponseField>
+    <ResponseField name="status" type="string">`PENDING`, `PROCESSING`, `DELIVERED`, `FAILED`, or `DEAD`.</ResponseField>
+    <ResponseField name="attempts" type="integer">Number of delivery attempts so far.</ResponseField>
+    <ResponseField name="next_retry_at" type="string">When the next attempt is scheduled (ISO 8601).</ResponseField>
+    <ResponseField name="last_response_status" type="integer | null">HTTP status returned by your endpoint on the last attempt.</ResponseField>
+    <ResponseField name="last_error" type="string | null">Error message from the last failed attempt.</ResponseField>
+    <ResponseField name="created_at" type="string">When the delivery was created.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## Test webhook
+
+<api>POST https://boh.api.fire.rest/api/v1/public/admin/webhooks/{webhookId}/test</api>
+
+Sends a `ping` event to the endpoint immediately. Useful for verifying connectivity and your signature verification logic.
+
+<ParamField path="webhookId" type="string" required>Webhook endpoint UUID.</ParamField>
+
+<ResponseField name="delivery_id" type="string">UUID of the test delivery created.</ResponseField>
+
+---
+
+## Webhook endpoint object
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Endpoint UUID |
+| `url` | string | HTTPS destination URL |
+| `events` | string[] | Subscribed event types |
+| `is_active` | boolean | `false` when auto-disabled after 20 consecutive failures |
+| `disabled_reason` | string \| null | Reason for auto-disabling, if applicable |
+| `consecutive_failures` | integer | Count of consecutive delivery failures |
+| `created_at` | string | ISO 8601 timestamp |
+| `updated_at` | string | ISO 8601 timestamp |
+
+## Verifying signatures
+
+Each delivery includes a `X-BOH-Signature` header you should verify to confirm the request came from BOH. Use the signing secret returned when you created the endpoint.
+
+```
+X-BOH-Signature: sha256=<hex_digest>
+```
+
+Compute `HMAC-SHA256(secret, raw_request_body)` and compare it to the `sha256=` value. Reject requests where they do not match.
+
+<Warning>
+  Always verify signatures in production. Skipping verification allows any party to forge webhook payloads.
+</Warning>

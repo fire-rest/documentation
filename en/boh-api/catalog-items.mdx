@@ -1,0 +1,352 @@
+---
+title: "Catalog: Items"
+description: "List, create, update, sync, and archive inventory items in the BOH catalog."
+---
+
+Items are the physical supplies and ingredients you track in BOH. Each item belongs to a unit group, has a base unit, and can be linked to suppliers, item tags, and classification values.
+
+**Required scopes:** `catalog:read` (reads), `catalog:write` (writes).
+
+---
+
+## List items
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items</api>
+
+Returns items for the vendor, with optional filters. Supports both **offset pagination** (default, returns `total`) and **cursor pagination** (pass `cursor`, returns `next_cursor` and `has_more`).
+
+<ParamField header="x-api-key" type="string" required>
+  BOH API key with `catalog:read` scope.
+</ParamField>
+
+<ParamField path="vendorId" type="string" required>
+  The vendor (BOH entity) UUID.
+</ParamField>
+
+<ParamField query="search" type="string">
+  Partial match on item name or code (1–256 characters).
+</ParamField>
+
+<ParamField query="status" type="string" default="ACTIVE">
+  Filter by status: `ACTIVE`, `ARCHIVED`, or `ALL`.
+</ParamField>
+
+<ParamField query="procurement_type" type="string">
+  `PURCHASED`, `PRODUCED`, or `PURCHASED_AND_PRODUCED`.
+</ParamField>
+
+<ParamField query="count_frequency" type="string">
+  `DAILY`, `WEEKLY`, or `MONTHLY`.
+</ParamField>
+
+<ParamField query="tag_id" type="string">
+  UUID of an item tag — returns only items that belong to that tag.
+</ParamField>
+
+<ParamField query="store_id" type="string">
+  UUID of a BOH store — filters items visible to that store.
+</ParamField>
+
+<ParamField query="include" type="string">
+  Comma-separated sideloads: `tags`, `unit_group`, `memberships`.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="50">
+  Page size (1–200).
+</ParamField>
+
+<ParamField query="offset" type="integer" default="0">
+  Offset for page-based pagination.
+</ParamField>
+
+<ParamField query="cursor" type="string">
+  Opaque cursor for cursor-based pagination. Mutually exclusive with `offset`.
+</ParamField>
+
+<ResponseField name="items" type="object[]">
+  Array of item summaries. See [Item object](#item-object).
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total matching items. Present only in offset mode.
+</ResponseField>
+
+<ResponseField name="limit" type="integer">Page size applied.</ResponseField>
+
+<ResponseField name="offset" type="integer">
+  Offset applied. Present only in offset mode.
+</ResponseField>
+
+<ResponseField name="next_cursor" type="string | null">
+  Cursor for the next page. Present only in cursor mode; `null` when no more pages.
+</ResponseField>
+
+<ResponseField name="has_more" type="boolean">
+  `true` when more pages are available. Present only in cursor mode.
+</ResponseField>
+
+<RequestExample>
+```http
+GET /api/v1/public/vendors/vnd_abc123/catalog/items?status=ACTIVE&include=tags&limit=20
+x-api-key: boh_live_xxxxxxxx
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": "itm_01j5k...",
+      "account_id": "acc_01j...",
+      "external_item_id": "SKU-001",
+      "code": "FLOUR-KG",
+      "name": "All-purpose flour",
+      "type": "INGREDIENT",
+      "procurement_type": "PURCHASED",
+      "unit_group_id": "ug_mass_01...",
+      "base_unit_id": "unit_g_01...",
+      "is_inventory_tracked": true,
+      "is_active": true,
+      "count_frequency": "WEEKLY",
+      "created_at": "2026-01-10T09:00:00.000Z",
+      "updated_at": "2026-07-01T12:00:00.000Z",
+      "tags": [
+        { "id": "tag_dry_01...", "code": "DRY-GOODS", "name": "Dry goods" }
+      ]
+    }
+  ],
+  "total": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+</ResponseExample>
+
+---
+
+## Create item
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items</api>
+
+Creates a new catalog item.
+
+<ParamField header="x-api-key" type="string" required>
+  BOH API key with `catalog:write` scope.
+</ParamField>
+
+<ParamField path="vendorId" type="string" required>
+  The vendor UUID.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Display name (1–256 characters).
+</ParamField>
+
+<ParamField body="type" type="string" required>
+  Item type: `INGREDIENT`, `PACKAGING`, `SUPPLY`, `PREPARED_ITEM`, or `FINISHED_GOOD`.
+</ParamField>
+
+<ParamField body="procurement_type" type="string" required>
+  How the item is obtained: `PURCHASED`, `PRODUCED`, or `PURCHASED_AND_PRODUCED`.
+</ParamField>
+
+<ParamField body="unit_group_id" type="string" required>
+  UUID of the unit group (e.g., mass, volume, count). Cannot be changed after creation.
+</ParamField>
+
+<ParamField body="base_unit_id" type="string" required>
+  UUID of the base unit within the group (e.g., grams within mass). Cannot be changed after creation.
+</ParamField>
+
+<ParamField body="external_item_id" type="string">
+  Your system's identifier for this item (1–128 characters). Used for sync reconciliation.
+</ParamField>
+
+<ParamField body="code" type="string">
+  Short alphanumeric code (1–64 characters). Must be unique within the vendor.
+</ParamField>
+
+<ParamField body="is_inventory_tracked" type="boolean" default="true">
+  Whether BOH tracks stock movements for this item.
+</ParamField>
+
+<ParamField body="count_frequency" type="string | null">
+  Suggested physical count cycle: `DAILY`, `WEEKLY`, `MONTHLY`, or `null`.
+</ParamField>
+
+<ParamField body="metadata" type="object">
+  Free-form key-value store for your system's extra data.
+</ParamField>
+
+<ParamField body="external_user_id" type="string">
+  ID of the user performing this action in your system (for audit).
+</ParamField>
+
+<RequestExample>
+```json
+{
+  "name": "All-purpose flour",
+  "type": "INGREDIENT",
+  "procurement_type": "PURCHASED",
+  "unit_group_id": "ug_mass_01...",
+  "base_unit_id": "unit_g_01...",
+  "external_item_id": "SKU-001",
+  "code": "FLOUR-KG",
+  "is_inventory_tracked": true,
+  "count_frequency": "WEEKLY",
+  "external_user_id": "user_jane_42"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": "itm_01j5k...",
+  "account_id": "acc_01j...",
+  "external_item_id": "SKU-001",
+  "code": "FLOUR-KG",
+  "name": "All-purpose flour",
+  "type": "INGREDIENT",
+  "procurement_type": "PURCHASED",
+  "unit_group_id": "ug_mass_01...",
+  "base_unit_id": "unit_g_01...",
+  "is_inventory_tracked": true,
+  "is_active": true,
+  "count_frequency": "WEEKLY",
+  "metadata": {},
+  "created_at": "2026-08-07T14:30:00.000Z",
+  "updated_at": "2026-08-07T14:30:00.000Z"
+}
+```
+
+```json 400
+{
+  "error": {
+    "kind": "validation_error",
+    "message": "unit_group_id is required"
+  }
+}
+```
+</ResponseExample>
+
+---
+
+## Sync items (bulk upsert)
+
+<api>PUT https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items</api>
+
+Upserts up to **200 items** in a single call using `external_item_id` as the match key. Items are created or updated; existing items whose `external_item_id` is not in the batch are left untouched. To archive an item via sync, set `"archived": true` on its row.
+
+<ParamField header="x-api-key" type="string" required>
+  BOH API key with `catalog:write` scope.
+</ParamField>
+
+<ParamField body="items" type="object[]" required>
+  Array of 1–200 item rows. Each row:
+  <Expandable title="item row fields">
+    <ParamField body="external_item_id" type="string" required>Unique key in your system (1–128 chars).</ParamField>
+    <ParamField body="name" type="string" required>Display name (1–256 chars).</ParamField>
+    <ParamField body="type" type="string" required>`INGREDIENT`, `PACKAGING`, `SUPPLY`, `PREPARED_ITEM`, or `FINISHED_GOOD`.</ParamField>
+    <ParamField body="procurement_type" type="string" required>`PURCHASED`, `PRODUCED`, or `PURCHASED_AND_PRODUCED`.</ParamField>
+    <ParamField body="unit_group_code" type="string" required>Code of the unit group (resolved by BOH).</ParamField>
+    <ParamField body="base_unit_code" type="string" required>Code of the base unit within the group.</ParamField>
+    <ParamField body="code" type="string">Short alphanumeric code.</ParamField>
+    <ParamField body="is_inventory_tracked" type="boolean">Defaults to `true`.</ParamField>
+    <ParamField body="count_frequency" type="string | null">`DAILY`, `WEEKLY`, `MONTHLY`, or `null`.</ParamField>
+    <ParamField body="tags" type="string[]">Array of item tag codes to assign.</ParamField>
+    <ParamField body="archived" type="boolean">Set `true` to archive this item.</ParamField>
+    <ParamField body="metadata" type="object">Free-form extra data.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="external_user_id" type="string">
+  ID of the user performing this action in your system.
+</ParamField>
+
+<ResponseField name="results" type="object[]">
+  One entry per input row: `external_item_id`, `id`, and `action` (`created`, `updated`, or `unchanged`).
+</ResponseField>
+
+<ResponseField name="summary" type="object">
+  `{ created, updated, unchanged }` counts.
+</ResponseField>
+
+---
+
+## Get item
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}</api>
+
+Returns a single item with its full detail including `metadata`.
+
+<ParamField path="vendorId" type="string" required>Vendor UUID.</ParamField>
+<ParamField path="itemId" type="string" required>Item UUID.</ParamField>
+
+---
+
+## Update item
+
+<api>PATCH https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}</api>
+
+Partially updates an item. Only the fields you send are changed; omitted fields keep their current values. `unit_group_id` and `base_unit_id` cannot be changed after creation.
+
+<ParamField body="name" type="string">New display name.</ParamField>
+<ParamField body="type" type="string">New item type.</ParamField>
+<ParamField body="procurement_type" type="string">New procurement type.</ParamField>
+<ParamField body="is_inventory_tracked" type="boolean">Toggle stock tracking.</ParamField>
+<ParamField body="count_frequency" type="string | null">New count cycle.</ParamField>
+<ParamField body="metadata" type="object">Replaces the existing metadata object.</ParamField>
+<ParamField body="external_user_id" type="string">Actor for audit.</ParamField>
+
+---
+
+## Archive item
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}/archive</api>
+
+Soft-deletes the item. Archived items no longer appear in listings by default (`status=ACTIVE`). Recipes and historical movements that reference the item are not affected.
+
+<ParamField body="external_user_id" type="string">Actor for audit.</ParamField>
+
+Returns `{ "ok": true }` on success.
+
+---
+
+## Unarchive item
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/catalog/items/{itemId}/unarchive</api>
+
+Restores an archived item to active status.
+
+<ParamField body="external_user_id" type="string">Actor for audit.</ParamField>
+
+Returns `{ "ok": true }` on success.
+
+---
+
+## Item object
+
+Fields returned by list (summary) and create/get/update (detail, adds `metadata`):
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | BOH-assigned UUID |
+| `account_id` | string | Account UUID |
+| `external_item_id` | string \| null | Your system's identifier |
+| `code` | string \| null | Short alphanumeric code |
+| `name` | string | Display name |
+| `type` | string | `INGREDIENT`, `PACKAGING`, `SUPPLY`, `PREPARED_ITEM`, `FINISHED_GOOD` |
+| `procurement_type` | string | `PURCHASED`, `PRODUCED`, `PURCHASED_AND_PRODUCED` |
+| `unit_group_id` | string | UUID of the unit group |
+| `base_unit_id` | string | UUID of the base unit |
+| `is_inventory_tracked` | boolean | Whether stock movements are recorded |
+| `is_active` | boolean | `false` when archived |
+| `count_frequency` | string \| null | Suggested count cycle |
+| `metadata` | object | Free-form data (detail only) |
+| `created_at` | string | ISO 8601 timestamp |
+| `updated_at` | string | ISO 8601 timestamp |
+| `tags` | object[] | Sideloaded with `include=tags` |
+| `unit_group` | object | Sideloaded with `include=unit_group` |
+| `memberships` | object[] | Item-tag memberships, with `include=memberships` |
