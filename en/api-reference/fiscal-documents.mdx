@@ -1,6 +1,6 @@
 ---
 title: "Request fiscal document"
-api: "POST /api/v1/fiscal/documents"
+api: "POST /api/v1/external/fiscal/documents"
 description: "Gets the fiscal identifiers the point of sale needs to print the receipt. It is synchronous, and the result enriches the order you inject afterwards."
 authMethod: "bearer"
 ---
@@ -122,12 +122,13 @@ The fields actually used to issue the document are documented below.
   `externalId` is added.
   <Expandable title="device">
     <ParamField body="externalId" type="string" required>
-      Identifier of the **point of emission** this device issues from. Fire looks it up in the
-      store's fiscal configuration and uses the code registered there.
+      Identifier of the **point of emission** this device issues from (`"1"`, `"2"`…). It is a
+      business identifier, not a tax-authority one: Fire translates it to whatever each
+      country requires. The POS does not need to know or maintain that mapping.
 
       Two registers in the same store number independently, so it cannot be inferred or
       shared: each device declares its own. If the device is not associated with any point of
-      emission, the response is `422`.
+      emission, the response is `400` with the reason.
     </ParamField>
     <ParamField body="uid" type="string" required>Device UID.</ParamField>
     <ParamField body="name" type="string">Display name (e.g. `KIOSK`).</ParamField>
@@ -136,11 +137,13 @@ The fields actually used to issue the document are documented below.
 </ParamField>
 
 <ParamField body="client" type="object">
-  Buyer details. Fire maps `govIdType` and `govIdNumber` to each country's tax authority
-  catalog — send your usual vocabulary (`FINAL_CONSUMER`, `TAX_ID`, `NATIONAL_ID`,
-  `PASSPORT`, `FOREIGN_ID`).
+  Buyer details. **Numbering does not use them** — they are accepted because they are part of
+  the body you already build for the injection, and the document will need them once it is
+  issued.
 
-  Without identification, the receipt is issued to a final consumer.
+  Send your usual vocabulary (`FINAL_CONSUMER`, `TAX_ID`, `NATIONAL_ID`, `PASSPORT`,
+  `FOREIGN_ID`): Fire maps them to each country's tax authority catalog. Without
+  identification, the receipt is issued to a final consumer.
   <Expandable title="client">
     <ParamField body="govIdType" type="string">Buyer's document type.</ParamField>
     <ParamField body="govIdNumber" type="string">Buyer's document number.</ParamField>
@@ -330,7 +333,7 @@ ignores the rest.
     "providerMetadata": { "code": "hio" }
   },
   "store": { "code": "K097" },
-  "device": { "uid": "92ef49e315423aec", "externalId": "107" },
+  "device": { "uid": "92ef49e315423aec", "externalId": "1" },
   "order": { "products": [] },
   "payments": {}
 }
@@ -375,7 +378,8 @@ ignores the rest.
 
   <Accordion title="4xx — the problem is in the request">
     `400` invalid body · `401` / `403` credentials · `409` same `Idempotency-Key` with a
-    different body · `422` the store or device is not configured to issue.
+    different body · `400` the store or device is not configured to issue (the message says
+    which one).
 
     In these cases **no fiscal request was created**. Fix it and call again.
   </Accordion>
@@ -383,11 +387,11 @@ ignores the rest.
 
 ## Query a request
 
-`GET /api/v1/fiscal/documents/{fiscalRequestId}` returns **the same body** with an updated
+`GET /api/v1/external/fiscal/documents/{fiscalRequestId}` returns **the same body** with an updated
 status: once the authority authorizes, `documentStatus` becomes `AUTHORIZED` and
 `graphic.pdfUrl` and `graphic.xmlUrl` are filled in.
 
-You can also search by order: `GET /api/v1/fiscal/documents?orderId=EC-K097-42-1786037102`.
+You can also search by order: `GET /api/v1/external/fiscal/documents?orderId=EC-K097-42-1786037102`.
 
 <RequestExample>
 ```json Ecuador
@@ -404,7 +408,7 @@ You can also search by order: `GET /api/v1/fiscal/documents?orderId=EC-K097-42-1
   },
   "device": {
     "uid": "92ef49e315423aec",
-    "externalId": "107",
+    "externalId": "1",
     "name": "KIOSK",
     "metadata": { "ip": "10.32.43.192" }
   },
@@ -428,7 +432,7 @@ You can also search by order: `GET /api/v1/fiscal/documents?orderId=EC-K097-42-1
   "documentType": "CREDIT_NOTE",
   "reason": "Full refund — damaged product",
   "store": { "code": "K097" },
-  "device": { "uid": "92ef49e315423aec", "externalId": "107" },
+  "device": { "uid": "92ef49e315423aec", "externalId": "1" },
   "metadata": {}
 }
 ```
@@ -543,10 +547,10 @@ You can also search by order: `GET /api/v1/fiscal/documents?orderId=EC-K097-42-1
 }
 ```
 
-```json 422
+```json 400 (configuration)
 {
   "success": false,
-  "error": "FiscalConfigError",
+  "error": "ValidationError",
   "message": "The device is not associated with any point of emission of the store"
 }
 ```
