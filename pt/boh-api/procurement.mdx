@@ -1,11 +1,11 @@
 ---
 title: "Compras"
-description: "Gerencie níveis par e consulte quantidades de reabastecimento sugeridas para cada estabelecimento."
+description: "Gerencie ordens de compra, níveis par e quantidades de reabastecimento sugeridas para cada estabelecimento."
 ---
 
-Os endpoints de compras permitem definir metas mínimas de estoque (níveis par) e obter uma ordem de compra sugerida calculada automaticamente com base no estoque atual versus essas metas.
+Os endpoints de compras permitem criar e gerenciar **ordens de compra** de ponta a ponta (rascunho → enviada → confirmada → recebida → fechada), definir metas mínimas de estoque (**níveis par**) e obter uma **ordem sugerida** calculada automaticamente com base no estoque atual versus essas metas.
 
-**Scopes necessários:** `catalog:read` (leitura), `catalog:write` (upsert de níveis par).
+**Scopes necessários:** `catalog:read` / `catalog:write` para níveis par e ordem sugerida; `inventory:read` / `inventory:write` para ordens de compra.
 
 ---
 
@@ -157,6 +157,292 @@ Retorna uma ordem de compra recomendada: itens cujo estoque atual está abaixo d
       "base_unit_symbol": "g"
     }
   ]
+}
+```
+</ResponseExample>
+
+---
+
+## Ordens de compra
+
+Uma **ordem de compra (PO)** é o documento formal que você envia a um fornecedor. Seu ciclo de vida:
+
+```
+DRAFT → SUBMITTED → CONFIRMED → PARTIALLY_RECEIVED → RECEIVED → CLOSED
+                                (CANCELLED em qualquer ponto antes do recebimento)
+```
+
+As linhas só podem ser adicionadas, editadas ou removidas enquanto a ordem está em `DRAFT`. O recebimento é feito por meio de [recebimentos de mercadoria](/pt/boh-api/operations) que referenciam a PO; o status de atendimento é atualizado automaticamente.
+
+**Scopes necessários:** `inventory:read` (leituras), `inventory:write` (escritas).
+
+### Criar uma ordem de compra
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders</api>
+
+Cria uma nova ordem de compra em status `DRAFT`, opcionalmente com linhas iniciais.
+
+<ParamField header="x-api-key" type="string" required>API key com scope `inventory:write`.</ParamField>
+<ParamField path="vendorId" type="string" required>UUID do vendor.</ParamField>
+
+<ParamField body="supplier_id" type="string">UUID do fornecedor. Deve ser enviado exatamente um entre `supplier_id` e `external_supplier_id`.</ParamField>
+<ParamField body="external_supplier_id" type="string">Identificador externo do fornecedor (p. ex. RUC / id fiscal), resolvido no servidor para o fornecedor interno. Mutuamente exclusivo com `supplier_id`.</ParamField>
+<ParamField body="store_id" type="string" required>UUID do estabelecimento que recebe.</ParamField>
+<ParamField body="schedule_id" type="string">UUID do calendário de recebimento ao qual a PO pertence (opcional).</ParamField>
+<ParamField body="order_type" type="string">Classificação livre da ordem (máx. 64 caracteres).</ParamField>
+<ParamField body="cutoff_at" type="string">Timestamp ISO 8601 do corte da ordem.</ParamField>
+<ParamField body="expected_delivery_at" type="string">Timestamp ISO 8601 da entrega esperada.</ParamField>
+<ParamField body="notes" type="string">Notas de texto livre (máx. 1024 caracteres).</ParamField>
+<ParamField body="metadata" type="object">Dados extras de formato livre.</ParamField>
+<ParamField body="idempotency_key" type="string">Chave fornecida pelo cliente (máx. 255 caracteres). Repetir a mesma chave devolve a PO existente com HTTP 200 em vez de criar uma duplicata. Recomendado: um UUID v4 por operação de negócio.</ParamField>
+<ParamField body="external_reference" type="string">Referência de documento fornecida pelo cliente (p. ex. código de movimento do ERP, máx. 256 caracteres). Armazenada para busca e exibição, e filtrável no endpoint de listagem. Não é chave de deduplicação — para isso use `idempotency_key`.</ParamField>
+<ParamField body="enforce_supplier_catalog" type="boolean">Quando `true`, cada item de linha deve existir no catálogo do fornecedor.</ParamField>
+<ParamField body="lines" type="object[]">
+  Linhas iniciais da ordem (opcional — você pode adicioná-las depois com `action=add-lines`):
+  <Expandable title="campos da linha">
+    <ParamField body="item_id" type="string">UUID do item. Deve ser enviado exatamente um entre `item_id` e `external_item_id`.</ParamField>
+    <ParamField body="external_item_id" type="string">Identificador externo do item, resolvido no servidor. Mutuamente exclusivo com `item_id`. Quando usado, `base_unit_id` passa a ser opcional (também resolvido no servidor).</ParamField>
+    <ParamField body="qty" type="number" required>Quantidade pedida na unidade de entrada.</ParamField>
+    <ParamField body="qty_base" type="number">Quantidade pedida convertida para a unidade base do item. Obrigatório, exceto quando `unit_code` é enviado (nesse caso o servidor o deriva como `qty × factor_to_base`; se você enviar ambos e não coincidirem, a requisição falha com `purchase_order_qty_base_mismatch`).</ParamField>
+    <ParamField body="base_unit_id" type="string">UUID da unidade base. Obrigatório, exceto quando `external_item_id` é usado.</ParamField>
+    <ParamField body="unit_to_base_factor" type="number">Fator de conversão da unidade de entrada para a base.</ParamField>
+    <ParamField body="item_unit_id" type="string">UUID de uma unidade de item existente (p. ex. uma unidade de compra salva); seu fator é aplicado à linha. Mutuamente exclusivo com `unit_code` e `unit_label`.</ParamField>
+    <ParamField body="unit_code" type="string">Resolve a unidade de compra pelo seu código de integração (sem diferenciar maiúsculas). Ordem de resolução: unidade específica do fornecedor → unidade genérica → código da unidade base do item. Mutuamente exclusivo com `item_unit_id` e `unit_label`.</ParamField>
+    <ParamField body="unit_label" type="string">Rótulo livre de unidade (p. ex. `"saco"`), armazenado quando não há `item_unit_id`.</ParamField>
+    <ParamField body="save_unit" type="boolean">Quando `true` e há `unit_label`, salva uma nova unidade PURCHASE no item para reutilização.</ParamField>
+    <ParamField body="unit_cost" type="number">Custo por unidade (≥ 0).</ParamField>
+    <ParamField body="tax_amount" type="number">Informativo: valor de impostos da linha. O BOH o armazena, mas não valida a aritmética.</ParamField>
+    <ParamField body="delivery_amount" type="number">Informativo: valor de entrega / frete.</ParamField>
+    <ParamField body="total_amount" type="number">Informativo: valor total declarado.</ParamField>
+    <ParamField body="markup_amount" type="number">Informativo: valor de comissão / markup.</ParamField>
+    <ParamField body="notes" type="string">Notas da linha (máx. 512 caracteres).</ParamField>
+    <ParamField body="metadata" type="object">Dados extras por linha.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="purchase_order" type="object">
+  O detalhe completo da ordem de compra: identificadores, `status`, timestamps do ciclo de vida (`submitted_at`, `confirmed_at`, `cancelled_at`, `closed_at`), campos de ator e `lines[]`.
+</ResponseField>
+
+Retorna **201** na criação, **200** quando a `idempotency_key` correspondeu a uma PO existente (replay idempotente).
+
+<RequestExample>
+```json
+{
+  "supplier_id": "sup_best_foods_01...",
+  "store_id": "str_main_01...",
+  "expected_delivery_at": "2026-08-14T10:00:00-05:00",
+  "notes": "Pedido semanal de proteína",
+  "idempotency_key": "0d4f1c9a-7c33-4d6e-9f2a-1b8e5a6c0d21",
+  "lines": [
+    {
+      "item_id": "itm_frango_01...",
+      "qty": 10,
+      "qty_base": 10000,
+      "base_unit_id": "unit_g_01...",
+      "unit_to_base_factor": 1000,
+      "unit_label": "kg",
+      "unit_cost": 4.5
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "purchase_order": {
+    "id": "po_01j5k...",
+    "account_id": "acc_01...",
+    "vendor_id": "vnd_01...",
+    "supplier_id": "sup_best_foods_01...",
+    "store_id": "str_main_01...",
+    "schedule_id": null,
+    "order_type": null,
+    "status": "DRAFT",
+    "cutoff_at": null,
+    "expected_delivery_at": "2026-08-14T15:00:00.000Z",
+    "submitted_at": null,
+    "confirmed_at": null,
+    "cancelled_at": null,
+    "closed_at": null,
+    "external_reference": null,
+    "notes": "Pedido semanal de proteína",
+    "metadata": {},
+    "created_at": "2026-08-11T12:00:00.000Z",
+    "updated_at": "2026-08-11T12:00:00.000Z",
+    "lines": [
+      {
+        "id": "pol_01...",
+        "purchase_order_id": "po_01j5k...",
+        "item_id": "itm_frango_01...",
+        "qty": 10,
+        "qty_base": 10000,
+        "base_unit_id": "unit_g_01...",
+        "unit_to_base_factor": 1000,
+        "unit_id": null,
+        "unit_label": "kg",
+        "unit_cost": 4.5,
+        "tax_amount": null,
+        "delivery_amount": null,
+        "total_amount": null,
+        "markup_amount": null,
+        "notes": null,
+        "metadata": {}
+      }
+    ]
+  }
+}
+```
+</ResponseExample>
+
+---
+
+### Criar ordens a partir de um ERP (identificadores externos)
+
+Sistemas externos podem criar ordens de compra **sem conhecer nenhum UUID interno do BOH**, usando identificadores externos:
+
+- `external_supplier_id` (ordem) em vez de `supplier_id` — p. ex. o RUC / id fiscal do fornecedor.
+- `external_item_id` (linha) em vez de `item_id` — o código externo do item; `base_unit_id` também é resolvido no servidor.
+- `unit_code` (linha) em vez de `item_unit_id` / `unit_label` — resolve a unidade de compra pelo seu código de integração (sem diferenciar maiúsculas) e deriva `qty_base` automaticamente.
+- `external_reference` (ordem) — sua referência de documento (p. ex. código de movimento do ERP), filtrável na listagem.
+
+Uma requisição mínima de um ERP fica assim:
+
+```json
+{
+  "external_supplier_id": "RUC-001234567",
+  "store_id": "str_main_01...",
+  "external_reference": "MOV-2026-00342",
+  "idempotency_key": "0d4f1c9a-7c33-4d6e-9f2a-1b8e5a6c0d21",
+  "lines": [
+    {
+      "external_item_id": "SAL-GRUESA-001",
+      "qty": 5,
+      "unit_code": "COSTAL-SAL",
+      "tax_amount": 2.5,
+      "total_amount": 27.5
+    }
+  ]
+}
+```
+
+O BOH resolve o fornecedor, os itens e as unidades no servidor, deriva o `qty_base` de cada linha a partir do fator da unidade encontrada e armazena o `external_reference` para buscas. Falhas de resolução retornam erros tipados:
+
+| `kind` | Status | Quando |
+|---|---|---|
+| `purchase_order_supplier_external_id_not_found` | 404 | Nenhum fornecedor corresponde a `external_supplier_id`. |
+| `purchase_order_item_external_id_not_found` | 404 | Um ou mais valores de `external_item_id` não puderam ser resolvidos (`details.external_item_ids`). |
+| `purchase_order_unit_code_not_found` | 404 | Não há unidade de compra ativa com esse `unit_code` para o item (`details.code`, `details.item_id`). |
+| `purchase_order_qty_base_mismatch` | 422 | O `qty_base` enviado pelo cliente não coincide com o derivado pelo servidor (`qty × factor_to_base`). |
+
+Os mesmos campos externos funcionam em `action=add-lines` e na atualização de linhas (`PATCH …/lines/{lineId}`).
+
+---
+
+### Listar ordens de compra
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders</api>
+
+<ParamField path="vendorId" type="string" required>UUID do vendor.</ParamField>
+<ParamField query="store_id" type="string">Filtrar por UUID de estabelecimento.</ParamField>
+<ParamField query="supplier_id" type="string">Filtrar por UUID de fornecedor.</ParamField>
+<ParamField query="status" type="string">Filtrar por status: `DRAFT`, `SUBMITTED`, `CONFIRMED`, `PARTIALLY_RECEIVED`, `RECEIVED`, `CLOSED` ou `CANCELLED`.</ParamField>
+<ParamField query="external_reference" type="string">Filtrar pela referência externa fornecida pelo cliente (p. ex. código de movimento do ERP).</ParamField>
+<ParamField query="limit" type="number">Resultados por página (1–200, padrão 50).</ParamField>
+<ParamField query="offset" type="number">Offset de paginação (padrão 0).</ParamField>
+
+<ResponseField name="items" type="object[]">Ordens de compra com suas linhas.</ResponseField>
+<ResponseField name="total" type="number">Total de registros correspondentes.</ResponseField>
+
+---
+
+### Obter uma ordem de compra
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}</api>
+
+Retorna uma ordem de compra com todas as suas linhas.
+
+---
+
+### Enviar / confirmar uma ordem de compra
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}?action=submit</api>
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}?action=confirm</api>
+
+- `action=submit` passa de `DRAFT` → `SUBMITTED` (a ordem foi enviada ao fornecedor).
+- `action=confirm` passa de `SUBMITTED` → `CONFIRMED` (o fornecedor a aceitou).
+
+Ambos retornam a `purchase_order` atualizada.
+
+---
+
+### Adicionar linhas
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}?action=add-lines</api>
+
+Adiciona linhas a uma ordem em `DRAFT`. O body recebe `lines` (mesmos campos da criação, mínimo 1) e opcionalmente `enforce_supplier_catalog`. Retorna as `lines[]` criadas com **201**.
+
+---
+
+### Atualizar / remover uma linha
+
+<api>PATCH https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}/lines/{lineId}</api>
+<api>DELETE https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}/lines/{lineId}</api>
+
+`PATCH` substitui por completo uma linha em `DRAFT` (mesmos campos da criação). `DELETE` a remove (**204**).
+
+---
+
+### Cancelar uma ordem de compra
+
+<api>DELETE https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}</api>
+
+Cancela a ordem (**204**). `POST …?action=cancel` é equivalente.
+
+---
+
+### Fechar uma ordem de compra
+
+<api>POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}?action=close</api>
+
+Fecha o ciclo de vida da ordem. O body exige `external_user_id` (o ator humano, para auditoria). Retorna a `purchase_order` atualizada.
+
+---
+
+### Consultar o atendimento
+
+<api>GET https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders/{orderId}/fulfillment</api>
+
+Mostra quanto de cada linha foi recebido por meio de [recebimentos de mercadoria](/pt/boh-api/operations) vinculados.
+
+<ResponseField name="purchase_order_id" type="string">UUID da PO.</ResponseField>
+<ResponseField name="status" type="string">Status atual da PO.</ResponseField>
+<ResponseField name="lines" type="object[]">Por linha: `purchase_order_line_id`, `item_id`, `ordered_qty_base`, `received_qty_base`, `pending_qty_base`.</ResponseField>
+<ResponseField name="total_ordered_qty_base" type="number">Soma das quantidades pedidas (unidades base).</ResponseField>
+<ResponseField name="total_received_qty_base" type="number">Soma recebida até agora.</ResponseField>
+<ResponseField name="total_pending_qty_base" type="number">Soma ainda pendente.</ResponseField>
+<ResponseField name="linked_goods_receipt_ids" type="string[]">Recebimentos de mercadoria que atenderam esta PO.</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "purchase_order_id": "po_01j5k...",
+  "status": "PARTIALLY_RECEIVED",
+  "lines": [
+    {
+      "purchase_order_line_id": "pol_01...",
+      "item_id": "itm_frango_01...",
+      "ordered_qty_base": 10000,
+      "received_qty_base": 6000,
+      "pending_qty_base": 4000
+    }
+  ],
+  "total_ordered_qty_base": 10000,
+  "total_received_qty_base": 6000,
+  "total_pending_qty_base": 4000,
+  "linked_goods_receipt_ids": ["rcpt_01j5k..."]
 }
 ```
 </ResponseExample>
