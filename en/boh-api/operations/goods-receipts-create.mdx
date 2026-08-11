@@ -1,0 +1,114 @@
+---
+title: "Create goods receipt"
+api: "POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/operations/goods-receipts"
+description: "Records inventory arriving from a supplier. Each line adds stock and optionally decrements a purchase order. Returns HTTP 202 — use the tracking_id to poll for final status."
+authMethod: "none"
+---
+
+<ParamField header="x-api-key" type="string" required>
+  API key with `inventory:write` scope.
+</ParamField>
+
+<ParamField path="vendorId" type="string" required>
+  Vendor UUID.
+</ParamField>
+
+<ParamField body="idempotency_key" type="string" required>
+  Client-supplied key (1–128 chars). Duplicate submissions return the original response with `"idempotent": true`.
+</ParamField>
+
+<ParamField body="external_user_id" type="string" required>
+  Actor identifier for audit trail.
+</ParamField>
+
+<ParamField body="store_id" type="string">
+  UUID of the receiving store. Exactly one of `store_id` or `external_store_id` must be provided.
+</ParamField>
+
+<ParamField body="external_store_id" type="string">
+  Your system's store identifier. Used when you haven't stored BOH UUIDs.
+</ParamField>
+
+<ParamField body="supplier_id" type="string">
+  BOH UUID of the supplier.
+</ParamField>
+
+<ParamField body="external_supplier_id" type="string">
+  Your system's supplier identifier.
+</ParamField>
+
+<ParamField body="reference" type="string">
+  Invoice or delivery note number (max 200 chars).
+</ParamField>
+
+<ParamField body="purchase_order_id" type="string">
+  UUID of the purchase order this receipt fulfills (optional).
+</ParamField>
+
+<ParamField body="lines" type="object[]" required>
+  Line items (1–500 lines):
+  <Expandable title="line fields">
+    <ParamField body="item_id" type="string">BOH UUID of the item. Exactly one of `item_id` or `external_item_id` required.</ParamField>
+    <ParamField body="external_item_id" type="string">Your system's item identifier.</ParamField>
+    <ParamField body="purchase_order_line_id" type="string">UUID of the PO line being fulfilled.</ParamField>
+    <ParamField body="qty" type="number" required>Received quantity in the given unit.</ParamField>
+    <ParamField body="qty_base" type="number" required>Received quantity converted to the item's base unit.</ParamField>
+    <ParamField body="base_unit_id" type="string" required>UUID of the base unit.</ParamField>
+    <ParamField body="unit_id" type="string">UUID of the unit used for `qty`.</ParamField>
+    <ParamField body="unit_label" type="string">Human label for the unit (for display).</ParamField>
+    <ParamField body="unit_to_base_factor" type="number" required>Conversion factor from `unit_id` to `base_unit_id`.</ParamField>
+    <ParamField body="unit_cost" type="number" required>Cost per unit (in account currency, ≥ 0).</ParamField>
+    <ParamField body="total_cost" type="number">Precomputed total cost. Defaults to `qty × unit_cost`.</ParamField>
+    <ParamField body="metadata" type="object">Free-form extra data.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="tracking_id" type="string">Use this to poll for the final processing status.</ResponseField>
+<ResponseField name="inventory_transaction_id" type="string">UUID of the inventory transaction created.</ResponseField>
+<ResponseField name="goods_receipt_id" type="string">UUID of the created goods receipt.</ResponseField>
+<ResponseField name="idempotent" type="boolean">`true` if a previous identical submission was found.</ResponseField>
+
+<RequestExample>
+```json
+{
+  "idempotency_key": "rcpt-2026-08-07-001",
+  "external_user_id": "user_receiving",
+  "store_id": "str_main_01...",
+  "supplier_id": "sup_best_foods_01...",
+  "reference": "INV-2026-1234",
+  "lines": [
+    {
+      "item_id": "itm_chicken_01...",
+      "qty": 10,
+      "qty_base": 10000,
+      "base_unit_id": "unit_g_01...",
+      "unit_id": "unit_kg_01...",
+      "unit_label": "kg",
+      "unit_to_base_factor": 1000,
+      "unit_cost": 4.5
+    }
+  ]
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "tracking_id": "trk_01j5k...",
+  "inventory_transaction_id": "txn_01j5k...",
+  "goods_receipt_id": "rcpt_01j5k...",
+  "idempotent": false
+}
+```
+
+```json 422
+{
+  "error": {
+    "kind": "item_not_found",
+    "message": "Item not found",
+    "details": { "item_id": "itm_unknown..." }
+  }
+}
+```
+</ResponseExample>

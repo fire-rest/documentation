@@ -1,0 +1,103 @@
+---
+title: "Criar pedido de compra"
+api: "POST https://boh.api.fire.rest/api/v1/public/vendors/{vendorId}/procurement/orders"
+description: "Cria um novo pedido de compra em estado DRAFT, opcionalmente com linhas iniciais."
+authMethod: "none"
+---
+
+<ParamField header="x-api-key" type="string" required>
+  API key do BOH com escopo `inventory:write`.
+</ParamField>
+
+<ParamField path="vendorId" type="string" required>UUID do vendor.</ParamField>
+
+<ParamField body="supplier_id" type="string">UUID do fornecedor.</ParamField>
+<ParamField body="external_supplier_id" type="string">ID externo do fornecedor.</ParamField>
+<ParamField body="store_id" type="string">UUID do estabelecimento receptor. Exatamente um de `store_id`, `external_store_id` ou `store_tax_id` deve ser enviado.</ParamField>
+<ParamField body="external_store_id" type="string">Identificador externo do estabelecimento. Mutuamente exclusivo com `store_id` e `store_tax_id`.</ParamField>
+<ParamField body="store_tax_id" type="string">Identificador fiscal do estabelecimento (RUC, CNPJ, CUIT, NIT…). Retorna `422` se vários estabelecimentos ativos compartilham o mesmo valor — use `store_id` ou `external_store_id` para desambiguar. Mutuamente exclusivo com `store_id` e `external_store_id`.</ParamField>
+<ParamField body="expected_delivery_date" type="string">Data esperada de entrega (ISO 8601).</ParamField>
+<ParamField body="reference" type="string">Número de referência externo.</ParamField>
+<ParamField body="notes" type="string">Notas para o fornecedor.</ParamField>
+<ParamField body="lines" type="object[]">
+  Linhas iniciais (opcional).
+  <Expandable title="campos da linha">
+    <ParamField body="item_id" type="string">UUID do item.</ParamField>
+    <ParamField body="external_item_id" type="string">ID externo do item.</ParamField>
+    <ParamField body="quantity" type="number" required>Quantidade a pedir.</ParamField>
+    <ParamField body="unit_id" type="string" required>UUID da unidade.</ParamField>
+    <ParamField body="unit_cost" type="number">Custo unitário acordado.</ParamField>
+  </Expandable>
+</ParamField>
+<ParamField body="external_user_id" type="string" required>Ator que cria o pedido.</ParamField>
+<ParamField body="idempotency_key" type="string">Chave de idempotência.</ParamField>
+
+<RequestExample>
+```json
+{
+  "external_supplier_id": "fornecedor-fresco",
+  "external_store_id": "loja-principal",
+  "expected_delivery_date": "2026-08-10",
+  "lines": [
+    {
+      "external_item_id": "tomate",
+      "quantity": 20,
+      "unit_id": "unit_kg_01...",
+      "unit_cost": 8.50
+    }
+  ],
+  "external_user_id": "compras_01"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "purchase_order": {
+    "id": "po_01...",
+    "status": "DRAFT",
+    "supplier_id": "sup_01...",
+    "store_id": "str_principal_01...",
+    "lines": []
+  }
+}
+```
+
+```json 404 (fornecedor não encontrado)
+{
+  "error": {
+    "kind": "supplier_not_found",
+    "message": "Supplier not found"
+  }
+}
+```
+
+```json 404 (estabelecimento não encontrado por external_store_id)
+{
+  "error": {
+    "kind": "purchase_order_store_external_id_not_found",
+    "message": "No active store matches the provided external_store_id"
+  }
+}
+```
+
+```json 404 (estabelecimento não encontrado por store_tax_id)
+{
+  "error": {
+    "kind": "purchase_order_store_tax_id_not_found",
+    "message": "No active store matches the provided store_tax_id"
+  }
+}
+```
+
+```json 422 (store_tax_id ambíguo)
+{
+  "error": {
+    "kind": "purchase_order_store_tax_id_ambiguous",
+    "message": "Multiple active stores share the same tax_id — use store_id or external_store_id to disambiguate",
+    "details": { "tax_id": "12.345.678/0001-90", "count": 2 }
+  }
+}
+```
+</ResponseExample>
