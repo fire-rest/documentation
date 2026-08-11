@@ -16,37 +16,75 @@ authMethod: "none"
 <ParamField body="store_id" type="string">UUID do estabelecimento receptor. Exatamente um de `store_id`, `external_store_id` ou `store_tax_id` deve ser enviado.</ParamField>
 <ParamField body="external_store_id" type="string">Identificador externo do estabelecimento. Mutuamente exclusivo com `store_id` e `store_tax_id`.</ParamField>
 <ParamField body="store_tax_id" type="string">Identificador fiscal do estabelecimento (RUC, CNPJ, CUIT, NIT…). Retorna `422` se vários estabelecimentos ativos compartilham o mesmo valor — use `store_id` ou `external_store_id` para desambiguar. Mutuamente exclusivo com `store_id` e `external_store_id`.</ParamField>
-<ParamField body="expected_delivery_date" type="string">Data esperada de entrega (ISO 8601).</ParamField>
-<ParamField body="reference" type="string">Número de referência externo.</ParamField>
-<ParamField body="notes" type="string">Notas para o fornecedor.</ParamField>
+<ParamField body="schedule_id" type="string">UUID da agenda de recebimento à qual o pedido pertence (opcional).</ParamField>
+<ParamField body="order_type" type="string">Classificação livre do pedido (máx. 64 chars).</ParamField>
+<ParamField body="cutoff_at" type="string">Timestamp ISO 8601 do fechamento do pedido.</ParamField>
+<ParamField body="expected_delivery_at" type="string">Timestamp ISO 8601 da entrega esperada.</ParamField>
+<ParamField body="external_reference" type="string">Referência documental do cliente (ex. código de movimento do ERP, máx. 256 chars). Armazenada para busca e filtro na listagem. Não é chave de deduplicação — para isso use `idempotency_key`.</ParamField>
+<ParamField body="notes" type="string">Notas livres (máx. 1024 chars).</ParamField>
+<ParamField body="metadata" type="object">Dados adicionais livres.</ParamField>
+<ParamField body="enforce_supplier_catalog" type="boolean">Com `true`, cada item de linha deve existir no catálogo do fornecedor.</ParamField>
 <ParamField body="lines" type="object[]">
-  Linhas iniciais (opcional).
+  Linhas iniciais (opcional — você pode adicioná-las depois com `action=add-lines`).
   <Expandable title="campos da linha">
-    <ParamField body="item_id" type="string">UUID do item.</ParamField>
-    <ParamField body="external_item_id" type="string">ID externo do item.</ParamField>
-    <ParamField body="quantity" type="number" required>Quantidade a pedir.</ParamField>
-    <ParamField body="unit_id" type="string" required>UUID da unidade.</ParamField>
-    <ParamField body="unit_cost" type="number">Custo unitário acordado.</ParamField>
+    <ParamField body="item_id" type="string">UUID do item. Exatamente um de `item_id`, `external_item_id` ou `supplier_sku` deve ser enviado.</ParamField>
+    <ParamField body="external_item_id" type="string">ID externo do item, resolvido no servidor. Ao usá-lo, `base_unit_id` passa a ser opcional.</ParamField>
+    <ParamField body="supplier_sku" type="string">SKU do fornecedor (sem diferenciar maiúsculas, máx. 128 chars). Resolvido contra o catálogo do fornecedor do pedido. `base_unit_id` é derivado automaticamente.</ParamField>
+    <ParamField body="qty" type="number" required>Quantidade pedida na unidade de entrada.</ParamField>
+    <ParamField body="qty_base" type="number">Quantidade na unidade base do item. Obrigatória exceto se você enviar `unit_code` ou `item_unit_id` — em ambos os casos o servidor a deriva como `qty × factor_to_base`. Se enviada mesmo assim, deve coincidir com o valor derivado (tolerância 0.001) ou a requisição falha com `purchase_order_qty_base_mismatch` (422).</ParamField>
+    <ParamField body="base_unit_id" type="string">UUID da unidade base. Obrigatório exceto se usar `external_item_id` ou `supplier_sku`.</ParamField>
+    <ParamField body="unit_to_base_factor" type="number">Fator de conversão da unidade de entrada para a base.</ParamField>
+    <ParamField body="item_unit_id" type="string">UUID de uma unidade de item existente. O servidor deriva `qty_base` a partir do `factor_to_base` da unidade — você não precisa conhecer o fator de conversão. Retorna `item_unit_not_found` (404) se a unidade não resolver e `qty_base` foi omitido. Mutuamente exclusivo com `unit_code` e `unit_label`.</ParamField>
+    <ParamField body="unit_code" type="string">Resolve a unidade de compra pelo código de integração (sem diferenciar maiúsculas). Mutuamente exclusivo com `item_unit_id` e `unit_label`.</ParamField>
+    <ParamField body="unit_label" type="string">Rótulo livre de unidade (ex. `"saco"`), armazenado quando não há `item_unit_id`.</ParamField>
+    <ParamField body="save_unit" type="boolean">Com `true` e `unit_label` presente, salva uma nova unidade PURCHASE no item para reutilização.</ParamField>
+    <ParamField body="unit_cost" type="number">Custo por unidade (≥ 0).</ParamField>
+    <ParamField body="tax_amount" type="number">Informativo: valor de impostos da linha.</ParamField>
+    <ParamField body="delivery_amount" type="number">Informativo: valor de frete / entrega.</ParamField>
+    <ParamField body="total_amount" type="number">Informativo: valor total declarado.</ParamField>
+    <ParamField body="markup_amount" type="number">Informativo: valor de comissão / markup.</ParamField>
+    <ParamField body="notes" type="string">Notas da linha (máx. 512 chars).</ParamField>
+    <ParamField body="metadata" type="object">Dados adicionais por linha.</ParamField>
   </Expandable>
 </ParamField>
-<ParamField body="external_user_id" type="string" required>Ator que cria o pedido.</ParamField>
-<ParamField body="idempotency_key" type="string">Chave de idempotência.</ParamField>
+<ParamField body="external_user_id" type="string">Identificador do usuário chamador para auditoria. Opcional na criação; obrigatório no `close`.</ParamField>
+<ParamField body="idempotency_key" type="string">Chave de idempotência (máx. 255 chars). Repetir a mesma chave retorna o pedido existente com HTTP 200 em vez de criar um duplicado.</ParamField>
 
 <RequestExample>
-```json
+```json Com UUIDs internos
 {
-  "external_supplier_id": "fornecedor-fresco",
-  "external_store_id": "loja-principal",
-  "expected_delivery_date": "2026-08-10",
+  "supplier_id": "sup_01...",
+  "store_id": "str_principal_01...",
+  "expected_delivery_at": "2026-08-14T10:00:00-03:00",
+  "idempotency_key": "0d4f1c9a-7c33-4d6e-9f2a-1b8e5a6c0d21",
   "lines": [
     {
-      "external_item_id": "tomate",
-      "quantity": 20,
-      "unit_id": "unit_kg_01...",
-      "unit_cost": 8.50
+      "item_id": "itm_frango_01...",
+      "qty": 10,
+      "qty_base": 10000,
+      "base_unit_id": "unit_g_01...",
+      "unit_to_base_factor": 1000,
+      "unit_label": "kg",
+      "unit_cost": 4.5
     }
-  ],
-  "external_user_id": "compras_01"
+  ]
+}
+```
+
+```json Totalmente externo (sem UUIDs internos)
+{
+  "external_supplier_id": "RUC-001234567",
+  "store_tax_id": "12.345.678/0001-90",
+  "external_reference": "MOV-2026-00342",
+  "external_user_id": "erp-usuario-42",
+  "lines": [
+    {
+      "supplier_sku": "SKU-FRANGO-001",
+      "qty": 10,
+      "unit_code": "kg",
+      "total_amount": 55.0
+    }
+  ]
 }
 ```
 </RequestExample>
@@ -59,7 +97,19 @@ authMethod: "none"
     "status": "DRAFT",
     "supplier_id": "sup_01...",
     "store_id": "str_principal_01...",
-    "lines": []
+    "expected_delivery_at": "2026-08-14T13:00:00.000Z",
+    "external_reference": null,
+    "lines": [
+      {
+        "id": "pol_01...",
+        "item_id": "itm_frango_01...",
+        "qty": 10,
+        "qty_base": 10000,
+        "base_unit_id": "unit_g_01...",
+        "unit_label": "kg",
+        "unit_cost": 4.5
+      }
+    ]
   }
 }
 ```
@@ -97,6 +147,24 @@ authMethod: "none"
     "kind": "purchase_order_store_tax_id_ambiguous",
     "message": "Multiple active stores share the same tax_id — use store_id or external_store_id to disambiguate",
     "details": { "tax_id": "12.345.678/0001-90", "count": 2 }
+  }
+}
+```
+
+```json 422 (qty_base não confere)
+{
+  "error": {
+    "kind": "purchase_order_qty_base_mismatch",
+    "message": "Client-provided qty_base does not match the server-derived value"
+  }
+}
+```
+
+```json 404 (unidade de item não encontrada)
+{
+  "error": {
+    "kind": "item_unit_not_found",
+    "message": "item_unit_id does not resolve to an active unit and qty_base was omitted"
   }
 }
 ```
