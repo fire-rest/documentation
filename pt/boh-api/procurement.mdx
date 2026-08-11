@@ -196,15 +196,17 @@ Cria uma nova ordem de compra em status `DRAFT`, opcionalmente com linhas inicia
 <ParamField body="metadata" type="object">Dados extras de formato livre.</ParamField>
 <ParamField body="idempotency_key" type="string">Chave fornecida pelo cliente (máx. 255 caracteres). Repetir a mesma chave devolve a PO existente com HTTP 200 em vez de criar uma duplicata. Recomendado: um UUID v4 por operação de negócio.</ParamField>
 <ParamField body="external_reference" type="string">Referência de documento fornecida pelo cliente (p. ex. código de movimento do ERP, máx. 256 caracteres). Armazenada para busca e exibição, e filtrável no endpoint de listagem. Não é chave de deduplicação — para isso use `idempotency_key`.</ParamField>
+<ParamField body="external_user_id" type="string">Identificador do usuário que realiza a operação (p. ex. usuário do ERP, operador do backoffice). Armazenado como `actor_external_user_id` na ordem. Opcional na criação; obrigatório em `close`.</ParamField>
 <ParamField body="enforce_supplier_catalog" type="boolean">Quando `true`, cada item de linha deve existir no catálogo do fornecedor.</ParamField>
 <ParamField body="lines" type="object[]">
   Linhas iniciais da ordem (opcional — você pode adicioná-las depois com `action=add-lines`):
   <Expandable title="campos da linha">
-    <ParamField body="item_id" type="string">UUID do item. Deve ser enviado exatamente um entre `item_id` e `external_item_id`.</ParamField>
-    <ParamField body="external_item_id" type="string">Identificador externo do item, resolvido no servidor. Mutuamente exclusivo com `item_id`. Quando usado, `base_unit_id` passa a ser opcional (também resolvido no servidor).</ParamField>
+    <ParamField body="item_id" type="string">UUID do item. Deve ser enviado exatamente um entre `item_id`, `external_item_id` e `supplier_sku`.</ParamField>
+    <ParamField body="external_item_id" type="string">Identificador externo do item, resolvido no servidor. Mutuamente exclusivo com `item_id` e `supplier_sku`. Quando usado, `base_unit_id` passa a ser opcional (também resolvido no servidor).</ParamField>
+    <ParamField body="supplier_sku" type="string">SKU do fornecedor (sem diferenciar maiúsculas, máx. 128 caracteres), resolvido para o item correspondente no catálogo do fornecedor da ordem. Mutuamente exclusivo com `item_id` e `external_item_id`. Quando usado, `base_unit_id` também é opcional (derivado pelo servidor a partir do item do fornecedor encontrado).</ParamField>
     <ParamField body="qty" type="number" required>Quantidade pedida na unidade de entrada.</ParamField>
     <ParamField body="qty_base" type="number">Quantidade pedida convertida para a unidade base do item. Obrigatório, exceto quando `unit_code` é enviado (nesse caso o servidor o deriva como `qty × factor_to_base`; se você enviar ambos e não coincidirem, a requisição falha com `purchase_order_qty_base_mismatch`).</ParamField>
-    <ParamField body="base_unit_id" type="string">UUID da unidade base. Obrigatório, exceto quando `external_item_id` é usado.</ParamField>
+    <ParamField body="base_unit_id" type="string">UUID da unidade base. Obrigatório, exceto quando `external_item_id` ou `supplier_sku` é usado.</ParamField>
     <ParamField body="unit_to_base_factor" type="number">Fator de conversão da unidade de entrada para a base.</ParamField>
     <ParamField body="item_unit_id" type="string">UUID de uma unidade de item existente (p. ex. uma unidade de compra salva); seu fator é aplicado à linha. Mutuamente exclusivo com `unit_code` e `unit_label`.</ParamField>
     <ParamField body="unit_code" type="string">Resolve a unidade de compra pelo seu código de integração (sem diferenciar maiúsculas). Ordem de resolução: unidade específica do fornecedor → unidade genérica → código da unidade base do item. Mutuamente exclusivo com `item_unit_id` e `unit_label`.</ParamField>
@@ -305,10 +307,14 @@ Sistemas externos podem criar ordens de compra **sem conhecer nenhum UUID intern
 
 - `external_supplier_id` (ordem) em vez de `supplier_id` — p. ex. o RUC / id fiscal do fornecedor.
 - `external_item_id` (linha) em vez de `item_id` — o código externo do item; `base_unit_id` também é resolvido no servidor.
+- `supplier_sku` (linha) em vez de `item_id` — o SKU do fornecedor para o item (sem diferenciar maiúsculas, restrito ao fornecedor da ordem); `base_unit_id` também é derivado automaticamente.
 - `unit_code` (linha) em vez de `item_unit_id` / `unit_label` — resolve a unidade de compra pelo seu código de integração (sem diferenciar maiúsculas) e deriva `qty_base` automaticamente.
 - `external_reference` (ordem) — sua referência de documento (p. ex. código de movimento do ERP), filtrável na listagem.
+- `external_user_id` (ordem) — identificador do usuário para o registro de auditoria; opcional na criação, obrigatório em `close`.
 
-Uma requisição mínima de um ERP fica assim:
+**Identificação de item por linha (XOR):** deve ser enviado exatamente um entre `item_id`, `external_item_id` e `supplier_sku`.
+
+Usando `external_item_id`:
 
 ```json
 {
@@ -328,14 +334,40 @@ Uma requisição mínima de um ERP fica assim:
 }
 ```
 
+Usando `supplier_sku` — resolve o item diretamente do catálogo de SKUs do fornecedor:
+
+```json
+{
+  "external_supplier_id": "RUC-001234567",
+  "store_id": "str_main_01...",
+  "external_reference": "MOV-2026-00342",
+  "lines": [
+    {
+      "supplier_sku": "SKU-CHICKEN-001",
+      "qty": 10,
+      "unit_code": "kg",
+      "total_amount": 55.0
+    },
+    {
+      "supplier_sku": "SKU-PASTA-002",
+      "qty": 5,
+      "unit_code": "kg"
+    }
+  ]
+}
+```
+
 O BOH resolve o fornecedor, os itens e as unidades no servidor, deriva o `qty_base` de cada linha a partir do fator da unidade encontrada e armazena o `external_reference` para buscas. Falhas de resolução retornam erros tipados:
 
 | `kind` | Status | Quando |
 |---|---|---|
 | `purchase_order_supplier_external_id_not_found` | 404 | Nenhum fornecedor corresponde a `external_supplier_id`. |
 | `purchase_order_item_external_id_not_found` | 404 | Um ou mais valores de `external_item_id` não puderam ser resolvidos (`details.external_item_ids`). |
+| `purchase_order_supplier_sku_not_found` | 404 | Um ou mais valores de `supplier_sku` não puderam ser resolvidos para um item de fornecedor ativo (`details.supplier_skus`, `details.supplier_id`). |
 | `purchase_order_unit_code_not_found` | 404 | Não há unidade de compra ativa com esse `unit_code` para o item (`details.code`, `details.item_id`). |
 | `purchase_order_qty_base_mismatch` | 422 | O `qty_base` enviado pelo cliente não coincide com o derivado pelo servidor (`qty × factor_to_base`). |
+
+**Configurar SKUs de fornecedor:** atribua um `supplier_sku` via `POST /vendors/{vendorId}/catalog/supplier-items`. Se o SKU já existir para aquele fornecedor, o servidor retorna `supplier_item_sku_already_exists` (HTTP 409) com `details.supplier_sku`.
 
 Os mesmos campos externos funcionam em `action=add-lines` e na atualização de linhas (`PATCH …/lines/{lineId}`).
 
