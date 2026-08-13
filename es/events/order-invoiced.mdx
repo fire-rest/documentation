@@ -5,7 +5,7 @@ description: "La autoridad fiscal autorizó el documento (factura electrónica) 
 
 <Tabs>
   <Tab title="v1.2 · actual">
-    Estás viendo el contrato **actual (v1.2)** de `order.invoiced`. **v1.2 agrega** `data.fiscalRepresentation`: la numeración fiscal que el punto de venta obtuvo antes de inyectar la orden. Se **omite** cuando la venta no se numeró, y su presencia **no** significa que el comprobante esté autorizado. Solo aditivo — nada de lo que ya leías cambió.
+    Estás viendo el contrato **actual (v1.2)** de `order.invoiced`. **v1.2 agrega** `data.fiscalRepresentation`: la numeración fiscal que el punto de venta obtuvo antes de inyectar la orden. Está presente cuando **se intentó numerar** —`numberingStatus` dice cómo terminó— y se **omite** cuando no hubo intento. Su presencia **no** significa que el comprobante esté autorizado. Solo aditivo — nada de lo que ya leías cambió.
   </Tab>
   <Tab title="v1.1 · anterior">
     **v1.1 agregó** `data.policy.deferredPayment` (¿esta orden puede trabajarse antes del pago?) y `data.lastKnown` (estado orientativo de cocina/fiscal), más el evento nuevo [`order.opened`](/es/events/order-opened). Sigue siendo válido: v1.2 solo suma un bloque.
@@ -231,12 +231,18 @@ esto ya ocurrió.
   está presente declara algo que puede no haber pasado.
 </Warning>
 
-**Se omite** —la clave no aparece, no viene en `null`— cuando la venta no se
-numeró: agregadores, países sin representación fiscal, o comercios con la
-numeración desactivada. Ramificá por presencia de la clave.
+**La presencia del bloque significa que se intentó numerar, no que se numeró.**
+`numberingStatus` dice cómo terminó el intento y `failure` por qué, cuando no
+terminó bien.
+
+**Se omite** —la clave no aparece, no viene en `null`— solo cuando no hubo
+intento: agregadores, países sin representación fiscal, o comercios con la
+numeración desactivada. Ramificá por presencia de la clave para saber si hubo
+intento, y por `numberingStatus` para saber cómo salió.
 
 | Campo | Qué es |
 |---|---|
+| `numberingStatus` | Cómo terminó el **acto de numerar**: `GENERATED`, `PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `UNAVAILABLE`. **No es el veredicto del ente** — ese está en `lastKnown.fiscal.status`. |
 | `documentNumber` | Número visible del comprobante, compuesto según el país (`005-004-000000042`). Es presentación: para conciliar usá `serie` + `sequential`. |
 | `sequential` | Correlativo asignado por el ente. |
 | `serie` | Serie del comprobante. `null` donde el país no la usa. |
@@ -245,10 +251,13 @@ numeración desactivada. Ramificá por presencia de la clave.
 | `providerCode` | Identificador del adaptador que numeró. |
 | `claveAcceso` | Clave de acceso del ente. Ausente donde el país no la emite. |
 | `numeroControl` | Número de control. Sustituye a la clave de acceso donde aplica. |
+| `graphic` | El artefacto imprimible que entregó el proveedor (QR y demás), tal cual vino. `null` si no entregó ninguno. |
+| `failure` | Por qué **no** hay comprobante. `null` cuando la numeración salió bien. |
 | `providerMetadata` | **Opaco.** Lo define el proveedor; no programes contra sus claves. |
 
 ```json
 "fiscalRepresentation": {
+  "numberingStatus": "GENERATED",
   "serie": "005004",
   "sequential": "000000042",
   "documentNumber": "005-004-000000042",
@@ -256,6 +265,8 @@ numeración desactivada. Ramificá por presencia de la clave.
   "authorizationMode": "ONLINE",
   "issuedAt": "2026-08-13T08:11:29.744Z",
   "providerCode": "hio",
+  "graphic": { "qr": "1208202601000000000000110050040000000421234567810" },
+  "failure": null,
   "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
 }
 ```
@@ -263,6 +274,29 @@ numeración desactivada. Ramificá por presencia de la clave.
 **No cambia nunca.** El mismo bloque viaja idéntico en todos los eventos de la
 orden: lo que el cliente se llevó impreso no se altera porque el ente después
 autorice o rechace. Lo que sí cambia es `lastKnown.fiscal`.
+
+### Cuando la numeración falla
+
+Una venta puede cobrarse y quedarse **sin comprobante fiscal**. Ese caso también
+viaja, y hay que contemplarlo: los identificadores vienen en `null` y el motivo
+en `failure`.
+
+```json
+"fiscalRepresentation": {
+  "numberingStatus": "FAILED_FINAL",
+  "documentNumber": null,
+  "sequential": null,
+  "issuedAt": null,
+  "providerCode": "hio",
+  "graphic": null,
+  "failure": { "code": "RUC_INVALIDO", "scope": "FUNCTIONAL", "message": "RUC no habilitado" }
+}
+```
+
+Ramificá por `failure.scope`:
+
+- **`TECHNICAL`** — imprimí "en trámite" y seguí. Puede resolverse solo.
+- **`FUNCTIONAL`** — hay un dato mal y reintentar no lo arregla. Requiere corrección.
 
 <Note>
   **`lastKnown.fiscal.sourceEvent` ahora informa la procedencia real.** Antes se
