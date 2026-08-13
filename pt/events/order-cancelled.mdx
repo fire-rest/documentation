@@ -4,8 +4,11 @@ description: "Um pedido injetado foi cancelado. Carrega o snapshot V4 completo m
 ---
 
 <Tabs>
-  <Tab title="v2.1 · atual">
-    Você está vendo o contrato **atual (v2.1)** de `order.cancelled`. **v2.1 adiciona** `data.policy.deferredPayment` (este pedido pode ser trabalhado antes do pagamento?) e `data.lastKnown` (estado orientativo de cozinha/fiscal), mais o novo evento [`order.opened`](/pt/events/order-opened). Apenas aditivo — nada do que você já lia mudou. Também carrega o motivo de cancelamento estruturado introduzido na v2 — `cancellationType`, `cancellationGroup` e `cancellationNote`, sempre presentes (`null` quando vazios).
+  <Tab title="v2.2 · atual">
+    Você está lendo o contrato **atual (v2.2)** de `order.cancelled`. **v2.2 adiciona** `data.fiscalRepresentation`: a numeração fiscal que o ponto de venda obteve antes de injetar o pedido. Está presente quando **se tentou numerar** — `numberingStatus` diz como terminou — e é **omitido** quando não houve tentativa. Sua presença **não** significa que o comprovante esteja autorizado. Apenas aditivo — nada do que você já lia mudou.
+  </Tab>
+  <Tab title="v2.1 · anterior">
+    O contrato **v2.1** continua válido: v2.2 apenas soma um bloco, nada do anterior mudou.
   </Tab>
   <Tab title="v2 · descontinuado">
     <Warning>O contrato **v2** está **descontinuado** — mantido como referência histórica. Abra aqui: [`order.cancelled` — v2](/pt/events-v2/order-cancelled).</Warning>
@@ -266,3 +269,91 @@ o evento onde estes blocos mais importam.
     Apenas Brasil — dispara quando a SEFAZ confirma o cancelamento.
   </Card>
 </CardGroup>
+
+## `data.fiscalRepresentation`
+
+A **numeração fiscal** que o ponto de venda obteve *antes* de injetar o pedido:
+cobra, pede os identificadores, imprime o comprovante e só então injeta. Por isso
+viaja no pedido e não em um evento fiscal separado — quando o pedido nasce, isso
+já aconteceu.
+
+<Warning>
+  **A presença deste bloco NÃO significa que o comprovante esteja autorizado.**
+  São os números impressos no caixa; o veredito do órgão está em
+  `lastKnown.fiscal.status`. Um ticket que diga "autorizado" só porque o bloco
+  está presente declara algo que pode não ter acontecido.
+</Warning>
+
+**A presença do bloco significa que se tentou numerar, não que foi numerado.**
+`numberingStatus` diz como a tentativa terminou e `failure` por quê, quando não
+terminou bem.
+
+**É omitido** — a chave não aparece, não vem `null` — apenas quando não houve
+tentativa: agregadores, países sem representação fiscal, ou comércios com a
+numeração desativada. Ramifique pela presença da chave para saber se houve
+tentativa, e por `numberingStatus` para saber como saiu.
+
+| Campo | O que é |
+|---|---|
+| `numberingStatus` | Como terminou o **ato de numerar**: `GENERATED`, `PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `UNAVAILABLE`. **Não é o veredito do órgão** — esse está em `lastKnown.fiscal.status`. |
+| `documentNumber` | Número visível do comprovante, composto conforme o país (`005-004-000000042`). É apresentação: para conciliar use `serie` + `sequential`. |
+| `sequential` | Sequencial atribuído pelo órgão. |
+| `serie` | Série do comprovante. `null` onde o país não a usa. |
+| `issuedAt` | Quando foi **numerado**. Não é a data de autorização. |
+| `authorizationMode` | `ONLINE`, `OFFLINE` ou `BATCH`. Conceito do provedor, não universal. |
+| `providerCode` | Identificador do adaptador que numerou. |
+| `claveAcceso` | Chave de acesso do órgão. Ausente onde o país não a emite. |
+| `numeroControl` | Número de controle. Substitui a chave de acesso onde se aplica. |
+| `graphic` | O artefato imprimível que o provedor devolveu (QR e afins), tal como veio. `null` se não devolveu nenhum. |
+| `failure` | Por que **não** há comprovante. `null` quando a numeração deu certo. |
+| `providerMetadata` | **Opaco.** Definido pelo provedor; não programe contra suas chaves. |
+
+```json
+"fiscalRepresentation": {
+  "numberingStatus": "GENERATED",
+  "serie": "005004",
+  "sequential": "000000042",
+  "documentNumber": "005-004-000000042",
+  "claveAcceso": "1208202601000000000000110050040000000421234567810",
+  "authorizationMode": "ONLINE",
+  "issuedAt": "2026-08-13T08:11:29.744Z",
+  "providerCode": "hio",
+  "graphic": { "qr": "1208202601000000000000110050040000000421234567810" },
+  "failure": null,
+  "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+}
+```
+
+**Nunca muda.** O mesmo bloco viaja idêntico em todos os eventos do pedido: o que
+o cliente levou impresso não se altera porque o órgão depois autorize ou rejeite.
+
+### Quando a numeração falha
+
+Uma venda pode ser cobrada e ficar **sem comprovante fiscal**. Esse caso também
+viaja, e precisa ser tratado: os identificadores vêm `null` e o motivo em
+`failure`.
+
+```json
+"fiscalRepresentation": {
+  "numberingStatus": "FAILED_FINAL",
+  "documentNumber": null,
+  "sequential": null,
+  "issuedAt": null,
+  "providerCode": "hio",
+  "graphic": null,
+  "failure": { "code": "RUC_INVALIDO", "scope": "FUNCTIONAL", "message": "CNPJ não habilitado" }
+}
+```
+
+Ramifique por `failure.scope`:
+
+- **`TECHNICAL`** — imprima "em trâmite" e siga. Pode se resolver sozinho.
+- **`FUNCTIONAL`** — há um dado errado e repetir não resolve. Precisa correção.
+O que muda é `lastKnown.fiscal`.
+
+<Note>
+  **`lastKnown.fiscal.sourceEvent` agora informa a procedência real.** Antes era
+  deduzida do status, e um `processing` semeado na injeção era reportado como
+  `fiscal.callback` sem que nenhum callback tivesse ocorrido. Esse caso agora diz
+  `order.injected`. Se você ramifica por este campo, contemple o valor novo.
+</Note>

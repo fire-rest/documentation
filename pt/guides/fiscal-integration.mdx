@@ -1,0 +1,206 @@
+---
+title: "Integrar a fiscalização"
+description: "Como o trabalho se divide entre o seu canal, o Fire, o provedor fiscal e o órgão tributário — e o que o seu ponto de venda precisa fazer em cada passo."
+---
+
+O Fire não emite comprovantes: ele os **numera**. Essa distinção explica quase todas as
+decisões de desenho, então vale começar por aí.
+
+## Quem faz o quê
+
+<CardGroup cols={2}>
+  <Card title="Seu canal" icon="cash-register">
+    Cobra, pede a numeração, imprime e injeta o pedido. Não conhece regras fiscais de
+    nenhum país.
+  </Card>
+  <Card title="Fire" icon="server">
+    Resolve a loja, o emissor e o provedor. Grava a solicitação, pede os números e responde o
+    que pode ser impresso.
+  </Card>
+  <Card title="O provedor fiscal" icon="stamp">
+    Traduz para os códigos do órgão, atribui série e sequencial, e envia o documento à
+    autoridade.
+  </Card>
+  <Card title="O órgão tributário" icon="landmark">
+    Autoriza ou rejeita. O veredito chega **depois** de o cliente já ter ido embora com o
+    comprovante.
+  </Card>
+</CardGroup>
+
+<Info>
+  **Um único contrato, todos os países.** O Fire resolve internamente qual provedor
+  corresponde a cada país. Sua integração é a mesma no Equador, no Brasil ou na Venezuela: o
+  que muda é quais campos vêm preenchidos na resposta, não a forma de pedir.
+</Info>
+
+## A linha do tempo
+
+```mermaid
+sequenceDiagram
+    participant POS as Seu canal
+    participant Fire
+    participant Prov as Provedor fiscal
+    participant Orgao as Órgão tributário
+    participant Cons as Seus consumidores
+
+    POS->>Fire: 1. POST /fiscal/numbering
+    Fire->>Prov: 2. pede a numeração
+    Prov-->>Fire: série + sequencial + chave
+    Fire-->>POS: 3. document + graphic + printing
+    POS->>POS: 4. imprime o comprovante
+    POS->>Fire: 5. injeta o pedido (mesmo orderCode)
+    Fire->>Fire: 6. compensa o pedido com sua numeração
+    Fire-->>Cons: order.opened / order.completed / order.cancelled
+    Prov->>Orgao: 7. envia o documento
+    Orgao-->>Prov: autorizado
+    Prov-->>Fire: 8. resultado
+    Fire-->>Cons: order.invoiced / order.reversed
+```
+
+Os passos 1 a 5 acontecem **com o cliente esperando no caixa**: são segundos. Do 6 em diante o
+seu canal já não participa.
+
+## Onde aparecem os dados fiscais
+
+A numeração não fica trancada neste endpoint. Ela percorre o ciclo de vida do pedido em **dois
+momentos distintos**, e convém não misturá-los.
+
+### 1. O que compensamos na injeção
+
+Quando você injeta o pedido, o Fire o enriquece com a numeração que já obteve. Esses dados
+viajam nos eventos do ciclo de vida normal:
+
+| Evento | Quando |
+|---|---|
+| [`order.opened`](/pt/events/order-opened) | O pedido foi aberto — leva sua numeração se já foi solicitada |
+| [`order.completed`](/pt/events/order-completed) | O pagamento liquidou o total |
+| [`order.cancelled`](/pt/events/order-cancelled) | O pedido foi cancelado antes ou depois do pagamento |
+
+Aqui **ainda não há veredito do órgão**: há números impressos e uma venda registrada.
+
+### 2. O que o callback fiscal compensa
+
+Minutos depois, o provedor avisa ao Fire o que a autoridade resolveu. Esse callback é o que
+dispara os dois eventos do desfecho:
+
+| Evento | Quando |
+|---|---|
+| [`order.invoiced`](/pt/events/order-invoiced) | O órgão **autorizou** o documento — chega com chave e protocolo |
+| [`order.reversed`](/pt/events/order-reversed) | O órgão **confirmou o cancelamento** de um documento já autorizado |
+
+<Info>
+  Essa é a separação que precisa ficar clara de ponta a ponta: **a numeração você pede e ela
+  compensa o pedido; a autorização chega sozinha e compensa o desfecho.** Um documento
+  numerado pode nunca chegar a `order.invoiced` se o órgão o rejeitar.
+</Info>
+
+Se você já consome eventos de pedido, **não precisa consultar nada**: os dados fiscais chegam
+pelo mesmo caminho que o resto da venda. A consulta direta fica para suporte e para quando
+você perde a resposta síncrona.
+
+<Note>
+  A compensação do pedido e o enriquecimento destes eventos estão **em implementação**. Hoje a
+  numeração é obtida e guardada; consultá-la por `orderCode` ou por `fiscalRequestId` já
+  funciona.
+</Note>
+
+## As três regras que é preciso entender
+
+<AccordionGroup>
+  <Accordion title="Numerado não é autorizado" icon="scale-balanced">
+    A resposta traz **dois estados, e eles nunca se fundem**:
+
+    - `requestStatus` — consegui números para imprimir?
+    - `documentStatus` — o órgão autorizou?
+
+    Na numeração, o segundo é **sempre** `PENDING`. Isso não é um problema: na maioria dos
+    países o comprovante é entregue antes de a autoridade vê-lo. Se a sua integração juntar os
+    dois num campo só, em algum momento você vai dizer a um cliente que a nota está autorizada
+    quando ela só tem número.
+  </Accordion>
+
+  <Accordion title="A venda nunca é bloqueada" icon="shield-check">
+    Se o provedor não responder a tempo, o Fire **não** devolve erro: devolve `202` com
+    `printing.mode: "PROVISIONAL_RECEIPT"`. Você imprime um ticket não fiscal, injeta o pedido
+    do mesmo jeito e o Fire completa a numeração por conta própria.
+
+    **Não repita a chamada em loop nem segure a venda.** O dinheiro já foi cobrado; o
+    comprovante se resolve depois.
+  </Accordion>
+
+  <Accordion title="Quem decide o que se imprime é o Fire, não você" icon="print">
+    O bloco `printing` não é uma dedução de haver ou não documento: é uma **regra legal do
+    país**. No Equador, em contingência, o comprovante existe e é impresso mesmo sem o órgão
+    tê-lo visto; num país que proíba imprimir antes da autorização, `printable` viria `false`
+    com o documento presente.
+
+    Se cada canal deduzisse essa regra por conta própria, algum a implementaria errado — e
+    esse erro só aparece numa auditoria.
+  </Accordion>
+</AccordionGroup>
+
+## Idempotência: três camadas
+
+Uma venda cobrada duas vezes é um problema de dinheiro; **uma venda numerada duas vezes é um
+problema fiscal**, e não se corrige com um deploy. Por isso há três barreiras:
+
+<Steps>
+  <Step title="Sua Idempotency-Key">
+    Você a gera, uma por venda, e a reutiliza em cada nova tentativa daquela mesma venta. É o
+    que impede que uma queda de rede consuma um segundo sequencial.
+
+    Se reutilizá-la com um corpo diferente, o Fire responde `409`: são duas operações
+    distintas.
+  </Step>
+  <Step title="A chave natural">
+    `país + orderCode + operação`. Protege mesmo que o seu canal gere uma `Idempotency-Key`
+    nova a cada tentativa — o erro de implementação mais comum.
+
+    É também a razão pela qual o `orderCode` **precisa ser único por conta e país**: se duas
+    lojas usarem o mesmo, o Fire corta antes de emitir.
+  </Step>
+  <Step title="A do provedor">
+    A mesma trinca, do outro lado. As duas chaves serem idênticas é o que faz uma colisão
+    aparecer nas duas pontas ao mesmo tempo, em vez de surgir meses depois como dois
+    comprovantes para uma venda.
+  </Step>
+</Steps>
+
+## Cancelar
+
+Pede-se com `operation: "CANCEL"` e **o mesmo `orderCode` da venda original**. Nada mais.
+
+Seu ponto de venda **não precisa guardar nenhum identificador nosso**: o Fire encontra o
+documento original pela chave natural. Isso é deliberado — um quiosque reinstalado ou um caixa
+substituído perderiam esse dado, e a venda nunca mais poderia ser cancelada. Já o `orderCode`
+está impresso no ticket.
+
+Com qual instrumento o cancelamento se materializa é decisão do país: no Equador é uma nota de
+crédito com sequencial próprio; no Brasil, um evento de cancelamento que não gera documento
+novo.
+
+## Se você perder a resposta
+
+Acontece: a rede cai logo depois de o Fire numerar. O comprovante existe e você não o tem.
+
+```
+GET /api/v1/external/fiscal/numbering?orderCode=EC-K004-42-1786579046934
+```
+
+Devolve `items[]` com todos os documentos daquele pedido — podem ser dois, a nota e o
+cancelamento. É por isso que o `orderCode` precisa ser a mesma string na numeração e na
+injeção: é a única coisa que sobra na sua mão.
+
+## Antes de ir para produção
+
+<Check>Seu `orderCode` é único por conta e país, e é o mesmo na numeração e na injeção.</Check>
+<Check>Você guarda a `Idempotency-Key` junto com o pedido e a reutiliza nas tentativas.</Check>
+<Check>Cada dispositivo declara seu `device.externalId` — dois caixas da mesma loja não o compartilham.</Check>
+<Check>Você ramifica por `printing.mode`, e não pelo código HTTP.</Check>
+<Check>Você não assume que `countryIdentifiers.accessKey` sempre vem: na Venezuela não existe.</Check>
+<Check>Você percorre as chaves de `graphic` em vez de procurar campos fixos.</Check>
+<Check>Diante de `202` você imprime provisório e injeta assim mesmo, sem repetir em loop.</Check>
+
+<Card title="Referência do endpoint" icon="code" href="/pt/api-reference/fiscal-documents">
+  Campos, respostas e exemplos por país.
+</Card>
