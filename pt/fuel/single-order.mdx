@@ -1,97 +1,121 @@
 ---
-title: "Ordem individual"
-description: Construa e injete uma ordem no FIRE com controle total sobre cada campo.
+title: "Pedido individual"
+description: Construa um pedido a partir do menu real da loja e injete-o no FIRE, com enriquecimento fiscal automático para o Brasil.
 ---
 
-A aba **Ordem individual** permite construir uma ordem de teste do zero e enviá-la diretamente ao FIRE. Use-a quando precisar de controle preciso sobre canal, produtos, status de pagamento ou dados do cliente — por exemplo, para reproduzir um caso específico ou validar uma nova configuração de cardápio.
+A aba **Pedido individual** permite construir um único pedido a partir do **menu real** da loja — o mesmo catálogo que o POS lê — e injetá-lo diretamente no FIRE. Use-a para reproduzir um caso específico de ponta a ponta: escolha produtos e modificadores reais, defina o canal e o serviço, configure o pagamento e os dados do cliente e (para o Brasil) deixe o FUEL enriquecer o documento fiscal para que o FIRE emita a NFC-e.
 
-![Aba Ordem individual — construtor de pedidos com barra lateral de contexto](/images/fuel/tab-single-order-pt.png)
+![Aba Pedido individual — menu estilo POS com barra lateral de contexto e log de resultados](/images/fuel/tab-single-order-pt.png)
 
 <Note>
-  Você deve selecionar um contexto de operação (ambiente, conta, país, fornecedor e loja) na barra lateral antes que a aba fique disponível.
+  Você precisa selecionar um contexto de operação completo (ambiente, conta, país, vendor e loja) na barra lateral antes que a aba fique funcional. O menu é consultado ao vivo a partir da loja selecionada.
 </Note>
 
-## Construindo e enviando uma ordem
+<Note>
+  O Pedido individual não usa mais "menus de teste". Ele lê o **catálogo real** da loja via `productsBy`, então o ambiente precisa ter um host de catálogo (`xmart_url`) configurado. Para o Brasil, o enriquecimento fiscal também exige um host do motor fiscal (`fiscal_engine_url`). Veja [Configuração](/pt/fuel/setup#ambientes).
+</Note>
+
+## Como funciona
+
+O fluxo espelha uma venda de POS de ponta a ponta:
+
+```
+menu real (productsBy) → carrinho → montar pedido → (Brasil: enriquecimento fiscal) → injetar no FIRE
+```
+
+O FUEL monta o payload no estilo POS e o mapeia para o formato que o FIRE aceita diretamente. Para o Brasil, antes de injetar ele chama o motor fiscal (`/enrich-order`), que devolve o pedido com os impostos corretos por linha, para que o FIRE possa emitir o cupom fiscal em vez de ficar travado "processando".
+
+## Construindo e injetando um pedido
 
 <Steps>
-  <Step title="Selecione um cardápio de teste">
-    Na seção **Cardápio de teste**, escolha um cardápio no menu suspenso. Os cardápios de teste são gerenciados por um superadmin e definem os produtos, canais e processadores de pagamento disponíveis para um determinado ambiente e fornecedor.
+  <Step title="Escolha o canal e o serviço">
+    Canal e **Serviço / entrega** são eixos independentes, exibidos no topo da aba.
 
-    Não é possível prosseguir sem um cardápio de teste selecionado — ele é o catálogo que preenche o restante do formulário.
+    - **Canal** — agrupado em **Principais** (`POS`, `KIOSK`, `APP`), **Agregadores** (iFood, Rappi, Uber, …) e **Outros**. Os canais principais estão sempre disponíveis, mesmo que a loja não os liste. Cada opção exibe um ícone.
+    - **Serviço / entrega** — `DINE_IN`, `TAKEAWAY`, `DELIVERY`, `PICKUP` ou `DRIVE_THRU`. É o eixo que delimita o menu.
+
+    A visualização do catálogo se adapta ao canal: um frame **POS** de largura total, um frame **KIOSK** vertical, um frame **APP** no estilo de celular ou um frame remoto médio para os agregadores.
   </Step>
 
-  <Step title="Configure canal e entrega">
-    Na seção **Canal e entrega**, escolha como a ordem chega ao FIRE:
+  <Step title="Navegue pelo menu real">
+    A aba carrega o catálogo ao vivo da loja (categorias + produtos) para o serviço selecionado. Os produtos são exibidos como cards com sua imagem e preço, exatamente como o POS os apresenta. Combos exibem um preço **REF** (referência) e um selo **COMBO**.
 
-    - **Canal**: `POS`, `KIOSK`, `APP` ou `AGGREGATOR`
-    - **Método de entrega**: `pickup` (o cliente retira no balcão) ou `delivery` (requer endereço de entrega)
-
-    Se você selecionar `delivery`, um formulário de endereço é exibido abaixo do seletor de método de entrega.
+    Alterne entre categorias com as abas acima da grade. Produtos indisponíveis ficam esmaecidos.
   </Step>
 
-  <Step title="Adicione produtos">
-    Na seção **Produtos**, selecione itens do catálogo fornecido pelo cardápio de teste escolhido. Para cada produto você pode:
+  <Step title="Adicione produtos com modificadores e observações">
+    Toque em um produto para abrir seu painel. Ali você pode:
 
-    - Definir a **quantidade**
-    - Substituir o **preço unitário**
+    - Selecionar **grupos de modificadores** — grupos obrigatórios precisam ter uma seleção válida antes que você possa adicionar o item; grupos opcionais podem ficar vazios. Os preços dos modificadores são exibidos por opção (um selo `DEFAULT` marca as opções pré-selecionadas).
+    - Definir a **quantidade**.
+    - Adicionar uma **observação para o produto** opcional (`productComment`) — instruções para a cozinha, como "sem sal".
 
-    <Note>
-      Os preços são expressos na unidade mínima da moeda. Para BRL, informe centavos: `1200` equivale a R$12,00. Para USD, informe dólares com decimais: `5.99` equivale a $5.99. Consulte a definição do cardápio se não tiver certeza sobre a unidade usada pela moeda.
-    </Note>
-
-    Produtos que possuem grupos de modificadores (molhos, tamanhos, adicionais) exibem um botão **Editar modificadores**. Clique nele para expandir o painel de modificadores e selecionar ou desmarcar opções. Modificadores obrigatórios precisam ter uma seleção antes que a ordem possa ser injetada.
+    Toque em **Adicionar**. O item vai para a barra do carrinho na parte inferior, que permanece visível enquanto você continua navegando.
   </Step>
 
-  <Step title="Configure o pagamento">
+  <Step title="Abra o construtor de pedido">
+    Na barra do carrinho você pode ajustar quantidades ou remover linhas. Quando estiver pronto, clique em **Montar pedido** para abrir o diálogo de checkout.
+  </Step>
+
+  <Step title="Revise o preview do pedido">
+    O diálogo abre com um **preview do pedido**: cada linha mostra a imagem do produto, a quantidade, os modificadores selecionados e o preço. Você ainda pode editar a **observação por produto** aqui.
+  </Step>
+
+  <Step title="Defina o pagamento e o status da transação">
     Na seção **Pagamento**:
 
-    - **Processador**: selecione o método de pagamento (por exemplo, cartão de crédito, PIX, dinheiro) entre os processadores definidos no cardápio de teste.
-    - **Status do TX**: escolha o resultado da transação — `approved` (verde), `pending` (amarelo) ou `rejected` (vermelho). Isso controla como o FIRE trata o estado de pagamento da ordem.
-    - **Valor**: preenchido automaticamente com o total dos produtos; edite se precisar simular um cenário de divergência.
+    - **Processador** — escolha o método de pagamento disponível para o país (dinheiro, cartão, PIX, Mercado Pago, …). Cada opção exibe um ícone e um rótulo legível ao lado do seu código.
+    - **Status da transação** — `APPROVED`, `PENDING` ou `REJECTED`. Isso determina como o FIRE resolve o estado do pedido e do pagamento.
   </Step>
 
-  <Step title="Preencha os dados do cliente">
-    Na seção **Cliente**, informe os dados do consumidor. Os campos usados pelo pipeline fiscal do FIRE (obrigatórios para NFC-e / NFS-e no Brasil e documentos equivalentes em outros países) estão marcados:
+  <Step title="Preencha os dados do cliente / fiscais (opcional)">
+    Ative **Cliente / fiscal** para enviar os dados do consumidor. Os campos são definidos pelo país:
 
-    - Nome e sobrenome
-    - E-mail e telefone
-    - Tipo e número do documento de identificação
-    - E-mail de cobrança e razão social (para documentos fiscais B2B)
+    - **Tipo de documento** e **número** (seletor por país; ex.: CPF/CNPJ para o Brasil, RUC para o Equador). "Consumidor final" é o padrão anônimo.
+    - **Nome**, **sobrenome**, **e-mail**, **telefone**.
 
-    Em testes não fiscais você pode deixar a maioria dos campos em branco; o FIRE ainda aceitará a ordem.
+    Se deixado em branco, o pedido é enviado como consumidor final anônimo.
   </Step>
 
-  <Step title="Revise o preview do JSON">
-    A seção **Preview do JSON** é atualizada em tempo real conforme você preenche o formulário. Expanda-a para inspecionar o payload exato que será enviado para `POST /v1/orders`.
-
-    <Tip>
-      Se você for um usuário avançado ou quiser colar um payload bruto, alterne para o modo **Payload JSON**. Você pode colar qualquer JSON de ordem válido diretamente no editor e enviá-lo sem usar o formulário — útil para reproduzir um payload específico de produção.
-    </Tip>
+  <Step title="Adicione endereço de entrega e comentário (quando aplicável)">
+    - Quando o serviço é **DELIVERY**, um formulário de **endereço de entrega** aparece (rua, número, cidade, CEP/código postal, referência, telefone de contato).
+    - O toggle **Emitir cupom fiscal** (`invoice_print`) controla se o FIRE emite o documento fiscal. Ele vem ativado por padrão — deixe-o ativado para testes fiscais.
+    - Adicione um **comentário do pedido** opcional para o pedido inteiro.
   </Step>
 
-  <Step title="Carregue a ordem">
-    Clique em **Carregar ordem**. O FUEL envia o payload ao FIRE e exibe a resposta abaixo do botão.
+  <Step title="Injetar no FIRE">
+    Clique em **Injetar no FIRE**.
 
-    - Um banner verde confirma que a ordem foi aceita e mostra o ID da ordem no FIRE.
-    - Um banner vermelho mostra o erro retornado pelo FIRE (falha de validação, erro de autenticação, etc.).
+    - Para o **Brasil**, o botão primeiro **enriquece** o pedido via motor fiscal (você verá *Enriquecendo fiscal…* e depois *Injetando…*) e injeta o payload enriquecido. Se o enriquecimento falhar (por exemplo `FISCAL_MATRIZ_SIN_NCM`), o erro é exibido e nada é injetado.
+    - Para outros países, o pedido é injetado diretamente.
 
-    O JSON bruto da requisição e da resposta fica disponível na seção **Payload JSON** para depuração.
+    O **payload injetado** (enriquecido, no caso do Brasil) fica disponível no diálogo com **Ver**, **Copiar JSON** e **Baixar**. O banner de resultado mostra o **ID externo**, o **FIRE UID** (quando retornado), o **status** e o status de **pagamento**, e a injeção é registrada no log de resultados compartilhado à direita.
+
+    Um novo `orderId`/`orderCode` é gerado para a próxima injeção, evitando rejeições por idempotência (409).
   </Step>
 </Steps>
 
-## Avançado: editor de JSON bruto
+## Combos e fiscal
 
-Se você precisar enviar um payload que o formulário não consegue expressar — combinações incomuns de campos, testes de formato legado ou uma ordem de produção copiada — abra o editor **Payload JSON** e cole seu JSON diretamente. Os campos do formulário são ignorados quando o editor contém um objeto JSON válido.
+Combos de preço fixo são injetados como uma **única linha carregando o preço cheio no pai**, com os componentes mantidos como detalhe. Isso corresponde à forma como o POS itemiza combos e permite que o motor fiscal tribute o pai pelo seu NCM, de modo que os combos emitam cupom fiscal de ponta a ponta.
 
-Use **Regenerar IDs** para substituir o `orderId` e o `orderCode` por novos UUIDs antes de reenviar, evitando rejeições de idempotência por parte do FIRE.
+<Note>
+  Se os componentes de um combo não estiverem carregados na matriz de preços do motor fiscal (`matriz_precos`) para a loja, o motor fiscal ainda consegue tributar a única linha do pai — mas a itemização completa por componente exige que esses dados estejam carregados no lado fiscal.
+</Note>
 
 ## Relacionados
 
 <CardGroup cols={2}>
+  <Card title="Configuração" href="/pt/fuel/setup">
+    Configure ambientes, o host de catálogo e o host do motor fiscal.
+  </Card>
   <Card title="Lote" href="/pt/fuel/batch">
     Envie múltiplas ordens de uma vez com distribuições configuráveis.
   </Card>
   <Card title="Replay bruto" href="/pt/fuel/raw-replay">
     Pesquise ordens de produção e injete-as novamente em qualquer ambiente.
+  </Card>
+  <Card title="Webhooks" href="/pt/fuel/webhooks">
+    Envie eventos KDS/fiscais e gerencie endpoints mock.
   </Card>
 </CardGroup>
