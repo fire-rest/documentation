@@ -180,3 +180,57 @@ Os blocos restantes — `store`, `client`, `channel`, `orderLines`, `fulfillment
 - [`order.cancelled`](/pt/events/order-cancelled) — se ele morre antes do pagamento
 - [Confirmar pagamento](/pt/api-reference/confirm-payment) — o endpoint que quita um pedido aberto
 - [Get order](/pt/api-reference/get-order) — leia `settlement` para ver quanto foi realmente arrecadado
+
+## `data.fiscalRepresentation`
+
+A **numeração fiscal** que o ponto de venda obteve *antes* de injetar o pedido:
+cobra, pede os identificadores, imprime o comprovante e só então injeta. Por isso
+viaja no pedido e não em um evento fiscal separado — quando o pedido nasce, isso
+já aconteceu.
+
+<Warning>
+  **A presença deste bloco NÃO significa que o comprovante esteja autorizado.**
+  São os números impressos no caixa; o veredito do órgão está em
+  `lastKnown.fiscal.status`. Um ticket que diga "autorizado" só porque o bloco
+  está presente declara algo que pode não ter acontecido.
+</Warning>
+
+**É omitido** — a chave não aparece, não vem `null` — quando a venda não foi
+numerada: agregadores, países sem representação fiscal, ou comércios com a
+numeração desativada. Ramifique pela presença da chave.
+
+| Campo | O que é |
+|---|---|
+| `documentNumber` | Número visível do comprovante, composto conforme o país (`005-004-000000042`). É apresentação: para conciliar use `serie` + `sequential`. |
+| `sequential` | Sequencial atribuído pelo órgão. |
+| `serie` | Série do comprovante. `null` onde o país não a usa. |
+| `issuedAt` | Quando foi **numerado**. Não é a data de autorização. |
+| `authorizationMode` | `ONLINE`, `OFFLINE` ou `BATCH`. Conceito do provedor, não universal. |
+| `providerCode` | Identificador do adaptador que numerou. |
+| `claveAcceso` | Chave de acesso do órgão. Ausente onde o país não a emite. |
+| `numeroControl` | Número de controle. Substitui a chave de acesso onde se aplica. |
+| `providerMetadata` | **Opaco.** Definido pelo provedor; não programe contra suas chaves. |
+
+```json
+"fiscalRepresentation": {
+  "serie": "005004",
+  "sequential": "000000042",
+  "documentNumber": "005-004-000000042",
+  "claveAcceso": "1208202601000000000000110050040000000421234567810",
+  "authorizationMode": "ONLINE",
+  "issuedAt": "2026-08-13T08:11:29.744Z",
+  "providerCode": "hio",
+  "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+}
+```
+
+**Nunca muda.** O mesmo bloco viaja idêntico em todos os eventos do pedido: o que
+o cliente levou impresso não se altera porque o órgão depois autorize ou rejeite.
+O que muda é `lastKnown.fiscal`.
+
+<Note>
+  **`lastKnown.fiscal.sourceEvent` agora informa a procedência real.** Antes era
+  deduzida do status, e um `processing` semeado na injeção era reportado como
+  `fiscal.callback` sem que nenhum callback tivesse ocorrido. Esse caso agora diz
+  `order.injected`. Se você ramifica por este campo, contemple o valor novo.
+</Note>

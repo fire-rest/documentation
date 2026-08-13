@@ -1060,3 +1060,57 @@ async function onOrderCompleted(data) {
     Brazil only — fires once SEFAZ authorizes the order's fiscal document.
   </Card>
 </CardGroup>
+
+## `data.fiscalRepresentation`
+
+The **fiscal numbering** the point of sale obtained *before* injecting the order:
+it charges, requests the identifiers, prints the receipt, and only then injects.
+That is why it travels on the order and not in a separate fiscal event — by the
+time the order is born, this already happened.
+
+<Warning>
+  **The presence of this block does NOT mean the document is authorized.** These
+  are the numbers printed at the till; the tax authority's verdict is in
+  `lastKnown.fiscal.status`. A ticket that says "authorized" just because the
+  block is present states something that may never have happened.
+</Warning>
+
+**It is omitted** — the key is absent, not `null` — when the sale was not
+numbered: aggregators, countries without fiscal representation, or merchants with
+numbering turned off. Branch on whether the key is there.
+
+| Field | What it is |
+|---|---|
+| `documentNumber` | Visible receipt number, composed per country (`005-004-000000042`). Presentation only: reconcile with `serie` + `sequential`. |
+| `sequential` | Sequential assigned by the authority. |
+| `serie` | Document series. `null` where the country does not use one. |
+| `issuedAt` | When it was **numbered**. Not the authorization date. |
+| `authorizationMode` | `ONLINE`, `OFFLINE` or `BATCH`. A provider concept, not universal. |
+| `providerCode` | Identifier of the adapter that numbered. |
+| `claveAcceso` | Authority access key. Absent where the country does not issue one. |
+| `numeroControl` | Control number. Replaces the access key where it applies. |
+| `providerMetadata` | **Opaque.** Defined by the provider; do not program against its keys. |
+
+```json
+"fiscalRepresentation": {
+  "serie": "005004",
+  "sequential": "000000042",
+  "documentNumber": "005-004-000000042",
+  "claveAcceso": "1208202601000000000000110050040000000421234567810",
+  "authorizationMode": "ONLINE",
+  "issuedAt": "2026-08-13T08:11:29.744Z",
+  "providerCode": "hio",
+  "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+}
+```
+
+**It never changes.** The same block travels identically across every event of the
+order: what the customer took home printed is not altered because the authority
+later authorizes or rejects. What does change is `lastKnown.fiscal`.
+
+<Note>
+  **`lastKnown.fiscal.sourceEvent` now reports real provenance.** It used to be
+  derived from the status, so a `processing` seeded at injection was reported as
+  `fiscal.callback` even though no callback had occurred. That case now says
+  `order.injected`. If you branch on this field, account for the new value.
+</Note>
