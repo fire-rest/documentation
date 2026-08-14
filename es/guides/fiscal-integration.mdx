@@ -1,5 +1,5 @@
 ---
-title: "Integrar la fiscalización"
+title: "Integrar un punto de venta"
 description: "Cómo se reparte el trabajo entre tu canal, Fire, el proveedor fiscal y el ente tributario — y qué tiene que hacer tu punto de venta en cada paso."
 ---
 
@@ -98,11 +98,31 @@ Si ya consumís eventos de orden, **no tenés que consultar nada**: los datos fi
 por el mismo camino que el resto de la venta. La consulta directa queda para soporte y para
 cuando perdés la respuesta síncrona.
 
-<Note>
-  La compensación de la orden y el enriquecimiento de estos eventos están **en
-  implementación**. Hoy la numeración se obtiene y se guarda; consultarla por `orderCode` o
-  por `fiscalRequestId` ya funciona.
-</Note>
+### El campo que hay que leer: `data.fiscalRepresentation`
+
+La numeración llega en ese bloque, en **todos** los eventos de la orden — los cinco de las dos
+tablas de arriba.
+
+**La clave viaja siempre.** Llega en `null` cuando no se intentó numerar —agregadores, países
+sin representación fiscal, o comercios con la numeración desactivada— y con el bloque cuando
+sí. Ramificá por valor, nunca por presencia de la clave:
+
+```js
+if (data.fiscalRepresentation) {
+  // se intentó numerar — numberingStatus dice cómo salió
+  print(data.fiscalRepresentation.documentNumber)
+}
+```
+
+Que traiga bloque significa **que se intentó numerar, no que se numeró**. Una venta cobrada
+que quedó **sin comprobante fiscal** llega con los identificadores en `null` y el motivo en
+`failure` — ese caso hay que contemplarlo, porque antes era invisible.
+
+Y que traiga bloque **tampoco** significa que el comprobante esté autorizado: eso lo dice
+`lastKnown.fiscal.status`, que es el único de los dos que se actualiza.
+
+La referencia completa del bloque, campo por campo, está en
+[`order.opened`](/es/events/order-opened#data-fiscalrepresentation).
 
 ## Las tres reglas que hay que entender
 
@@ -113,19 +133,29 @@ cuando perdés la respuesta síncrona.
     - `requestStatus` — ¿conseguí números para imprimir?
     - `documentStatus` — ¿el ente lo autorizó?
 
-    Al numerar, el segundo es **siempre** `PENDING`. Eso no es un problema: en la mayoría de
-    los países se entrega el comprobante antes de que la autoridad lo vea. Si tu integración
-    colapsa los dos en un solo campo, en algún momento le vas a decir a un cliente que su
-    factura está autorizada cuando solo tiene número.
+    Cuando hay documento, el segundo es **siempre** `PENDING`. Eso no es un problema: en la
+    mayoría de los países se entrega el comprobante antes de que la autoridad lo vea. Si tu
+    integración colapsa los dos en un solo campo, en algún momento le vas a decir a un
+    cliente que su factura está autorizada cuando solo tiene número.
+
+    Cuando no hay documento del cual esperar veredicto —una tienda que no numera— viaja en
+    `null`. `PENDING` significa "hay documento y el ente no contestó todavía", así que
+    devolverlo ahí describiría una espera que nunca va a terminar.
   </Accordion>
 
   <Accordion title="La venta nunca se bloquea" icon="shield-check">
     Si el proveedor no responde a tiempo, Fire **no** devuelve un error: devuelve `202` con
-    `printing.mode: "PROVISIONAL_RECEIPT"`. Imprimís un ticket no fiscal, inyectás la orden
-    igual y Fire completa la numeración por su cuenta.
+    `printing.mode: "PROVISIONAL_RECEIPT"`. Imprimís un ticket no fiscal e inyectás la orden
+    igual.
 
-    **No reintentes la llamada en bucle ni retengas la venta.** El dinero ya se cobró; el
-    comprobante se resuelve después.
+    **No retengas la venta ni reintentes en bucle mientras el cliente espera.** El dinero ya
+    se cobró; el comprobante se resuelve después.
+
+    <Warning>
+      **Nadie la completa solo.** Para conseguir el comprobante hay que volver a llamar con
+      el **mismo `orderCode`** — Fire retoma la solicitud y le vuelve a preguntar al
+      proveedor. Un `202` que nadie reintenta se queda así para siempre.
+    </Warning>
   </Accordion>
 
   <Accordion title="Fire decide qué se imprime, no vos" icon="print">
@@ -199,8 +229,15 @@ numeración y en la inyección: es lo único que te queda en la mano.
 <Check>Ramificás por `printing.mode` y no por el código HTTP.</Check>
 <Check>No asumís que `countryIdentifiers.accessKey` siempre viene: en Venezuela no existe.</Check>
 <Check>Recorrés las claves de `graphic` en vez de buscar campos fijos.</Check>
-<Check>Ante `202` imprimís provisional e inyectás igual, sin reintentar en bucle.</Check>
+<Check>Ante `202` imprimís provisional e inyectás igual, sin reintentar en bucle en la caja.</Check>
+<Check>Tenés cómo reintentar un `202` después, con el mismo `orderCode`: nadie lo completa solo.</Check>
 
-<Card title="Referencia del endpoint" icon="code" href="/es/api-reference/fiscal-documents">
-  Campos, respuestas y ejemplos por país.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Referencia del endpoint" icon="code" href="/es/api-reference/fiscal-documents">
+    Campos, respuestas y ejemplos por país.
+  </Card>
+  <Card title="¿Sos un proveedor fiscal?" icon="plug" href="/es/fiscal-providers/overview">
+    Esta guía es para quien **consume** la numeración. Si vas a **proveerla**, el contrato
+    que tenés que implementar es otro.
+  </Card>
+</CardGroup>
