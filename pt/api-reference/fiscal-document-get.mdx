@@ -1,0 +1,96 @@
+---
+title: "Consultar uma solicitação fiscal"
+api: "GET /api/v1/external/fiscal/numbering/{fiscalRequestId}"
+description: "Retorna o estado atual de uma solicitação de numeração pelo identificador — incluindo o veredito do órgão quando já chegou."
+---
+
+Retorna **o mesmo contrato** que [`POST /numbering`](/pt/api-reference/fiscal-documents),
+com o estado atualizado. O que muda entre uma chamada e outra é `documentStatus`:
+nasce em `PENDING` e passa a `AUTHORIZED` quando o órgão se pronuncia.
+
+<Info>
+  **Na operação diária você não deveria precisar disto.** Os identificadores já
+  chegam em `data.fiscalRepresentation` nos eventos do pedido, e o veredito do
+  órgão em `lastKnown.fiscal.status`. Este endpoint existe para quando o caminho
+  normal não basta: você perdeu a resposta síncrona por uma queda de rede, ou quer
+  confirmar o estado sem esperar o evento.
+</Info>
+
+## Autenticação
+
+| | |
+|---|---|
+| Header | `x-api-key: pk_live_…` |
+| Scope | `fiscal:write` |
+
+É o **mesmo scope de emissão**, de propósito: quem pode numerar pode consultar o
+que numerou. Não há um scope somente-leitura que conceda menos.
+
+O *tenant* sai da chave, nunca do request. Uma solicitação de outra conta retorna
+`404`, igual a uma que não existe — as duas são indistinguíveis para não vazar
+quais identificadores são reais.
+
+## Parâmetros de rota
+
+<ParamField path="fiscalRequestId" type="string" required>
+  O `fiscalRequestId` devolvido pela numeração. É um UUID.
+</ParamField>
+
+## Resposta
+
+Idêntica à de `POST /numbering` — veja
+[a referência completa do contrato](/pt/api-reference/fiscal-documents#resposta).
+
+<ResponseExample>
+```json 200 — o órgão já autorizou
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "9afef543-56ce-4911-a92e-5908366fa980",
+    "orderCode": "EC-K004-42-1786579046934",
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "GENERATED",
+    "documentStatus": "AUTHORIZED",
+    "retryable": false,
+    "document": {
+      "documentType": "SALE_INVOICE",
+      "documentNumber": "005-004-000000045",
+      "sequential": "000000045",
+      "serie": "005004",
+      "authorizationMode": "ONLINE",
+      "issuedAt": "2026-08-13T13:33:41.438Z"
+    },
+    "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+    "graphic": { "qr": "1208202601000000000000110050040000000451234567817" },
+    "failure": null,
+    "countryIdentifiers": {
+      "accessKey": "1208202601000000000000110050040000000451234567817",
+      "countryCode": "EC"
+    }
+  }
+}
+```
+
+```json 404 — não existe, ou é de outra conta
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "FiscalRequest not found"
+}
+```
+</ResponseExample>
+
+## Erros
+
+| Código | Quando |
+|---|---|
+| `401` | A API key falta, não existe ou está revogada |
+| `403` | A key não tem o scope `fiscal:write` |
+| `404` | O `fiscalRequestId` não existe **ou pertence a outra conta** |
+
+## Relacionado
+
+- [Solicitar numeração fiscal](/pt/api-reference/fiscal-documents) — o `POST` que a cria
+- [Listar solicitações de um pedido](/pt/api-reference/fiscal-documents-query) — quando você só tem o `orderCode`
+- [Dados de impressão fiscal](/pt/api-reference/fiscal-print) — o que o caixa lê para reimprimir

@@ -1,0 +1,311 @@
+---
+title: "Qué llega al integrador"
+description: "Cómo lo que devuelve el proveedor termina viajando en los eventos de la orden — y qué consecuencia tiene cada campo."
+---
+
+Lo que el proveedor devuelve no se queda en la respuesta síncrona. **Se adjunta a la orden y
+viaja en todos sus eventos**, así que cada campo de la respuesta tiene un consumidor final
+que no es FIRE.
+
+Esta página existe para cerrar ese círculo: si estás implementando el endpoint, acá ves qué
+pasa con lo que devolvés.
+
+## El recorrido
+
+```
+proveedor  ──respuesta──▶  FIRE  ──se adjunta a la orden──▶  eventos  ──▶  integrador del POS
+```
+
+El punto de venta numera **antes** de que la orden exista: cobra, pide los números, imprime,
+y recién después inyecta la venta. Al inyectar, FIRE busca la numeración de ese `orderCode`
+y la pega a la orden. Desde ahí viaja en `data.fiscalRepresentation` de
+[`order.opened`](/es/events/order-opened), [`order.completed`](/es/events/order-completed),
+[`order.invoiced`](/es/events/order-invoiced), [`order.cancelled`](/es/events/order-cancelled)
+y [`order.reversed`](/es/events/order-reversed).
+
+## Campo por campo
+
+Ecuador, que es el bloque `document` de `/fiscal/ec/prekeys`:
+
+| Lo que devolvés | Llega al evento como | Nota |
+|---|---|---|
+| `document.secuencial` | `sequential` | |
+| `document.establecimiento` + `document.puntoEmision` | `serie` | Concatenados: `005` + `004` |
+| `document.claveAcceso` | `claveAcceso` | |
+| `document.ambiente` | — | No viaja: FIRE lo usa para verificar contra el ambiente configurado |
+| `authorizationMode` | `authorizationMode` | En la raíz, no en `document` |
+| `issuedAt` | `issuedAt` | En la raíz, no en `document` |
+| `graphic` | `graphic` | **Tal cual**, sin interpretar |
+| `failure` | `failure` | `code`, `scope` y `message` |
+| `metadata` | `providerMetadata` | **Tal cual**, opaco |
+| *(derivado)* | `documentNumber` | Lo componemos nosotros |
+| *(derivado)* | `numberingStatus` | De tu HTTP + `retryable` |
+| *(derivado)* | `documentType` | De la `operation` que pidió el canal |
+
+Un ejemplo completo, con datos reales:
+
+<CodeGroup>
+```json Lo que devolvés
+{
+  "status": "INVOICED",
+  "document": {
+    "sequential": "000000052",
+    "serie": "005004",
+    "accessKey": "1308202601000000000000110050040000000521234567811",
+    "controlNumber": null,
+    "authorizationMode": "ONLINE",
+    "issuedAt": "2026-08-13T15:47:26Z"
+  },
+  "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
+  "failure": null,
+  "metadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+}
+```
+
+```json Lo que ve el integrador
+"fiscalRepresentation": {
+  "numberingStatus": "GENERATED",
+  "documentType": "SALE_INVOICE",
+  "documentNumber": "005-004-000000052",
+  "sequential": "000000052",
+  "serie": "005004",
+  "issuedAt": "2026-08-13T15:47:26Z",
+  "authorizationMode": "ONLINE",
+  "providerCode": "hio",
+  "claveAcceso": "1308202601000000000000110050040000000521234567811",
+  "numeroControl": null,
+  "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
+  "failure": null,
+  "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+}
+```
+</CodeGroup>
+
+<Note>
+  **El bloque siempre tiene las mismas 13 claves**, en `null` las que no apliquen. Un
+  `numeroControl: null` en un comprobante ecuatoriano no es una clave faltante: es la
+  respuesta a "¿este país lo emite?".
+</Note>
+
+## Los cuatro casos, completos
+
+Estos son **todos** los estados que puede tener el bloque, y qué respuesta tuya los produce.
+El bloque siempre trae las mismas 13 claves: lo que cambia son los valores.
+
+<AccordionGroup>
+  <Accordion title="GENERATED — numeraste, hay comprobante" icon="circle-check">
+  Devolviste `2xx` con `document`.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "GENERATED",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": "005-004-000000052",
+    "sequential": "000000052",
+    "serie": "005004",
+    "issuedAt": "2026-08-13T15:47:26Z",
+    "authorizationMode": "ONLINE",
+    "providerCode": "hio",
+    "claveAcceso": "1308202601000000000000110050040000000521234567811",
+    "numeroControl": null,
+    "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
+    "failure": null,
+    "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+  }
+  ```
+
+  El integrador imprime y concilia. `numeroControl` va en `null` porque Ecuador no lo emite.
+  </Accordion>
+
+  <Accordion title="FAILED_FINAL — rechazaste y reintentar no sirve" icon="circle-xmark">
+  Devolviste no-`2xx` con `retryable: false`.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "FAILED_FINAL",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": null,
+    "sequential": null,
+    "serie": null,
+    "issuedAt": null,
+    "authorizationMode": null,
+    "providerCode": "hio",
+    "claveAcceso": null,
+    "numeroControl": null,
+    "graphic": null,
+    "failure": {
+      "code": "UNMAPPED_STORE_IDENTITY",
+      "scope": "FUNCTIONAL",
+      "message": "identidad fiscal no configurada: EC / la tienda K004 no está cargada en el catálogo de identidades fiscales"
+    },
+    "providerMetadata": {
+      "failure": {
+        "code": "UNMAPPED_STORE_IDENTITY",
+        "details": [{ "field": "store.code", "issue": "no está en el catálogo de identidades fiscales" }]
+      }
+    }
+  }
+  ```
+
+  **Es una venta cobrada sin comprobante fiscal.** El integrador compensa de su lado y
+  devuelve el comprobante por el callback. Reintentar no lo arregla: hay que corregir el dato.
+  </Accordion>
+
+  <Accordion title="FAILED_RETRYABLE — rechazaste, pero se puede reintentar" icon="rotate-right">
+  Devolviste no-`2xx` con `retryable: true`.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "FAILED_RETRYABLE",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": null,
+    "sequential": null,
+    "serie": null,
+    "issuedAt": null,
+    "authorizationMode": null,
+    "providerCode": "hio",
+    "claveAcceso": null,
+    "numeroControl": null,
+    "graphic": null,
+    "failure": {
+      "code": "PROVIDER_UNAVAILABLE",
+      "scope": "TECHNICAL",
+      "message": "El servicio de fiscalización no está disponible."
+    },
+    "providerMetadata": null
+  }
+  ```
+
+  Mismo bloque que el anterior; cambia el `numberingStatus` y el `scope`. **No hay
+  comprobante, pero puede haberlo**: el canal reintenta con el mismo `orderCode`.
+  </Accordion>
+
+  <Accordion title="PENDING — no respondiste" icon="circle-question">
+  Hubo timeout o se cortó la conexión. **Vos nunca producís este estado**: decirlo
+  implicaría haber contestado.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "PENDING",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": null,
+    "sequential": null,
+    "serie": null,
+    "issuedAt": null,
+    "authorizationMode": null,
+    "providerCode": "hio",
+    "claveAcceso": null,
+    "numeroControl": null,
+    "graphic": null,
+    "failure": {
+      "code": "PROVIDER_TIMEOUT",
+      "scope": "TECHNICAL",
+      "message": "El proveedor fiscal no respondió dentro del tiempo configurado."
+    },
+    "providerMetadata": null
+  }
+  ```
+
+  <Warning>
+    **Es el estado más delicado, y el que más fácil se malinterpreta.** No significa "no hay
+    comprobante": significa **no sabemos**. Pudiste haber numerado, consumido un secuencial y
+    emitido el documento, y la respuesta se perdió volviendo.
+
+    Un integrador que lo lea como "no hay comprobante" y compense emitiendo otro, **declara
+    la misma venta dos veces ante el ente**. Con `FAILED_RETRYABLE` esa compensación es
+    correcta; con `PENDING` es un error caro.
+
+    Por eso **tu deduplicación tiene que ser por `orderCode`**: el reintento llega con el
+    mismo `orderCode` y vos devolvés **el mismo documento** con `reused: true`, en vez de
+    numerar otro. No esperes un header de idempotencia — no te mandamos ninguno.
+  </Warning>
+  </Accordion>
+</AccordionGroup>
+
+### Y el caso sin numeración
+
+Cuando la venta no pasó por ningún proveedor —el comercio no factura, o el país no tiene
+gateway fiscal— el bloque entero viaja en `null`:
+
+```json
+"fiscalRepresentation": null
+```
+
+Nunca se omite la clave. El integrador ramifica por valor:
+
+```js
+if (data.fiscalRepresentation) {
+  // se intentó numerar — numberingStatus dice cómo salió
+}
+```
+
+<Note>
+  **`documentType` hoy siempre es `SALE_INVOICE`** en los eventos de la orden. `CREDIT_NOTE`
+  existe en el contrato —lo produce `operation: "CANCEL"`— pero la numeración de la anulación
+  todavía no se adjunta a la orden. Cuando se habilite, es el mismo bloque con
+  `documentType: "CREDIT_NOTE"`.
+</Note>
+
+## Tres campos que conviene entender bien
+
+### `metadata` — es tuyo y viaja entero
+
+Lo que pongas en `metadata` llega al integrador **sin tocar**, en `providerMetadata`. No lo
+interpretamos, no lo validamos, no lo renombramos.
+
+Eso tiene dos caras:
+
+<Warning>
+  **Es el único campo de la respuesta que no controlamos.** Si metés ahí algo sensible —una
+  credencial, un identificador interno de tu infraestructura, un dato de otro cliente— lo
+  estás publicando al integrador del punto de venta.
+</Warning>
+
+Y del otro lado: **nadie debe programar contra sus claves.** Está declarado opaco justamente
+para que puedas cambiarlo sin romper a nadie. Si un dato es lo bastante importante como para
+que el integrador ramifique por él, no va en `metadata` — va en el contrato.
+
+### `graphic` — es lo único que no se puede derivar
+
+Todo lo demás de la respuesta se puede reconstruir o componer. `graphic` no: **el QR de la
+NFC-e brasileña es una URL firmada con un hash que solo puede construir el emisor.** Si no
+llega, el comprobante se imprime sin QR.
+
+Viaja tal cual, sin transformar: FIRE se lo pasa al punto de venta, que lo renderiza con su
+propia librería. No generamos imágenes de este lado — el tamaño y la resolución dependen de
+la impresora, y eso solo lo sabe quien imprime.
+
+### `failure` — le habilita la compensación al otro extremo
+
+Cuando la numeración falla, el error **no se queda en un log**: viaja en el evento. La venta
+se cobró igual y el integrador necesita saber que quedó sin comprobante fiscal.
+
+Con eso puede compensar de su lado y devolver el comprobante por el callback. Sin eso, una
+venta cobrada sin comprobante es indistinguible de una cuenta que no factura.
+
+Por eso `failure.code` tiene que ser estable y `failure.message` accionable: no los lee solo
+nuestro equipo de soporte, los lee el sistema del cliente final.
+
+## Lo que NO viaja a los eventos
+
+| No viaja | Por qué |
+|---|---|
+| `status` (`INVOICED` / `CANCELLED`) | Ya lo dice `documentType` |
+| `reused` | Es de la conversación con vos, no de la venta |
+| `retryable` | Se refleja en `numberingStatus` |
+| `provider.name` / `.version` | Diagnóstico interno |
+| `country` | Ya está en la orden |
+
+## Y el veredicto del ente, aparte
+
+`fiscalRepresentation` son **los números que se imprimieron**, y no cambian nunca. Que existan
+**no** significa que el ente haya autorizado el comprobante.
+
+El veredicto llega después por tu callback y viaja en otro lugar del evento:
+
+```json
+"lastKnown": { "fiscal": { "status": "authorized", "sourceEvent": "order.invoiced" } }
+```
+
+Son dos ciclos de vida distintos y el contrato los mantiene separados a propósito: uno es
+inmutable y el otro se actualiza.
