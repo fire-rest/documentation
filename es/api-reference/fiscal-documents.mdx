@@ -266,6 +266,26 @@ que el proveedor de ese país necesite.
   </Note>
 </ResponseField>
 
+<ResponseField name="environment" type="string">
+  En qué ambiente numeró **Fire**: `SANDBOX` o `PRODUCTION`.
+
+  Es nuestro, no del ente. Sale de la configuración fiscal de la cuenta —que es por vendor y
+  por país, así que la misma cuenta puede tener Ecuador en producción y Venezuela en
+  sandbox— y queda congelado en la solicitud: si mañana se cambia la configuración, este
+  valor sigue diciendo con qué numeró **esta** venta.
+
+  <Warning>
+    **No lo confundas con el ambiente del ente**, que viaja dentro de `countryData` con el
+    vocabulario del país (`ambiente: "PRUEBAS" | "PRODUCCION"` en Ecuador). Son dos hechos
+    distintos: uno dice contra qué configuración emitió Fire, el otro qué declaró el
+    organismo. Normalmente coinciden — y cuando no, eso es exactamente lo que hay que poder
+    ver, por eso no se deduce uno del otro.
+  </Warning>
+
+  `null` cuando `requestStatus` es `NOT_APPLICABLE`: no se numeró, así que no hubo ambiente
+  en el que numerar.
+</ResponseField>
+
 <ResponseField name="document" type="object">
   Lo que necesitás para imprimir, **sin saber de países**. `null` si no se numeró.
 
@@ -364,6 +384,55 @@ que el proveedor de ese país necesite.
     `countryData.claveAcceso` a secas funciona en Ecuador y se rompe en el segundo país.
   </Warning>
 </ResponseField>
+
+### `countryData` por país
+
+Hoy el gateway numera en **Ecuador**. Cada país que entra suma su pestaña acá — y solo eso: la
+forma de la respuesta no cambia, porque el bloque es abierto.
+
+<Tabs>
+  <Tab title="Ecuador (EC) · disponible">
+    Comprobantes del **SRI**.
+
+    | Clave | Tipo | Siempre | Notas |
+    |---|---|---|---|
+    | `claveAcceso` | string | ✓ | 49 dígitos. Es también lo que se codifica en el QR |
+    | `establecimiento` | string | ✓ | 3 dígitos. Lo resuelve el proveedor desde `store.code` |
+    | `puntoEmision` | string | ✓ | 3 dígitos. Lo resuelve el proveedor desde `device.uid` |
+    | `secuencial` | string | ✓ | 9 dígitos. La factura y la nota de crédito llevan **secuencias distintas** |
+    | `ambiente` | string | ✓ | `PRUEBAS` o `PRODUCCION` — **ya traducido**; el SRI lo define como `"1"` / `"2"` |
+
+    ```json
+    {
+      "claveAcceso": "1208202601179141513200110010200000001231234567813",
+      "establecimiento": "001",
+      "puntoEmision": "020",
+      "secuencial": "000000123",
+      "ambiente": "PRODUCCION"
+    }
+    ```
+
+    <Note>
+      **`documentNumber` no está acá porque no lo emite el SRI.** Lo compone Fire con estas
+      piezas —`establecimiento-puntoEmision-secuencial`— para que puedas imprimirlo sin conocer
+      la convención del país.
+    </Note>
+  </Tab>
+
+  <Tab title="Otros países · cuando entren">
+    Un país entra con su adaptador, y con él llegan sus claves y su pestaña. La forma de la
+    respuesta **no cambia**: `countryData` sigue siendo el mismo mapa abierto.
+
+    Lo que sí cambia es el vocabulario, y por eso no conviene indexar claves fijas: Brasil habla
+    de `chaveAcesso`, Colombia de `cufe`, Venezuela de `numeroControl`. Son ejemplos de cómo
+    nombra cada régimen, no un contrato ya disponible.
+
+    <Warning>
+      **Si tu integración opera en más de un país, recorré las claves.** Un canal que lea
+      `countryData.claveAcceso` directo funciona en Ecuador y se rompe con el primero que sume.
+    </Warning>
+  </Tab>
+</Tabs>
 
 <ResponseField name="store" type="object">
   La **sucursal** que emite, para el encabezado del comprobante.
@@ -501,6 +570,44 @@ que el proveedor de ese país necesite.
   </Warning>
 </ResponseField>
 
+<ResponseField name="providerCode" type="string">
+  **Nuestro** identificador de adaptador (`hio`), no el nombre del proveedor. Es lo que dice
+  con qué integración se numeró esta venta. `null` en `NOT_APPLICABLE`: no intervino ninguno.
+</ResponseField>
+
+<ResponseField name="providerIdentity" type="object">
+  Quién numeró, del lado del proveedor. **Tiene forma** —los tres campos son parte del
+  contrato— y por eso viaja separado de la bolsa opaca. `null` cuando no se numeró.
+
+  <Expandable title="providerIdentity">
+    <ResponseField name="name" type="string">
+      Identificador estable del servicio que resolvió la numeración.
+    </ResponseField>
+    <ResponseField name="version" type="string">
+      Qué versión la resolvió. Es lo que permite acotar un problema a un despliegue.
+    </ResponseField>
+    <ResponseField name="reference" type="string">
+      **La referencia de soporte del proveedor**: el identificador que le citás a él para que
+      encuentre esta operación en sus propios registros. **No es tu `Idempotency-Key`** — esa
+      la mandaste vos y vuelve en `idempotencyKey`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="providerMetadata" type="object">
+  La bolsa de diagnóstico del proveedor, tal cual llegó. **Opaca**: no tiene forma garantizada
+  y nadie debe programar contra sus claves — cambian sin previo aviso y sin versionar el
+  contrato. Sirve para pegarla en un ticket, no para ramificar.
+
+  `null` cuando el proveedor no mandó nada.
+
+  <Note>
+    **Es el mismo campo que viaja en el evento**, con el mismo nombre y el mismo contenido.
+    Los tres campos del proveedor —`providerCode`, `providerIdentity`, `providerMetadata`—
+    se leen igual acá y en `fiscalRepresentation`: lo que aprendés en un extremo sirve en el otro.
+  </Note>
+</ResponseField>
+
 ## Códigos de estado
 
 <Warning>
@@ -591,6 +698,7 @@ que el proveedor de ese país necesite.
       "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "AWAITING_FISCAL_NUMBERING" },
       "graphic": null,
       "retryable": true,
+      "environment": "PRODUCTION",
       "failure": {
         "code": "PROVIDER_TIMEOUT",
         "scope": "TECHNICAL",
@@ -613,6 +721,7 @@ que el proveedor de ese país necesite.
       "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "AWAITING_FISCAL_NUMBERING" },
       "graphic": null,
       "retryable": true,
+      "environment": "PRODUCTION",
       "failure": {
         "code": "PROVIDER_UNAVAILABLE",
         "scope": "TECHNICAL",
@@ -636,6 +745,7 @@ que el proveedor de ese país necesite.
       "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "FISCAL_REJECTED" },
       "graphic": null,
       "retryable": false,
+      "environment": "PRODUCTION",
       "failure": {
         "code": "FISCAL_BUSINESS_RULE",
         "scope": "FUNCTIONAL",
@@ -803,6 +913,7 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "requestStatus": "GENERATED",
     "documentStatus": "PENDING",
     "retryable": false,
+    "environment": "PRODUCTION",
     "document": {
       "documentType": "SALE_INVOICE",
       "documentLabel": "FACTURA",
@@ -848,7 +959,10 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       "respondedAt": "2026-08-12T23:57:47.2Z",
       "providerLatencyMs": 406
     },
-    "correlationId": null
+    "correlationId": null,
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K000" }
   }
 }
 ```
@@ -865,6 +979,7 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "requestStatus": "GENERATED",
     "documentStatus": "PENDING",
     "retryable": false,
+    "environment": "PRODUCTION",
     "document": {
       "documentType": "CREDIT_NOTE",
       "documentLabel": "NOTA DE CREDITO RIDE",
@@ -888,7 +1003,10 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     },
     "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
     "graphic": { "qr": "1408202604179141513200110050040000000021234567815" },
-    "failure": null
+    "failure": null,
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K000" }
   }
 }
 ```
@@ -904,6 +1022,7 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "requestStatus": "PENDING",
     "documentStatus": "PENDING",
     "retryable": true,
+    "environment": "PRODUCTION",
     "document": null,
     "countryData": null,
     "graphic": null,
@@ -916,7 +1035,10 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       "code": "PROVIDER_UNREACHABLE",
       "scope": "TECHNICAL",
       "message": "No se pudo establecer comunicación con el proveedor fiscal."
-    }
+    },
+    "providerCode": "hio",
+    "providerIdentity": { "name": null, "version": null, "reference": null },
+    "providerMetadata": null
   }
 }
 ```
@@ -932,6 +1054,7 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "requestStatus": "FAILED_RETRYABLE",
     "documentStatus": "PENDING",
     "retryable": true,
+    "environment": "PRODUCTION",
     "document": null,
     "countryData": null,
     "graphic": null,
@@ -944,7 +1067,10 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       "code": "PROVIDER_UNAVAILABLE",
       "scope": "TECHNICAL",
       "message": "El servicio de fiscalización no está disponible."
-    }
+    },
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": null
   }
 }
 ```
@@ -960,6 +1086,7 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "requestStatus": "FAILED_FINAL",
     "documentStatus": "PENDING",
     "retryable": false,
+    "environment": "PRODUCTION",
     "document": null,
     "countryData": null,
     "graphic": null,
@@ -972,7 +1099,10 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       "code": "FISCAL_BUSINESS_RULE",
       "scope": "FUNCTIONAL",
       "message": "identidad fiscal de tienda no configurada: EC / tienda EC-UIO-001"
-    }
+    },
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": null
   }
 }
 ```
@@ -989,6 +1119,7 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "requestStatus": "NOT_APPLICABLE",
     "documentStatus": null,
     "retryable": false,
+    "environment": null,
     "document": null,
     "countryData": null,
     "graphic": null,
@@ -999,7 +1130,10 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       "respondedAt": "2026-08-14T01:01:14.7Z",
       "providerLatencyMs": null
     },
-    "correlationId": null
+    "correlationId": null,
+    "providerCode": null,
+    "providerIdentity": null,
+    "providerMetadata": null
   }
 }
 ```

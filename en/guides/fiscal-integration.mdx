@@ -18,8 +18,8 @@ design decision, so it is worth starting there.
     numbers, and tells you what can be printed.
   </Card>
   <Card title="The fiscal provider" icon="stamp">
-    Translates to the authority's codes, assigns series and sequential, and submits the
-    document.
+    Translates to the authority's codes, numbers with its country vocabulary, and submits
+    the document.
   </Card>
   <Card title="The tax authority" icon="landmark">
     Approves or rejects. Its verdict arrives **after** the customer has left with the
@@ -45,7 +45,7 @@ sequenceDiagram
 
     POS->>Fire: 1. POST /fiscal/numbering
     Fire->>Prov: 2. requests the numbering
-    Prov-->>Fire: series + sequential + key
+    Prov-->>Fire: document + countryData (the country vocabulary)
     Fire-->>POS: 3. document + graphic + printing
     POS->>POS: 4. prints the receipt
     POS->>Fire: 5. injects the order (same orderCode)
@@ -121,6 +121,37 @@ handle that case, because it used to be invisible.
 
 And carrying the block does **not** mean the document is authorized either: that is what
 `lastKnown.fiscal.status` says, and it is the only one of the two that gets updated.
+
+#### What the block carries
+
+Three layers, and it pays not to mix them:
+
+| Layer | What is in it | How to read it |
+|---|---|---|
+| **Canonical** | `documentType`, `documentNumber`, `issuedAt`, `authorizationMode`, `numberingStatus`, `environment` | They mean the same in every country. This is what you program against |
+| **Country** | `countryData` | The vocabulary of the authority that numbered: `claveAcceso` in Ecuador, `numeroControl` in Venezuela. **Iterate it, do not index it** |
+| **Provider** | `providerCode`, `providerIdentity`, `providerMetadata` | Diagnostics. See below |
+
+The three provider fields are **not the same thing**, which is why they travel apart:
+
+- **`providerCode`** is **our** adapter identifier (`hio`). It says which integration numbered.
+- **`providerIdentity`** belongs to the provider and **has a shape**: `name`, `version` and
+  `reference`. That `reference` is the one you quote back to them when a case needs escalating
+  — it is not your `Idempotency-Key`.
+- **`providerMetadata`** is an **opaque bag**: no guaranteed shape, the provider owns the keys
+  and may change them without notice. It is for pasting into a support ticket.
+
+<Warning>
+  **Do not branch on `providerMetadata` keys.** Programming against them ties your integration
+  to whichever provider numbers today, and they change without versioning the contract. If a
+  piece of data matters enough to decide with, it will be in the canonical layer or in
+  `countryData`.
+</Warning>
+
+The block also carries **the order's current document**, not the first one: if a cancellation
+happened, the credit note is on top, `compensates` points at the invoice it voids, and the
+whole invoice sits in `history`. Every `history` entry has **exactly the same keys** as the
+block above, so they read the same.
 
 The full field-by-field reference lives in
 [`order.opened`](/en/events/order-opened#data-fiscalrepresentation).
@@ -200,6 +231,16 @@ Which instrument materializes the cancellation is decided by the country: in Ecu
 credit note with its own sequential; in Brazil, a cancellation event that produces no new
 document.
 
+**From then on the order carries the credit note on top.** The following events bring
+`documentType: "CREDIT_NOTE"` in `fiscalRepresentation`, with `compensates` pointing at the
+voided invoice and the whole invoice in `history`.
+
+<Warning>
+  **If your reconciliation assumes `documentNumber` is always the sale's, it breaks here.** The
+  number on top becomes the credit note's. What the customer walked away with is not lost —it
+  is in `history`— but you have to go there for it.
+</Warning>
+
 ## If you lose the response
 
 It happens: the network drops right after Fire numbered. The receipt exists and you do not
@@ -219,8 +260,10 @@ injection: it is the only thing left in your hand.
 <Check>You store the `Idempotency-Key` with the order and reuse it on retries.</Check>
 <Check>Each device declares its own `device.externalId` — two registers in a store do not share one.</Check>
 <Check>You branch on `printing.mode`, not on the HTTP status code.</Check>
-<Check>You do not assume `countryIdentifiers.accessKey` always comes: in Venezuela it does not exist.</Check>
+<Check>You iterate `countryData` instead of indexing fixed keys: the numbering country sets them, and in Venezuela there is no `claveAcceso`.</Check>
 <Check>You iterate over the keys of `graphic` instead of looking for fixed fields.</Check>
+<Check>You do not branch on `providerMetadata` keys: it is the provider’s opaque bag and it changes without notice.</Check>
+<Check>Your reconciliation accounts for the credit note being the top document after a cancellation, with the invoice in `history`.</Check>
 <Check>On `202` you print provisional and inject anyway, without retrying in a loop.</Check>
 
 <Card title="Endpoint reference" icon="code" href="/en/api-reference/fiscal-documents">
