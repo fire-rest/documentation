@@ -29,14 +29,17 @@ Ecuador, que es el bloque `document` de `/fiscal/ec/prekeys`:
 
 | Lo que devolvés | Llega al evento como | Nota |
 |---|---|---|
-| `document.secuencial` | `sequential` | |
-| `document.establecimiento` + `document.puntoEmision` | `serie` | Concatenados: `005` + `004` |
-| `document.claveAcceso` | `claveAcceso` | |
-| `document.ambiente` | — | No viaja: FIRE lo usa para verificar contra el ambiente configurado |
+| `document.secuencial` | `countryData.secuencial` | Con **tu** nombre, sin traducir |
+| `document.establecimiento` | `countryData.establecimiento` | |
+| `document.puntoEmision` | `countryData.puntoEmision` | |
+| `document.claveAcceso` | `countryData.claveAcceso` | |
+| `document.ambiente` | `countryData.ambiente` | Viaja **crudo** (`"1"`/`"2"`). FIRE además lo verifica contra el ambiente configurado, y publica el suyo aparte en `environment` |
+| — | `documentNumber` | **Lo arma FIRE**: `establecimiento-puntoEmision-secuencial`. No lo mandás vos |
 | `authorizationMode` | `authorizationMode` | En la raíz, no en `document` |
 | `issuedAt` | `issuedAt` | En la raíz, no en `document` |
 | `graphic` | `graphic` | **Tal cual**, sin interpretar |
 | `failure` | `failure` | `code`, `scope` y `message` |
+| `provider` | `providerIdentity` | **Tal cual**: `name`, `version` y `reference` |
 | `metadata` | `providerMetadata` | **Tal cual**, opaco |
 | *(derivado)* | `documentNumber` | Lo componemos nosotros |
 | *(derivado)* | `numberingStatus` | De tu HTTP + `retryable` |
@@ -49,8 +52,6 @@ Un ejemplo completo, con datos reales:
 {
   "status": "INVOICED",
   "document": {
-    "sequential": "000000052",
-    "serie": "005004",
     "accessKey": "1308202601000000000000110050040000000521234567811",
     "controlNumber": null,
     "authorizationMode": "ONLINE",
@@ -58,6 +59,7 @@ Un ejemplo completo, con datos reales:
   },
   "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
   "failure": null,
+  "provider": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
   "metadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
 }
 ```
@@ -67,30 +69,35 @@ Un ejemplo completo, con datos reales:
   "numberingStatus": "GENERATED",
   "documentType": "SALE_INVOICE",
   "documentNumber": "005-004-000000052",
-  "sequential": "000000052",
-  "serie": "005004",
   "issuedAt": "2026-08-13T15:47:26Z",
   "authorizationMode": "ONLINE",
   "providerCode": "hio",
-  "claveAcceso": "1308202601000000000000110050040000000521234567811",
-  "numeroControl": null,
+  "countryData": {
+    "claveAcceso": "1308202601000000000000110050040000000521234567811",
+    "establecimiento": "005",
+    "puntoEmision": "004",
+    "secuencial": "000000052",
+    "ambiente": "2"
+  },
   "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
   "failure": null,
+  "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
   "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
 }
 ```
 </CodeGroup>
 
 <Note>
-  **El bloque siempre tiene las mismas 13 claves**, en `null` las que no apliquen. Un
-  `numeroControl: null` en un comprobante ecuatoriano no es una clave faltante: es la
-  respuesta a "¿este país lo emite?".
+  **El bloque de arriba siempre tiene las mismas claves**, en `null` las que no
+  apliquen — es contra eso que programás. Lo que cambia por país vive adentro de
+  `countryData`, y ahí viajan **solo** las claves del país que numeró: un comprobante
+  ecuatoriano no lleva `numeroControl`, ni uno venezolano `claveAcceso`.
 </Note>
 
 ## Los cuatro casos, completos
 
 Estos son **todos** los estados que puede tener el bloque, y qué respuesta tuya los produce.
-El bloque siempre trae las mismas 13 claves: lo que cambia son los valores.
+El bloque de arriba siempre trae las mismas 12 claves: lo que cambia son los valores y el contenido de `countryData`.
 
 <AccordionGroup>
   <Accordion title="GENERATED — numeraste, hay comprobante" icon="circle-check">
@@ -101,20 +108,24 @@ El bloque siempre trae las mismas 13 claves: lo que cambia son los valores.
     "numberingStatus": "GENERATED",
     "documentType": "SALE_INVOICE",
     "documentNumber": "005-004-000000052",
-    "sequential": "000000052",
-    "serie": "005004",
     "issuedAt": "2026-08-13T15:47:26Z",
     "authorizationMode": "ONLINE",
     "providerCode": "hio",
-    "claveAcceso": "1308202601000000000000110050040000000521234567811",
-    "numeroControl": null,
+    "countryData": {
+      "claveAcceso": "1308202601000000000000110050040000000521234567811",
+      "establecimiento": "005",
+      "puntoEmision": "004",
+      "secuencial": "000000052",
+      "ambiente": "2"
+    },
     "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
     "failure": null,
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
     "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
   }
   ```
 
-  El integrador imprime y concilia. `numeroControl` va en `null` porque Ecuador no lo emite.
+  El integrador imprime y concilia. `countryData` trae el vocabulario del SRI y nada de otros países.
   </Accordion>
 
   <Accordion title="FAILED_FINAL — rechazaste y reintentar no sirve" icon="circle-xmark">
@@ -125,25 +136,19 @@ El bloque siempre trae las mismas 13 claves: lo que cambia son los valores.
     "numberingStatus": "FAILED_FINAL",
     "documentType": "SALE_INVOICE",
     "documentNumber": null,
-    "sequential": null,
-    "serie": null,
     "issuedAt": null,
     "authorizationMode": null,
     "providerCode": "hio",
-    "claveAcceso": null,
-    "numeroControl": null,
+    "countryData": null,
     "graphic": null,
     "failure": {
       "code": "UNMAPPED_STORE_IDENTITY",
       "scope": "FUNCTIONAL",
       "message": "identidad fiscal no configurada: EC / la tienda K004 no está cargada en el catálogo de identidades fiscales"
     },
-    "providerMetadata": {
-      "failure": {
-        "code": "UNMAPPED_STORE_IDENTITY",
-        "details": [{ "field": "store.code", "issue": "no está en el catálogo de identidades fiscales" }]
-      }
-    }
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": null },
+    "providerMetadata": null
   }
   ```
 
@@ -159,19 +164,17 @@ El bloque siempre trae las mismas 13 claves: lo que cambia son los valores.
     "numberingStatus": "FAILED_RETRYABLE",
     "documentType": "SALE_INVOICE",
     "documentNumber": null,
-    "sequential": null,
-    "serie": null,
     "issuedAt": null,
     "authorizationMode": null,
     "providerCode": "hio",
-    "claveAcceso": null,
-    "numeroControl": null,
+    "countryData": null,
     "graphic": null,
     "failure": {
       "code": "PROVIDER_UNAVAILABLE",
       "scope": "TECHNICAL",
       "message": "El servicio de fiscalización no está disponible."
     },
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": null },
     "providerMetadata": null
   }
   ```
@@ -189,19 +192,17 @@ El bloque siempre trae las mismas 13 claves: lo que cambia son los valores.
     "numberingStatus": "PENDING",
     "documentType": "SALE_INVOICE",
     "documentNumber": null,
-    "sequential": null,
-    "serie": null,
     "issuedAt": null,
     "authorizationMode": null,
     "providerCode": "hio",
-    "claveAcceso": null,
-    "numeroControl": null,
+    "countryData": null,
     "graphic": null,
     "failure": {
       "code": "PROVIDER_TIMEOUT",
       "scope": "TECHNICAL",
       "message": "El proveedor fiscal no respondió dentro del tiempo configurado."
     },
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": null },
     "providerMetadata": null
   }
   ```
@@ -248,7 +249,24 @@ if (data.fiscalRepresentation) {
 
 ## Tres campos que conviene entender bien
 
-### `metadata` — es tuyo y viaja entero
+### `provider` y `metadata` — dos bloques, dos destinos
+
+Se parecen y no son lo mismo, así que viajan por separado:
+
+| Devolvés | Llega como | Qué es |
+|---|---|---|
+| `provider` | `providerIdentity` | **Tiene forma**: `name`, `version`, `reference`. Es quién y con qué versión numeró, y el identificador que hay que citarte a vos para encontrar la operación |
+| `metadata` | `providerMetadata` | **Sin forma**: lo que te sirva para diagnosticar |
+
+Ninguno de los dos lleva `providerCode`: ese es **nuestro** identificador de adaptador y ya
+viaja aparte, arriba del bloque.
+
+<Note>
+  **`provider.reference` es la única razón por la que este bloque tiene forma.** Cuando algo
+  sale mal, es lo que el integrador te cita para que encuentres la operación en tus registros.
+  Enterrado en una bolsa opaca —donde por contrato nadie debe programar— no cumplía esa
+  función.
+</Note>
 
 Lo que pongas en `metadata` llega al integrador **sin tocar**, en `providerMetadata`. No lo
 interpretamos, no lo validamos, no lo renombramos.
@@ -264,6 +282,13 @@ Eso tiene dos caras:
 Y del otro lado: **nadie debe programar contra sus claves.** Está declarado opaco justamente
 para que puedas cambiarlo sin romper a nadie. Si un dato es lo bastante importante como para
 que el integrador ramifique por él, no va en `metadata` — va en el contrato.
+
+<Warning>
+  **No repitas ahí adentro lo que ya tiene su lugar.** Mandar `failure` dentro de `metadata`,
+  o el `name` del bloque de al lado, guarda el mismo hecho dos veces — y dos copias se
+  desincronizan. Y no cambies la bolsa entre una emisión y su reintento idempotente: quien
+  lea el evento va a ver que "cambió" algo que no cambió.
+</Warning>
 
 ### `graphic` — es lo único que no se puede derivar
 
@@ -293,7 +318,6 @@ nuestro equipo de soporte, los lee el sistema del cliente final.
 | `status` (`INVOICED` / `CANCELLED`) | Ya lo dice `documentType` |
 | `reused` | Es de la conversación con vos, no de la venta |
 | `retryable` | Se refleja en `numberingStatus` |
-| `provider.name` / `.version` | Diagnóstico interno |
 | `country` | Ya está en la orden |
 
 ## Y el veredicto del ente, aparte

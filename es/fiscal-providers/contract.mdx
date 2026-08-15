@@ -397,6 +397,53 @@ el ente autorizó y llegan por el callback; declararlos acá los condena a venir
 y un campo que siempre es nulo enseña a ignorarlo. `lookupUrl` es una constante por país y
 ambiente, no un dato del documento.
 
+### 5.4 `provider` y `metadata` — los dos bloques del proveedor
+
+Son **dos bloques distintos y no intercambiables**, y FIRE los guarda en dos columnas
+distintas. La diferencia es si el campo tiene forma acordada o no.
+
+#### `provider` — identidad, con forma
+
+```json
+"provider": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" }
+```
+
+| Campo | Tipo | Obligatorio | Qué poner |
+|---|---|---|---|
+| `name` | string \| null | ✓ | Quién resolvió esta numeración. Un identificador estable del servicio, no una marca comercial ni un texto que cambie con el despliegue |
+| `version` | string \| null | ✓ | Qué versión la resolvió. Es lo que permite decir "a partir de la 2026.08.1 dejó de pasar" en vez de compararlo con la fecha |
+| `reference` | string \| null | ✓ | **La referencia de soporte del proveedor**: el identificador que hay que citarle a él para que encuentre esta operación en sus propios registros |
+
+Los tres van **siempre presentes**, con `null` cuando no aplica. `null` dice "no tengo"; ausente
+obliga a distinguir dos formas de lo mismo.
+
+<Note>
+  **`reference` no es nuestra `Idempotency-Key`.** Esa la mandamos nosotros y el proveedor la
+  ecoa por otro lado. Esta es del proveedor, y es la que sirve cuando hay que escalarle un caso:
+  sin ella, la única forma de que encuentre la operación es que busque por `orderCode` en el
+  rango de fechas correcto.
+</Note>
+
+#### `metadata` — la bolsa opaca
+
+```json
+"metadata": { "externalStoreCode": "K004", "externalDeviceUid": "52CAEA5A18D9B75F" }
+```
+
+**Sin forma acordada.** Va lo que le sirva al proveedor para diagnosticar: los códigos con que
+él nombra la tienda y el aparato, un identificador de su cola, lo que sea. FIRE lo guarda tal
+cual y lo publica tal cual, y **nada nuestro programa contra sus claves**.
+
+<Warning>
+  **No manden acá lo que ya tiene su lugar.** Repetir `failure` dentro de `metadata`, o el
+  `name` del bloque de arriba, produce el mismo hecho guardado dos veces — y dos copias se
+  desincronizan. Si un dato tiene campo propio en el contrato, va en su campo y no también acá.
+</Warning>
+
+Puede ser `{}`. Lo que no puede es **cambiar entre una emisión y su reintento idempotente**: un
+`201` que trae la bolsa poblada y un `200 REUSED` que la trae vacía describen la misma operación
+de dos maneras distintas, y quien lea el evento va a ver que "cambió" algo que no cambió.
+
 ---
 
 ## 6. Respuesta con error
@@ -413,7 +460,7 @@ para uno transitorio. Nunca con `200`.
     "message": "identidad fiscal de tienda no configurada: EC / tienda K0050",
     "details": [{ "field": "store.code", "issue": "not found in catalog" }]
   },
-  "provider": { "name": "…", "version": "…" },
+  "provider": { "name": "…", "version": "…", "reference": "…" },
   "metadata": {}
 }
 ```

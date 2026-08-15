@@ -18,8 +18,8 @@ del diseño, así que vale empezar por ahí.
     responde qué se puede imprimir.
   </Card>
   <Card title="El proveedor fiscal" icon="stamp">
-    Traduce a los códigos del ente, asigna serie y secuencial, y envía el documento a la
-    autoridad.
+    Traduce a los códigos del ente, numera con el vocabulario de su país, y envía el
+    documento a la autoridad.
   </Card>
   <Card title="El ente tributario" icon="landmark">
     Autoriza o rechaza. Su veredicto llega **después** de que el cliente se fue con su
@@ -45,7 +45,7 @@ sequenceDiagram
 
     POS->>Fire: 1. POST /fiscal/numbering
     Fire->>Prov: 2. pide la numeración
-    Prov-->>Fire: serie + secuencial + clave
+    Prov-->>Fire: document + countryData (vocabulario del pais)
     Fire-->>POS: 3. document + graphic + printing
     POS->>POS: 4. imprime el comprobante
     POS->>Fire: 5. inyecta la orden (mismo orderCode)
@@ -120,6 +120,38 @@ que quedó **sin comprobante fiscal** llega con los identificadores en `null` y 
 
 Y que traiga bloque **tampoco** significa que el comprobante esté autorizado: eso lo dice
 `lastKnown.fiscal.status`, que es el único de los dos que se actualiza.
+
+#### Qué trae el bloque
+
+Tres capas, y conviene no mezclarlas:
+
+| Capa | Qué hay | Cómo se lee |
+|---|---|---|
+| **Canónica** | `documentType`, `documentNumber`, `issuedAt`, `authorizationMode`, `numberingStatus`, `environment` | Significan lo mismo en todo país. Es contra esto que programás |
+| **Del país** | `countryData` | El vocabulario del ente que numeró: `claveAcceso` en Ecuador, `numeroControl` en Venezuela. **Recorrelo, no lo indexes** |
+| **Del proveedor** | `providerCode`, `providerIdentity`, `providerMetadata` | Diagnóstico. Ver abajo |
+
+Los tres campos del proveedor **no son lo mismo**, y por eso viajan separados:
+
+- **`providerCode`** es **nuestro** identificador de adaptador (`hio`). Dice con qué
+  integración se numeró.
+- **`providerIdentity`** es del proveedor y **tiene forma**: `name`, `version` y `reference`.
+  Esa `reference` es la que le citás a él cuando hay que escalar un caso — no es tu
+  `Idempotency-Key`.
+- **`providerMetadata`** es una **bolsa opaca**: sin forma garantizada, las claves las pone el
+  proveedor y pueden cambiar sin aviso. Sirve para pegar en un ticket de soporte.
+
+<Warning>
+  **No ramifiques por las claves de `providerMetadata`.** Programar contra ellas ata tu
+  integración al proveedor que numera hoy, y cambian sin versionar el contrato. Si un dato es
+  lo bastante importante como para decidir con él, va a estar en la capa canónica o en
+  `countryData`.
+</Warning>
+
+Además, el bloque lleva **el documento vigente de la orden**, no el primero: si hubo una
+anulación, arriba está la nota de crédito, `compensates` apunta a la factura que anula, y la
+factura entera queda en `history`. Cada entrada de `history` tiene **exactamente las mismas
+claves** que el bloque de arriba, así que se leen igual.
 
 La referencia completa del bloque, campo por campo, está en
 [`order.opened`](/es/events/order-opened#data-fiscalrepresentation).
@@ -208,6 +240,16 @@ Con qué instrumento se materializa la anulación lo decide el país: en Ecuador
 crédito con su propio secuencial; en Brasil, un evento de cancelamento que no genera
 documento nuevo.
 
+**Y a partir de ahí la orden lleva la nota de crédito arriba.** Los eventos siguientes traen
+`documentType: "CREDIT_NOTE"` en `fiscalRepresentation`, con `compensates` apuntando a la
+factura anulada y la factura entera en `history`.
+
+<Warning>
+  **Si tu conciliación asume que `documentNumber` es siempre el de la venta, se rompe acá.** El
+  número de arriba pasa a ser el de la nota. Lo que el cliente se llevó impreso no se pierde
+  —está en `history`— pero hay que ir a buscarlo ahí.
+</Warning>
+
 ## Si perdés la respuesta
 
 Pasa: la red se cae justo después de que Fire numeró. El comprobante existe y vos no lo
@@ -227,8 +269,10 @@ numeración y en la inyección: es lo único que te queda en la mano.
 <Check>Guardás la `Idempotency-Key` junto con la orden y la reusás en los reintentos.</Check>
 <Check>Cada dispositivo declara su `device.externalId` — dos cajas de la misma tienda no lo comparten.</Check>
 <Check>Ramificás por `printing.mode` y no por el código HTTP.</Check>
-<Check>No asumís que `countryIdentifiers.accessKey` siempre viene: en Venezuela no existe.</Check>
+<Check>Recorrés `countryData` en vez de indexar claves fijas: las pone el país que numeró, y en Venezuela no hay `claveAcceso`.</Check>
 <Check>Recorrés las claves de `graphic` en vez de buscar campos fijos.</Check>
+<Check>No ramificás por las claves de `providerMetadata`: es una bolsa opaca del proveedor y cambia sin aviso.</Check>
+<Check>Tu conciliación contempla que, tras una anulación, el documento de arriba es la nota de crédito y la factura está en `history`.</Check>
 <Check>Ante `202` imprimís provisional e inyectás igual, sin reintentar en bucle en la caja.</Check>
 <Check>Tenés cómo reintentar un `202` después, con el mismo `orderCode`: nadie lo completa solo.</Check>
 
