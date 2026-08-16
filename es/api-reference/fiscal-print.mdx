@@ -18,6 +18,41 @@ Devuelve el contexto fiscal consolidado de una orden específica — los datos q
 
 Endpoint solo lectura. Sin side effects.
 
+## Dos versiones, las dos vivas
+
+```
+GET /api/v1/restaurant-os/injected-orders/{orderId}/fiscal-print
+GET /api/v2/restaurant-os/injected-orders/{orderId}/fiscal-print
+```
+
+Mismo camino, misma autenticación, mismos parámetros. Lo que cambia es la respuesta:
+
+| | v1 | v2 |
+|---|---|---|
+| Bloques de la respuesta | `fiscal`, `countryData`, `company`, `store`, `buyer`, `order` | los mismos **+ `fiscalRepresentation`** |
+| Códigos del ente en `countryData` | crudos (`ambiente: "2"`) | traducidos (`ambiente: "PRODUCCION"`) |
+| Nota de crédito | no se puede componer | `compensates` + `history` |
+
+<Note>
+  **La v1 no se movió ni se va a mover.** Si tu integración ya la consume, no tenés que hacer
+  nada: mismos campos y mismos valores que siempre.
+
+  La v2 existe porque uno de los cambios **no es aditivo** — `ambiente` es el mismo campo con otro
+  valor— y cambiarlo en la v1 le movería el dato bajo los pies a una caja ya integrada. No hay
+  fecha de baja para la v1.
+</Note>
+
+**Lo que la v2 agrega**, y por qué puede importarte:
+
+- **`fiscalRepresentation`** — el documento **tal como se numeró**, con su histórico. Es lo que
+  hace imprimible una **nota de crédito**: trae `compensates` (qué factura anula, con el motivo ya
+  redactado) y esa factura completa en `history`. En la v1 esa información no existe.
+- **Etiquetas resueltas** — `FACTURA`, `NOTA DE CREDITO RIDE`, `EMISION NORMAL`, `PRODUCCION`: los
+  códigos del ente ya traducidos, para que no lleves su tabla adentro de tu POS.
+- **La fecha de emisión** (`issuedAt`) del comprobante, que la v1 no expone.
+
+Todo lo demás —emisor, tienda, comprador, orden— es idéntico en las dos.
+
 ## Autenticación
 
 <ParamField header="x-api-key" type="string" required>
@@ -63,7 +98,13 @@ Accept: application/json
       Tipo de documento específico por país — p. ej. `nfce`, `nfe`, `factura_electronica`, `dte`, `factura_a`.
     </ResponseField>
     <ResponseField name="documentNumber" type="string | null">
-      Número secuencial del documento asignado por la autoridad fiscal/proveedor.
+      El número **visible** del comprobante, tal como lo armó el proveedor según la convención
+      de su país. Es lo que va impreso.
+
+      No confundir con el número de autorización: son hechos distintos y viajan en campos
+      distintos. En Ecuador el número es `001-020-000000123` (y aparece también como
+      `countryData.numeroComprobante`), mientras que la respuesta del SRI vive en
+      `countryData.numeroAutorizacion`.
     </ResponseField>
     <ResponseField name="authorizationProtocol" type="string | null">
       Protocolo de autorización de la autoridad tributaria (SEFAZ para BR, DIAN para CO, SRI para EC, SII para CL, AFIP para AR, SENIAT para VE). `null` hasta que el documento sea autorizado.
@@ -101,10 +142,92 @@ Accept: application/json
   Referencias del documento específicas por país. La forma varía según `fiscal.countryCode`. Ejemplos:
   - **BR**: `chaveAcesso` (44 dígitos), `serie`, `serialNumber`
   - **CO**: `cufe`, `prefijo`, `numeroDian`
-  - **EC**: `claveAcceso` (49 dígitos), `numeroAutorizacion`, `ambiente`
+  - **EC**: `numeroComprobante`, `claveAcceso` (49 dígitos), `numeroAutorizacion`, `ambiente`
   - **CL**: `folio`, `ted`, `tipoDte`, `trackId`
   - **AR**: `cae`, `fechaVtoCae`, `puntoVenta`, `numeroComprobante`, `tipoComprobante`
   - **VE**: `numeroControl`, `numeroFactura`, `rifEmisor`
+
+  <Note>
+    **Solo en v2: los valores vienen traducidos, no en código del ente.** En Ecuador el proveedor
+    manda `ambiente: "2"` —así lo define el SRI— y en la v2 llega `"PRODUCCION"`, que es lo que va
+    impreso. **En la v1 ese campo sigue trayendo `"2"`**, sin cambios.
+    Es el mismo criterio que en la numeración fiscal: traducirlo del lado del punto de venta
+    significaría que cada integrador lleva su copia de la tabla del ente, y el primero que la
+    copie mal imprime "PRUEBAS" en una factura de producción.
+
+    Un país sin tabla de rótulos devuelve sus valores **tal cual**.
+  </Note>
+</ResponseField>
+
+<ResponseField name="fiscalRepresentation" type="object">
+  **Solo en v2.** El documento tal como se numeró, con su histórico y las etiquetas ya resueltas.
+  En la v1 esta clave no existe.
+
+  Dentro de la v2, **aparece solo cuando la venta pasó por el Fiscal Gateway**. Si el comercio
+  fiscaliza únicamente por callback —Brasil, agregadores, o el gateway desactivado— la clave
+  **no viene en la respuesta**. No llega en `null`: no está.
+
+  Es la misma forma que viaja en `data.fiscalRepresentation` de los eventos, así que quien aprende
+  a leer una lee la otra.
+
+  <Note>
+    **Por qué está separado de `fiscal`.** Responden preguntas distintas: `fiscal` es el documento
+    **con el veredicto del ente encima** —estado, protocolo, fecha de autorización— y cambia cuando
+    el ente contesta. Esto otro es **lo que se imprimió en la caja** y no cambia nunca.
+
+    Cuando el SRI autoriza, `fiscal.status` pasa a `authorized` y aparecen el PDF y el XML, pero el
+    número del comprobante **sigue siendo el mismo**. Son dos hechos, no dos versiones del mismo.
+  </Note>
+
+  <Expandable title="fiscalRepresentation">
+    <ResponseField name="documentType" type="string">
+      `SALE_INVOICE` o `CREDIT_NOTE`. Canónico: significa lo mismo en todos los países.
+    </ResponseField>
+    <ResponseField name="documentLabel" type="string | null">
+      Cómo se titula en el papel: `FACTURA`, `NOTA DE CREDITO RIDE`. Ya traducido.
+    </ResponseField>
+    <ResponseField name="documentNumber" type="string | null">
+      El número visible, tal como lo armó el proveedor de ese país.
+    </ResponseField>
+    <ResponseField name="issuedAt" type="string | null">Fecha de emisión del comprobante.</ResponseField>
+    <ResponseField name="numberingStatus" type="string | null">
+      Cómo terminó el acto de **numerar** (`GENERATED`, `FAILED`). NO es el veredicto del ente —
+      ese vive en `fiscal.status`.
+    </ResponseField>
+    <ResponseField name="authorizationMode" type="string | null">`ONLINE` · `OFFLINE` · `BATCH`.</ResponseField>
+    <ResponseField name="authorizationLabel" type="string | null">
+      `EMISION NORMAL` / `EMISION POR CONTINGENCIA`. En Ecuador el SRI exige que se imprima.
+    </ResponseField>
+    <ResponseField name="environment" type="string | null">
+      Ambiente del gateway (`SANDBOX` / `PRODUCTION`). No confundir con el `ambiente` del ente,
+      que viaja dentro de `countryData` con el código del país.
+    </ResponseField>
+    <ResponseField name="providerCode" type="string | null">Qué integración numeró.</ResponseField>
+    <ResponseField name="countryData" type="object | null">
+      El vocabulario del ente, con los valores ya traducidos para imprimir.
+    </ResponseField>
+    <ResponseField name="graphic" type="object | null">
+      Lo imprimible que entregó el proveedor — el QR y demás.
+    </ResponseField>
+    <ResponseField name="failure" type="object | null">
+      Por qué NO hay documento. Presente solo cuando la numeración falló.
+    </ResponseField>
+    <ResponseField name="compensates" type="object | null">
+      **Qué documento anula este.** Solo en notas de crédito. En Ecuador se imprime como
+      `N. FACTURA MODIFICADA` y `FECHA EMISION FAC.`.
+
+      Es un **puntero**, no una copia: `documentNumber` es la clave con la que se resuelve contra
+      `history`, donde está el documento entero con su bloque de país. Trae además `reasonLabel`,
+      el motivo ya redactado.
+    </ResponseField>
+    <ResponseField name="history" type="array">
+      Los documentos anteriores de esta orden, del más viejo al más nuevo. Vacío en una venta
+      simple; con la factura anulada cuando entra la nota de crédito.
+
+      Cada entrada tiene **la misma forma** que el documento de arriba, para que apliques la misma
+      lógica de impresión a los dos. Lo que el cliente se llevó impreso no se pierde: se mueve.
+    </ResponseField>
+  </Expandable>
 </ResponseField>
 
 <ResponseField name="company" type="object | null">
@@ -163,7 +286,7 @@ Accept: application/json
 </ResponseField>
 
 <ResponseExample>
-```json 200 — orden BR fiscal-enabled
+```json 200 (v1 y v2) — orden BR fiscal-enabled
 {
   "fiscal": {
     "countryCode": "BR",
@@ -217,6 +340,147 @@ Accept: application/json
   }
 }
 ```
+
+<Note>
+  **Fijate que no hay `fiscalRepresentation`.** Brasil fiscaliza por callback, sin pasar por el
+  Fiscal Gateway: no hay documento numerado por Fire que espejar, así que la clave sencillamente
+  no viene. La respuesta es la misma de siempre, campo por campo.
+</Note>
+
+```json 200 (v2) — orden EC numerada, todavía sin autorizar
+{
+  "fiscal": {
+    "countryCode": "EC",
+    "documentNumber": "001-001-000000003",
+    "authorizationProtocol": "1508202601179001234500120010010000000031234567813",
+    "authorizedAt": null,
+    "pdfUrl": null,
+    "xmlUrl": null,
+    "status": "processing",
+    "source": "representation",
+    "graphic": {
+      "qr": "1508202601179001234500120010010000000031234567813"
+    }
+  },
+  "countryData": {
+    "numeroComprobante": "001-001-000000003",
+    "claveAcceso": "1508202601179001234500120010010000000031234567813",
+    "numeroAutorizacion": null,
+    "ambiente": "PRODUCCION"
+  },
+  "fiscalRepresentation": {
+    "documentType": "SALE_INVOICE",
+    "documentLabel": "FACTURA",
+    "documentNumber": "001-001-000000003",
+    "issuedAt": "2026-08-15T22:32:14.826Z",
+    "numberingStatus": "GENERATED",
+    "authorizationMode": "ONLINE",
+    "authorizationLabel": "EMISION NORMAL",
+    "environment": "PRODUCTION",
+    "providerCode": "hio",
+    "countryData": {
+      "numeroComprobante": "001-001-000000003",
+      "claveAcceso": "1508202601179001234500120010010000000031234567813",
+      "establecimiento": "001",
+      "puntoEmision": "001",
+      "secuencial": "000000003",
+      "ambiente": "PRODUCCION"
+    },
+    "graphic": { "qr": "1508202601179001234500120010010000000031234567813" },
+    "failure": null,
+    "compensates": null,
+    "history": []
+  },
+  "company": {
+    "legalName": "INT FOOD SERVICES CORP SA",
+    "tradeName": "KFC",
+    "govIdType": "RUC",
+    "govIdNumber": "1791415132001"
+  },
+  "order": {
+    "orderCode": "FUEL-EC-PRINT-0002",
+    "status": "COMPLETED",
+    "isCancelled": false
+  }
+}
+```
+
+```json 200 (v2) — orden EC anulada: arriba la nota, abajo la factura
+{
+  "fiscal": {
+    "countryCode": "EC",
+    "documentNumber": "001-001-000000009",
+    "status": "authorized",
+    "source": "representation",
+    "graphic": { "qr": "1508202604179001234500120010010000000091234567815" }
+  },
+  "countryData": {
+    "numeroComprobante": "001-001-000000009",
+    "claveAcceso": "1508202604179001234500120010010000000091234567815",
+    "numeroAutorizacion": null,
+    "ambiente": "PRODUCCION"
+  },
+  "fiscalRepresentation": {
+    "documentType": "CREDIT_NOTE",
+    "documentLabel": "NOTA DE CREDITO RIDE",
+    "documentNumber": "001-001-000000009",
+    "issuedAt": "2026-08-15T23:05:11.402Z",
+    "numberingStatus": "GENERATED",
+    "authorizationMode": "ONLINE",
+    "authorizationLabel": "EMISION NORMAL",
+    "environment": "PRODUCTION",
+    "providerCode": "hio",
+    "countryData": {
+      "numeroComprobante": "001-001-000000009",
+      "claveAcceso": "1508202604179001234500120010010000000091234567815",
+      "ambiente": "PRODUCCION"
+    },
+    "graphic": { "qr": "1508202604179001234500120010010000000091234567815" },
+    "failure": null,
+    "compensates": {
+      "documentNumber": "001-001-000000008",
+      "issuedAt": "2026-08-15T23:02:41.237Z",
+      "reason": "ORDER_CANCELLATION",
+      "reasonLabel": "Anulación de pedido"
+    },
+    "history": [
+      {
+        "documentType": "SALE_INVOICE",
+        "documentLabel": "FACTURA",
+        "documentNumber": "001-001-000000008",
+        "issuedAt": "2026-08-15T23:02:41.237Z",
+        "numberingStatus": "GENERATED",
+        "countryData": {
+          "numeroComprobante": "001-001-000000008",
+          "claveAcceso": "1508202601179001234500120010010000000081234567819",
+          "ambiente": "PRODUCCION"
+        },
+        "graphic": { "qr": "1508202601179001234500120010010000000081234567819" },
+        "compensates": null
+      }
+    ]
+  },
+  "order": {
+    "orderCode": "FUEL-EC-NC-0030",
+    "status": "CANCELLED",
+    "isCancelled": true
+  }
+}
+```
+
+<Note>
+  **La nota de crédito no reemplaza a la factura: la desplaza.** Arriba queda el documento
+  vigente —la nota, con su propio número y su `compensates`— y la factura que el cliente se
+  llevó impresa baja a `history`, con la misma forma. Para reimprimirla, la sacás de ahí.
+</Note>
+
+<Note>
+  **El ticket se imprime antes de que el SRI conteste.** En el ejemplo de arriba
+  `source: "representation"` y `authorizedAt: null`: el comprobante ya tiene su número
+  —`numeroComprobante`, el que va en el papel— pero `numeroAutorizacion` sigue vacío porque
+  el ente todavía no se pronunció. Cuando lo haga, el número del comprobante **no cambia**;
+  se suma la autorización.
+</Note>
 
 ```json 401 — API key inválida
 {
