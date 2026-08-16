@@ -1,0 +1,90 @@
+---
+title: "Integrating as a fiscal provider"
+description: "What a fiscal provider implements to connect with FIRE's Fiscal Gateway, and why the contract is defined this way."
+---
+
+<Info>
+  **This section is for fiscal providers**, not for points of sale. If you are integrating
+  a POS or a kiosk that *consumes* FIRE's numbering, what you want is the
+  [fiscal integration guide](/en/guides/fiscal-integration).
+</Info>
+
+## The two integrations, which are not the same
+
+There are two distinct and opposite connections around fiscal numbering:
+
+```
+point of sale  ──consumes──▶  FIRE  ──consumes──▶  fiscal provider  ──▶  tax authority
+                (fiscal guide)        (this section)
+```
+
+The point of sale asks FIRE for numbers to print. FIRE asks the fiscal provider for them,
+and the provider is the one that talks to each country's tax authority.
+
+This section defines **the second arrow**: what we send a provider and what we expect
+back.
+
+## It is a canonical contract
+
+It does not describe what one particular provider does: **it is the requirement**. Anyone
+integrating with the Fiscal Gateway implements this same endpoint, with this same shape. It
+does not change per provider or per country.
+
+That has a consequence worth understanding before reading the detail:
+
+<Warning>
+  **The contract uses FIRE's vocabulary, not the tax authority's.** No codes from the SRI
+  (Ecuador's tax authority), the SEFAZ or the SENIAT travel across it. No identifiers from
+  the provider's catalog travel either.
+
+  The provider **translates** into whatever each country requires — that is precisely its
+  job. A contract that spoke one authority's language would stop working for the next one.
+</Warning>
+
+That is why the request carries `operation: "INVOICE"` and not `documentTypeCode: "01"`;
+`store.code` and not `establishmentCode`; `device.externalId` and not `pointOfEmissionCode`.
+
+The field names are the same ones FIRE's events already use
+([`order.completed`](/en/events/order-completed), [`order.invoiced`](/en/events/order-invoiced)).
+Anyone already consuming events learns no new vocabulary.
+
+## What has to be implemented
+
+One endpoint per country, synchronous:
+
+```
+POST {baseUrl}/api/v1/fiscal/{country}/prekeys
+```
+
+```
+POST {baseUrl}/api/v1/fiscal/ec/prekeys      Ecuador
+POST {baseUrl}/api/v1/fiscal/ve/prekeys      Venezuela
+```
+
+**A single integration**: one `baseUrl`, one credential. The routes that exist are the
+countries you serve, so a new country is added without touching the ones already working.
+
+It receives a sale and returns the fiscal identifiers needed to print it. It sits **on the
+critical path of the sale** —the register is waiting— so the target latency budget is
+**under 3 seconds**.
+
+<Note>
+  This endpoint produces the **fiscal representation**: the numbers to print. Submission to
+  the tax authority and its authorization happen afterwards, on the provider's side, and the
+  outcome arrives via the callback. They are two distinct lifecycles and the contract does
+  not mix them.
+</Note>
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Endpoint contract" icon="file-contract" href="/en/fiscal-providers/contract">
+    Authentication, request, response, errors and idempotency. The full requirement.
+  </Card>
+  <Card title="What reaches the integrator" icon="arrow-right-arrow-left" href="/en/fiscal-providers/in-events">
+    How what you return ends up travelling in the order's events.
+  </Card>
+  <Card title="Real examples" icon="code" href="/en/fiscal-providers/examples">
+    Requests and responses captured from a working integration.
+  </Card>
+</CardGroup>

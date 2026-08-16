@@ -1,0 +1,518 @@
+---
+title: "Contrato do endpoint"
+description: "O que enviamos a um provedor fiscal e o que esperamos de volta. É o requisito que qualquer provedor do Fiscal Gateway implementa."
+---
+
+<Info>
+  Antes deste documento convém ler [a introdução](/pt/fiscal-providers/overview):
+  ela explica por que o contrato usa o vocabulário do FIRE e não o do órgão tributário.
+</Info>
+
+## 1. Autenticação
+
+São duas direções distintas e convém não confundi-las.
+
+### 1.1 Como o Fiscal Gateway do FIRE é consumido
+
+**API key, e nada mais.** É o único mecanismo, hoje e sempre. Não há OAuth, nem JWT de usuário,
+nem sessão.
+
+| Header | Tipo | |
+|---|---|---|
+| `x-api-key` | string | **obrigatório** |
+| `Idempotency-Key` | string | **obrigatório** |
+
+A key é **account + vendor scoped** e precisa ter o scope `fiscal:write`. O tenant é derivado
+da key, **nunca do corpo**: um payload pode mentir, uma credencial não. Por isso o request
+não leva `accountId` nem `vendorId`.
+
+A `Idempotency-Key` é gerada por **quem chama** e reutilizada em cada retentativa da mesma
+venda. Se fôssemos nós a gerá-la, seria idempotência decorativa: cada tentativa traria uma
+chave diferente e não haveria nada a comparar.
+
+<Note>
+  **Não é ela que evita o documento duplicado** — isso quem faz é o `orderCode`, a chave natural
+  (`país + orderCode + operação`). Uma retentativa com o mesmo `orderCode` devolve o mesmo
+  documento mesmo que o canal regenere a chave, que é o erro de implementação mais comum.
+
+  O que a chave acrescenta é **detectar que ela foi reutilizada para outra venda**: mesma chave
+  com corpo diferente responde `409` em vez de numerar.
+</Note>
+
+<Warning>
+  **Esta chave não trafega até o provedor.** A chamada que sai em direção a ele leva apenas
+  `x-api-key` e `Content-Type`. Se você implementar a deduplicação do lado do provedor, faça-a
+  por `orderCode`.
+</Warning>
+
+### 1.2 Como consumimos o provedor
+
+**Também API key.** Mesmo mecanismo nas duas direções: o provedor entrega uma key por
+ambiente e o FIRE a envia em `x-api-key` em cada chamada. Não há OAuth, nem endpoint de token,
+nem audience a configurar.
+
+| Header | Tipo | |
+|---|---|---|
+| `x-api-key` | string | **obrigatório** |
+
+A key é guardada criptografada na configuração da conta e não sai da instância. Ela é
+**write-only** no backoffice: é carregada, nunca exibida.
+
+O provedor precisa poder **rotacioná-la sem interromper o serviço** — aceitando a key anterior
+durante uma janela de sobreposição. Sem isso, rotacionar significa uma interrupção de
+faturamento coordenada, e na prática se traduz em keys que nunca são rotacionadas.
+
+---
+
+## 2. Endpoint — um por país
+
+```
+POST {baseUrl}/api/v1/fiscal/{country}/prekeys
+Content-Type: application/json
+x-api-key: <api key do provedor>
+```
+
+`{country}` é o código **ISO 3166-1 alpha-2 em minúsculas**: `ec`, `ve`, `co`.
+
+```
+POST {baseUrl}/api/v1/fiscal/ec/prekeys      Equador
+POST {baseUrl}/api/v1/fiscal/ve/prekeys      Venezuela
+```
+
+**Uma única integração.** O provedor recebe uma `baseUrl` e uma credencial; as rotas são
+derivadas do país. O FIRE resolve o país antes de chamar — ele sai da loja — então não há
+nada a descobrir nem a configurar separadamente.
+
+<Note>
+  **Por que por país e não uma rota única.** Uma integração fiscal é construída e certificada
+  contra um órgão, e as normas mudam por país. Com uma rota por país, uma mudança no
+  Equador é uma versão do endpoint do Equador: não toca a Venezuela, não obriga a versionar
+  tudo, e não pode quebrá-la. O versionamento fica com a mesma granularidade da mudança.
+
+  Isso também torna desnecessário declarar capacidades: **as rotas que existem são os países
+  que você atende**.
+</Note>
+
+<Warning>
+  **Um `404` nesta rota significa "não atendo esse país"**, e é assim que reportamos. Não o use
+  para outros erros: um país suportado que falha responde `4xx`/`5xx` com o bloco `failure`.
+</Warning>
+
+**Síncrono.** Esta chamada está no caminho crítico da venda: o caixa está esperando os
+números para imprimir. Orçamento de latência alvo: **menos de 3 segundos**.
+
+---
+
+## 3. Request
+
+### 3.1 Numerar uma venda
+
+```json
+{
+  "country": "EC",
+  "operation": "INVOICE",
+  "businessDayDate": "2026-08-12",
+  "orderCode": "FUEL-EC-1786553720451",
+  "store": {
+    "code": "K0050",
+    "storeFiscalConfig": {
+      "govIdType": "RUC",
+      "govIdNumber": "1791415132001",
+      "secondaryGovIdType": "INSCRICAO_ESTADUAL",
+      "secondaryGovIdNumber": "000000000000",
+      "company": {
+        "govIdType": "CNPJ",
+        "govIdNumber": "00000000000000",
+        "legalName": "Sandbox LTDA",
+        "tradeName": "Sandbox"
+      },
+      "metadata": {}
+    }
+  },
+  "device": {
+    "uid": "device_kiosk_001",
+    "name": "KIOSK",
+    "platform": "android",
+    "metadata": { "ip": "10.0.0.0" }
+  },
+  "metadata": {}
+}
+```
+
+### 3.2 Cancelar
+
+Idêntico, com `"operation": "CANCEL"`.
+
+**Não enviamos referência ao documento original.** O provedor resolve o que está sendo
+compensado buscando a emissão do mesmo `orderCode` — que é a sua própria chave de idempotência,
+já indexada.
+
+### 3.3 Campos
+
+| Campo | Obrig. | O que é |
+|---|---|---|
+| `country` | sim | ISO 3166-1 alpha-2. Roteia para o sistema fiscal do país |
+| `operation` | sim | `INVOICE` · `CANCEL` · `REVERSE` (futuro) |
+| `businessDayDate` | sim | `YYYY-MM-DD`. **Dia de negócio da venda**, local do país. Não é a data de autorização do órgão nem um timestamp UTC |
+| `orderCode` | sim | Código da venda. Parte da chave de idempotência |
+| `store.code` | sim | Código de loja do negócio |
+| `store.storeFiscalConfig.govIdType` | sim | Tipo de identificação de **quem emite** (`RUC`, `CNPJ`, `RIF`, `NIT`…) |
+| `store.storeFiscalConfig.govIdNumber` | sim | Identificação de quem emite — a filial |
+| `store.storeFiscalConfig.secondaryGovIdType` | não | Identificação secundária (`INSCRICAO_ESTADUAL` e equivalentes) |
+| `store.storeFiscalConfig.secondaryGovIdNumber` | não | Valor da anterior |
+| `store.storeFiscalConfig.company` | não | Pessoa jurídica dona da filial. No Brasil difere do emitente; no Equador costuma coincidir |
+| `store.storeFiscalConfig.metadata` | não | Chave-valor **da loja**. Opaco |
+| `device.uid` | sim | **Identificador do aparelho**, do negócio. É a única coisa que identifica o terminal |
+| `device.name` | não | Nome do aparelho (`KIOSK`, `CAJA 3`) |
+| `device.platform` | não | `android`, `ios`, `web`… Informativo |
+| `device.metadata` | não | Chave-valor do aparelho (`ip`, …). Opaco |
+| `metadata` | não | Chave-valor **da venda**. Opaco |
+
+**Os campos vazios são omitidos.** Nunca enviamos `""`. Um campo ausente significa "não
+configurado"; uma string vazia não deve ser interpretada como valor válido.
+
+<Warning>
+  **Não enviamos estabelecimento nem ponto de emissão.** Quem os atribui é o órgão, sob o RUC do
+  emitente, e o FIRE não tem esse catálogo — o ponto de venda também não, e exigi-lo dele o
+  obrigaria a falar o idioma do SRI para poder faturar.
+
+  Você é quem os resolve: `store.code` → estabelecimento, `device.uid` → ponto de emissão, contra
+  o seu próprio catálogo. É o mesmo trato que vale para a identidade fiscal: mandamos
+  identificadores do **negócio** e você traduz para os do órgão.
+
+  Até pouco tempo atrás o canal declarava o seu ponto de emissão em `device.externalId`. Isso foi
+  removido: era um dado que exigíamos sem poder validá-lo, e que além disso podia não coincidir
+  com o que acabava sendo emitido.
+</Warning>
+
+### 3.4 Os dois `metadata`
+
+Há dois blocos chave-valor, em níveis distintos e com propósitos distintos:
+
+- **`store.storeFiscalConfig.metadata`** — atributos da **loja**, constantes. É onde
+  vivem os dados de que o provedor precisa e que não fazem parte do domínio compartilhado: por
+  exemplo `serieStrongId` e `sucursalStrongId` na Venezuela. São configurados uma vez no
+  backoffice e trafegam em cada chamada dessa loja.
+- **`metadata`** (raiz) — atributos da **venda**, variáveis. Por exemplo `taxCode` ou
+  `exchangeRate` na Venezuela, que mudam a cada transação.
+
+Ambos são **opacos**: o FIRE não os interpreta nem os valida.
+
+**Nenhuma chave dentro de `metadata` pode sobrescrever um campo de domínio.** Se aparecer uma
+chave `storeCode` ou `country` dentro de `metadata`, ela deve ser ignorada. Caso contrário o
+chave-valor vira a porta dos fundos pela qual o contrato é redefinido.
+
+---
+
+## 4. Idempotência
+
+A chave é **`country` + `orderCode` + `operation`**.
+
+Repetir essa tripla deve devolver **o mesmo documento** com `"reused": true`, sem consumir outro
+sequencial. É a mesma chave que o FIRE usa do seu lado, para que um choque seja detectado nas
+duas pontas ao mesmo tempo.
+
+Isso pressupõe que o `orderCode` é único por conta e país. É a mesma suposição que as duas
+partes já fazem.
+
+---
+
+## 5. Resposta bem-sucedida
+
+A resposta tem **duas partes com regras distintas**:
+
+- **O envelope** — idêntico em todos os países. É com ele que o FIRE opera: decide se retenta,
+  se houve documento, qual erro reportar.
+- **`document`** — o idioma fiscal do país. Cada um manda o que existe no seu regime, com
+  os nomes do seu órgão, e **nada mais**.
+
+```json
+{
+  "status": "INVOICED",
+  "country": "EC",
+  "orderCode": "FUEL-EC-1786553720451",
+  "reused": false,
+  "retryable": false,
+  "authorizationMode": "ONLINE",
+  "issuedAt": "2026-08-12T16:55:29Z",
+
+  "document": {
+    "claveAcceso": "1208202601179141513200110010200000001231234567813",
+    "establecimiento": "001",
+    "puntoEmision": "020",
+    "secuencial": "000000123",
+    "ambiente": "2"
+  },
+
+  "graphic": { "qr": "https://…" },
+
+  "failure": null,
+  "provider": { "name": "…", "version": "…", "reference": "…" },
+  "metadata": {}
+}
+```
+
+<Info>
+  **`country` trafega mesmo estando na rota.** Não é redundância: o FIRE compara `country` e
+  `orderCode` com o que pediu e **descarta a resposta se não coincidirem**. É o que evita
+  imprimir o documento de outra venda quando há um cruzamento de respostas ou um proxy com cache.
+</Info>
+
+### 5.1 `status`
+
+Dois valores, um por operação:
+
+| Valor | Quando |
+|---|---|
+| `INVOICED` | Resposta a `operation: "INVOICE"` |
+| `CANCELLED` | Resposta a `operation: "CANCEL"` |
+
+**Não há mais estados, e isso é deliberado.** Este endpoint produz a *representação fiscal* — os
+identificadores para imprimir — e nada mais. O envio ao órgão e a sua autorização acontecem
+depois, do lado do provedor, e o desfecho chega pelo callback. Modelar aqui estados de
+autorização mistura dois ciclos de vida distintos.
+
+`status` é quase um eco de `operation`, e existe por um único caso: **quando a operação não
+produz documento**. O cancelamento no Brasil é um evento de cancelamento, não um documento novo,
+então a resposta chega com `document: null` e sem `graphic`. Aí o `status` é a única coisa que
+afirma que a operação foi concluída, em vez de deixar uma resposta bem-sucedida e vazia que não
+se distingue de um erro silencioso.
+
+Em particular:
+
+- **Não existe `PENDING`.** Imediatamente depois de numerar, o documento está sempre
+  pendente de autorização: é a condição normal, não um estado a informar. O caixa imprime
+  com os identificadores que acabou de receber.
+- **Não existe `REJECTED`.** Se não foi possível numerar, é um erro: HTTP não-2xx com o bloco
+  `failure`. Uma rejeição com `200 OK` e o motivo escondido em um campo é um contrato onde
+  alguém não valida e acredita ter numerado.
+- **Não existe `REUSED`.** Isso é `reused: true`, um booleano ortogonal. É possível ter
+  `INVOICED` com `reused: true` — uma retentativa idempotente de uma venda já numerada — e essa
+  distinção se perde se `REUSED` fosse um estado.
+
+### 5.2 `document` — o documento numerado
+
+**Aqui se fala o idioma fiscal do país.** É o único bloco da resposta que muda entre
+países, e muda por inteiro: os nomes são os do órgão, não uma tradução nossa.
+
+Um país manda **o que existe no seu regime e nada mais**. Um campo que não se aplica não trafega
+em `null`: simplesmente não está lá.
+
+#### 🇪🇨 Equador — SRI
+
+```json
+"document": {
+  "numeroComprobante": "001-020-000000123",
+  "claveAcceso": "1208202601179141513200110010200000001231234567813",
+  "establecimiento": "001",
+  "puntoEmision": "020",
+  "secuencial": "000000123",
+  "ambiente": "2"
+}
+```
+
+| Campo | Regra |
+|---|---|
+| `numeroComprobante` | Obrigatório. O número **visível**, já montado: `estab-ptoEmi-secuencial` |
+| `claveAcceso` | Obrigatório. **49 dígitos** exatos |
+| `establecimiento` | Obrigatório. 3 dígitos |
+| `puntoEmision` | Obrigatório. 3 dígitos — o ponto de emissão a partir do qual se faturou |
+| `secuencial` | Obrigatório. 9 dígitos |
+| `ambiente` | Obrigatório. `"1"` testes · `"2"` produção |
+
+<Warning>
+  **O número visível é você que monta, já pronto para imprimir.**
+
+  Quinze dígitos em três trechos separados por hífen — `establecimiento(3)`, `puntoEmision(3)`,
+  `secuencial(9)` — conforme o **art. 18 do Reglamento de Comprobantes de Venta** (norma
+  equatoriana).
+
+  Antes quem o compunha era o FIRE, com as três peças. Isso foi movido para cá de propósito: **o
+  formato é regra do regime, não apresentação**, e quem está certificado perante o SRI é você. Se
+  o Reglamento mudar a convenção, a mudança acontece do seu lado sem que o FIRE faça deploy.
+
+  Há ainda uma razão concreta: o Reglamento **permite omitir os zeros à esquerda** do
+  sequencial. `001-020-123` pode ser tão legal quanto `001-020-000000123`. Montando-o nós,
+  estaríamos escolhendo uma variante em seu nome. Mande o que você emitiu — **o FIRE imprime tal
+  como veio, sem reformatar**.
+</Warning>
+
+<Note>
+  **As três peças continuam trafegando do mesmo jeito**, como o SRI as nomeia e sem concatená-las
+  em uma `serie` de 6 dígitos: elas servem para conciliar, não para compor o número.
+
+  O `puntoEmision` que você devolver é o que ficou emitido, que pode não ser o que foi pedido em
+  `device.uid` através do seu catálogo. O que vale é sempre o que volta, nunca o que foi enviado.
+</Note>
+
+<Warning>
+  **`ambiente` não é informativo.** O FIRE o compara com o ambiente configurado para o
+  vendor e **interrompe se não coincidirem**. É o que pega um provedor emitindo contra o
+  ambiente de testes do SRI enquanto a operação acredita estar em produção — sem essa
+  verificação, as vendas saem com chaves de acesso que o órgão não reconhece, e isso só se
+  descobre quando um cliente reclama a sua nota.
+</Warning>
+
+#### Por que o bloco é do país e não um modelo comum
+
+Foi avaliado um bloco plano com nomes por papel — `accessKey`, `sequential`, `controlNumber` — e
+descartado. O custo não era um campo nulo: era que **cada país novo acrescentava um campo que
+todos os demais carregariam vazio para sempre**, e que o mesmo identificador tinha dois nomes
+conforme entrasse pelo prekey ou pelo callback.
+
+Este é, além disso, o mesmo mecanismo que o callback de resultado já usa, que valida por país
+sobre o `countryCode` da raiz. **Um único padrão nas duas direções.**
+
+#### O que `document` NÃO leva
+
+**Não leva `documentType`.** Com qual instrumento fiscal a operação se materializa — uma nota
+de crédito no Equador, um evento de cancelamento no Brasil — é assunto do país e do provedor.
+O que foi pedido o `status` já diz.
+
+**Não leva o que o órgão atribui ao autorizar** — o `numeroAutorizacion` do SRI, o
+`protocolo` da SEFAZ. Isso chega pelo callback; declará-lo aqui o condena a vir sempre
+em `null`.
+
+**Não leva `authorizationMode` nem `issuedAt`.** São comuns a todos os países e vivem na
+raiz da resposta.
+
+### 5.3 `graphic` — o que é imprimível
+
+**Chave-valor**, com as chaves de que cada país precisar. `{}` ou `null` quando a operação não
+produz nada para imprimir — o cancelamento no Brasil, por exemplo.
+
+```json
+"graphic": { "qr": "https://…" }
+```
+
+Cada valor é a **string exata a codificar**, já pronta para renderizar. O FIRE não a interpreta
+nem a transforma: ele a repassa ao ponto de venda, que a renderiza com a sua própria biblioteca
+e a manda para a impressora. Não geramos imagens deste lado — o tamanho e a resolução dependem da
+impressora, e isso só quem imprime sabe.
+
+**É um mapa aberto e não um campo fixo** porque o comprovante de cada país nem sempre leva a
+mesma coisa: o Equador imprime o código da chave de acesso, o Brasil o QR da NFC-e, o Chile o
+timbre eletrônico (TED). Um país pode precisar de mais de um. Com um mapa, adicionar um é
+enviá-lo; com campos fixos, é versionar o contrato.
+
+As chaves são estáveis e descritivas do propósito — `qr`, `barcode`, `ted` — não da
+simbologia do momento.
+
+Este bloco é o único da resposta que o provedor fornece e que não pode ser derivado, por um
+caso concreto: **o QR da NFC-e brasileira é uma URL assinada com um hash que só o emitente pode
+construir**. Ele não é derivado da chave. Se não chegar, não há QR.
+
+No Equador o valor vai coincidir com `document.claveAcceso`. **Essa redundância é deliberada:**
+a alternativa é o ponto de venda saber que no Equador se codifica a chave, no Brasil a
+URL e no Chile o TED.
+
+**Não inclui `pdfUrl`, `xmlUrl` nem `lookupUrl`.** Os dois primeiros só existem depois de que
+o órgão autorizou e chegam pelo callback; declará-los aqui os condena a vir sempre em `null`,
+e um campo que é sempre nulo ensina a ignorá-lo. `lookupUrl` é uma constante por país e
+ambiente, não um dado do documento.
+
+### 5.4 `provider` e `metadata` — os dois blocos do provedor
+
+São **dois blocos distintos e não intercambiáveis**, e o FIRE os guarda em duas colunas
+distintas. A diferença é se o campo tem forma acordada ou não.
+
+#### `provider` — identidade, com forma
+
+```json
+"provider": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" }
+```
+
+| Campo | Tipo | Obrigatório | O que colocar |
+|---|---|---|---|
+| `name` | string \| null | ✓ | Quem resolveu esta numeração. Um identificador estável do serviço, não uma marca comercial nem um texto que mude a cada deploy |
+| `version` | string \| null | ✓ | Qual versão a resolveu. É o que permite dizer "a partir da 2026.08.1 parou de acontecer" em vez de comparar com a data |
+| `reference` | string \| null | ✓ | **A referência de suporte do provedor**: o identificador que precisa ser citado a ele para que encontre esta operação nos seus próprios registros |
+
+Os três vão **sempre presentes**, com `null` quando não se aplicam. `null` diz "não tenho";
+ausente obriga a distinguir duas formas da mesma coisa.
+
+<Note>
+  **`reference` não é a nossa `Idempotency-Key`.** Aquela é enviada por nós e o provedor a
+  ecoa por outro caminho. Esta é do provedor, e é a que serve quando é preciso escalar um caso
+  para ele: sem ela, a única forma de ele encontrar a operação é buscar por `orderCode` no
+  intervalo de datas correto.
+</Note>
+
+#### `metadata` — a bolsa opaca
+
+```json
+"metadata": { "externalStoreCode": "K004", "externalDeviceUid": "52CAEA5A18D9B75F" }
+```
+
+**Sem forma acordada.** Vai o que for útil ao provedor para diagnosticar: os códigos com que
+ele nomeia a loja e o aparelho, um identificador da sua fila, o que for. O FIRE o guarda tal
+como veio e o publica tal como veio, e **nada nosso programa contra as suas chaves**.
+
+<Warning>
+  **Não mandem aqui o que já tem o seu lugar.** Repetir `failure` dentro de `metadata`, ou o
+  `name` do bloco de cima, produz o mesmo fato guardado duas vezes — e duas cópias se
+  dessincronizam. Se um dado tem campo próprio no contrato, ele vai no seu campo e não também aqui.
+</Warning>
+
+Pode ser `{}`. O que ele não pode é **mudar entre uma emissão e a sua retentativa idempotente**:
+um `201` que traz a bolsa populada e um `200 REUSED` que a traz vazia descrevem a mesma operação
+de duas maneiras diferentes, e quem ler o evento vai ver que "mudou" algo que não mudou.
+
+---
+
+## 6. Resposta com erro
+
+Trafega com **código HTTP não-2xx** — `422` para um problema de configuração ou de dados, `5xx`
+para um transitório. Nunca com `200`.
+
+```json
+{
+  "orderCode": "FUEL-EC-1786553720451",
+  "retryable": false,
+  "failure": {
+    "code": "UNMAPPED_STORE_IDENTITY",
+    "message": "identidad fiscal de tienda no configurada: EC / tienda K0050",
+    "details": [{ "field": "store.code", "issue": "not found in catalog" }]
+  },
+  "provider": { "name": "…", "version": "…", "reference": "…" },
+  "metadata": {}
+}
+```
+
+**`retryable` é obrigatório** e quem o decide é o provedor. É o que nos permite distinguir um
+problema de configuração — que não melhora com retentativa — de um transitório. Sem esse campo é
+preciso adivinhar pelo código HTTP, e adivinhar errado significa retentar no caixa enquanto o
+cliente espera, ou abandonar uma venda que podia ser numerada.
+
+**`failure.code` deve ser um código estável e acionável**, não um texto livre. É o que
+permite construir alertas e documentação de suporte.
+
+**`failure.message` deve descrever o problema real**, não uma generalidade. `"identidad fiscal
+de tienda no configurada: EC / tienda K0050"` permite consertar; `"documento rejeitado"` obriga
+a abrir um ticket.
+
+---
+
+## 7. Regras da integração
+
+**O que enviamos manda.** Se o catálogo do provedor tiver uma identidade fiscal diferente da
+que enviamos, ele deve **rejeitar com erro explícito**, nunca emitir com a sua. Um
+comprovante emitido sob o contribuinte errado não se corrige com um deploy.
+
+**`metadata` é opaco nos dois sentidos e não pode sobrescrever campos de domínio.**
+
+**Os códigos do órgão não trafegam no contrato.** Nada de `documentTypeCode: "01"`,
+`tipoComprobante` ou equivalentes. O provedor os deriva de `operation` + `country`.
+
+**O contrato é versionado.** Uma mudança quebrante exige uma versão nova do endpoint e
+uma janela de convivência; não se muda o significado de um campo existente.
+
+---
+
+## 8. O callback de resultado
+
+O callback de resultado permanece como está. Ele é correlacionado por **`orderCode` + `operation`**,
+com o tenant derivado da API key com a qual se autentica. Precisa incluir a operação: sem
+ela, uma nota e o seu cancelamento sobre o mesmo pedido são indistinguíveis.
+
+Devolver identificadores adicionais no callback é opcional e bem-vindo, mas não obrigatório.
