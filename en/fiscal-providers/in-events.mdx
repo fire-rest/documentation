@@ -1,0 +1,333 @@
+---
+title: "What reaches the integrator"
+description: "How what the provider returns ends up travelling in the order's events — and what consequence each field has."
+---
+
+What the provider returns does not stay in the synchronous response. **It is attached to the
+order and travels in all of its events**, so every field of the response has a final consumer
+that is not FIRE.
+
+This page exists to close that circle: if you are implementing the endpoint, here you see what
+happens with what you return.
+
+## The journey
+
+```
+provider  ──response──▶  FIRE  ──attached to the order──▶  events  ──▶  POS integrator
+```
+
+The point of sale numbers **before** the order exists: it charges, requests the numbers, prints,
+and only afterwards injects the sale. On injection, FIRE looks up the numbering for that
+`orderCode` and attaches it to the order. From there it travels in `data.fiscalRepresentation` of
+[`order.opened`](/en/events/order-opened), [`order.completed`](/en/events/order-completed),
+[`order.invoiced`](/en/events/order-invoiced), [`order.cancelled`](/en/events/order-cancelled)
+and [`order.reversed`](/en/events/order-reversed).
+
+## Field by field
+
+Ecuador, which is the `document` block of `/fiscal/ec/prekeys`:
+
+| What you return | Reaches the event as | Note |
+|---|---|---|
+| `document.numeroComprobante` | `countryData.numeroComprobante` | The **visible** number, exactly as you assembled it |
+| `document.secuencial` | `countryData.secuencial` | With **your** name, untranslated |
+| `document.establecimiento` | `countryData.establecimiento` | |
+| `document.puntoEmision` | `countryData.puntoEmision` | |
+| `document.claveAcceso` | `countryData.claveAcceso` | |
+| `document.ambiente` | `countryData.ambiente` | Travels **raw** (`"1"`/`"2"`). FIRE additionally verifies it against the configured environment, and publishes its own separately in `environment` |
+| `document.numeroComprobante` | `documentNumber` | **Echo** of the number you sent. FIRE does not recompose it nor change its format |
+| `authorizationMode` | `authorizationMode` | At the root, not inside `document` |
+| `issuedAt` | `issuedAt` | At the root, not inside `document` |
+| `graphic` | `graphic` | **As is**, uninterpreted |
+| `failure` | `failure` | `code`, `scope` and `message` |
+| `provider` | `providerIdentity` | **As is**: `name`, `version` and `reference` |
+| `metadata` | `providerMetadata` | **As is**, opaque |
+| *(derived)* | `numberingStatus` | From your HTTP + `retryable` |
+| *(derived)* | `documentType` | From the `operation` the channel requested |
+
+A complete example, with real data:
+
+<CodeGroup>
+```json What you return
+{
+  "status": "INVOICED",
+  "document": {
+    "accessKey": "1308202601000000000000110050040000000521234567811",
+    "controlNumber": null,
+    "authorizationMode": "ONLINE",
+    "issuedAt": "2026-08-13T15:47:26Z"
+  },
+  "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
+  "failure": null,
+  "provider": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
+  "metadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+}
+```
+
+```json What the integrator sees
+"fiscalRepresentation": {
+  "numberingStatus": "GENERATED",
+  "documentType": "SALE_INVOICE",
+  "documentNumber": "005-004-000000052",
+  "issuedAt": "2026-08-13T15:47:26Z",
+  "authorizationMode": "ONLINE",
+  "providerCode": "hio",
+  "countryData": {
+    "claveAcceso": "1308202601000000000000110050040000000521234567811",
+    "establecimiento": "005",
+    "puntoEmision": "004",
+    "secuencial": "000000052",
+    "ambiente": "2"
+  },
+  "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
+  "failure": null,
+  "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
+  "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+}
+```
+</CodeGroup>
+
+<Note>
+  **The block above always has the same keys**, with `null` for those that do not
+  apply — that is what you program against. What changes per country lives inside
+  `countryData`, and there **only** the keys of the country that numbered travel: an
+  Ecuadorian receipt does not carry `numeroControl`, nor a Venezuelan one `claveAcceso`.
+</Note>
+
+## The four cases, in full
+
+These are **all** the states the block can have, and which response of yours produces them.
+The block above always brings the same 12 keys: what changes are the values and the contents of `countryData`.
+
+<AccordionGroup>
+  <Accordion title="GENERATED — you numbered, there is a receipt" icon="circle-check">
+  You returned `2xx` with `document`.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "GENERATED",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": "005-004-000000052",
+    "issuedAt": "2026-08-13T15:47:26Z",
+    "authorizationMode": "ONLINE",
+    "providerCode": "hio",
+    "countryData": {
+      "claveAcceso": "1308202601000000000000110050040000000521234567811",
+      "establecimiento": "005",
+      "puntoEmision": "004",
+      "secuencial": "000000052",
+      "ambiente": "2"
+    },
+    "graphic": { "qr": "1308202601000000000000110050040000000521234567811" },
+    "failure": null,
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
+    "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+  }
+  ```
+
+  The integrator prints and reconciles. `countryData` brings the SRI's vocabulary and nothing from other countries.
+  </Accordion>
+
+  <Accordion title="FAILED_FINAL — you rejected and retrying will not help" icon="circle-xmark">
+  You returned non-`2xx` with `retryable: false`.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "FAILED_FINAL",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": null,
+    "issuedAt": null,
+    "authorizationMode": null,
+    "providerCode": "hio",
+    "countryData": null,
+    "graphic": null,
+    "failure": {
+      "code": "UNMAPPED_STORE_IDENTITY",
+      "scope": "FUNCTIONAL",
+      "message": "identidad fiscal no configurada: EC / la tienda K004 no está cargada en el catálogo de identidades fiscales"
+    },
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": null },
+    "providerMetadata": null
+  }
+  ```
+
+  **It is a charged sale with no fiscal receipt.** The integrator compensates on its side and
+  returns the receipt via the callback. Retrying does not fix it: the data has to be corrected.
+  </Accordion>
+
+  <Accordion title="FAILED_RETRYABLE — you rejected, but it can be retried" icon="rotate-right">
+  You returned non-`2xx` with `retryable: true`.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "FAILED_RETRYABLE",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": null,
+    "issuedAt": null,
+    "authorizationMode": null,
+    "providerCode": "hio",
+    "countryData": null,
+    "graphic": null,
+    "failure": {
+      "code": "PROVIDER_UNAVAILABLE",
+      "scope": "TECHNICAL",
+      "message": "El servicio de fiscalización no está disponible."
+    },
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": null },
+    "providerMetadata": null
+  }
+  ```
+
+  Same block as the previous one; what changes is the `numberingStatus` and the `scope`. **There
+  is no receipt, but there may be one**: the channel retries with the same `orderCode`.
+  </Accordion>
+
+  <Accordion title="PENDING — you did not respond" icon="circle-question">
+  There was a timeout or the connection dropped. **You never produce this state**: stating it
+  would imply having answered.
+
+  ```json
+  "fiscalRepresentation": {
+    "numberingStatus": "PENDING",
+    "documentType": "SALE_INVOICE",
+    "documentNumber": null,
+    "issuedAt": null,
+    "authorizationMode": null,
+    "providerCode": "hio",
+    "countryData": null,
+    "graphic": null,
+    "failure": {
+      "code": "PROVIDER_TIMEOUT",
+      "scope": "TECHNICAL",
+      "message": "El proveedor fiscal no respondió dentro del tiempo configurado."
+    },
+    "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": null },
+    "providerMetadata": null
+  }
+  ```
+
+  <Warning>
+    **It is the most delicate state, and the one most easily misread.** It does not mean "there is
+    no receipt": it means **we do not know**. You may have numbered, consumed a sequential and
+    issued the document, and the response got lost on the way back.
+
+    An integrator that reads it as "there is no receipt" and compensates by issuing another one
+    **declares the same sale twice before the authority**. With `FAILED_RETRYABLE` that
+    compensation is correct; with `PENDING` it is an expensive mistake.
+
+    That is why **your deduplication has to be by `orderCode`**: the retry arrives with the same
+    `orderCode` and you return **the same document** with `reused: true`, instead of numbering
+    another one. Do not expect an idempotency header — we do not send you one.
+  </Warning>
+  </Accordion>
+</AccordionGroup>
+
+### And the case with no numbering
+
+When the sale did not go through any provider —the merchant does not invoice, or the country has
+no fiscal gateway— the whole block travels as `null`:
+
+```json
+"fiscalRepresentation": null
+```
+
+The key is never omitted. The integrator branches by value:
+
+```js
+if (data.fiscalRepresentation) {
+  // numbering was attempted — numberingStatus says how it went
+}
+```
+
+<Note>
+  **`documentType` today is always `SALE_INVOICE`** in the order's events. `CREDIT_NOTE`
+  exists in the contract —it is produced by `operation: "CANCEL"`— but the numbering of the
+  cancellation is not attached to the order yet. When it is enabled, it is the same block with
+  `documentType: "CREDIT_NOTE"`.
+</Note>
+
+## Three fields worth understanding well
+
+### `provider` and `metadata` — two blocks, two destinations
+
+They look alike and are not the same thing, so they travel separately:
+
+| You return | Arrives as | What it is |
+|---|---|---|
+| `provider` | `providerIdentity` | **It has shape**: `name`, `version`, `reference`. It is who numbered and with which version, and the identifier that has to be quoted back to you to find the operation |
+| `metadata` | `providerMetadata` | **No shape**: whatever is useful to you for diagnostics |
+
+Neither of the two carries `providerCode`: that is **our** adapter identifier and it already
+travels separately, above the block.
+
+<Note>
+  **`provider.reference` is the only reason this block has shape.** When something goes wrong, it
+  is what the integrator quotes to you so you can find the operation in your records. Buried in an
+  opaque bag —which by contract nobody should program against— it did not fulfil that function.
+</Note>
+
+What you put in `metadata` reaches the integrator **untouched**, in `providerMetadata`. We do not
+interpret it, we do not validate it, we do not rename it.
+
+That has two sides:
+
+<Warning>
+  **It is the only field of the response we do not control.** If you put something sensitive in
+  there —a credential, an internal identifier of your infrastructure, another customer's data— you
+  are publishing it to the point of sale's integrator.
+</Warning>
+
+And on the other side: **nobody should program against its keys.** It is declared opaque precisely
+so you can change it without breaking anyone. If a piece of data is important enough for the
+integrator to branch on it, it does not belong in `metadata` — it belongs in the contract.
+
+<Warning>
+  **Do not repeat inside it what already has its place.** Sending `failure` inside `metadata`,
+  or the `name` from the neighbouring block, stores the same fact twice — and two copies drift
+  apart. And do not change the bag between an issuance and its idempotent retry: whoever reads
+  the event will see that something "changed" that did not change.
+</Warning>
+
+### `graphic` — it is the only thing that cannot be derived
+
+Everything else in the response can be reconstructed or composed. `graphic` cannot: **the
+Brazilian NFC-e QR is a URL signed with a hash that only the issuer can build.** If it does not
+arrive, the receipt prints without a QR.
+
+It travels as is, untransformed: FIRE passes it on to the point of sale, which renders it with its
+own library. We do not generate images on this side — size and resolution depend on the printer,
+and only whoever prints knows that.
+
+### `failure` — it enables compensation at the other end
+
+When numbering fails, the error **does not stay in a log**: it travels in the event. The sale was
+charged anyway and the integrator needs to know it ended up without a fiscal receipt.
+
+With that it can compensate on its side and return the receipt via the callback. Without it, a
+charged sale with no receipt is indistinguishable from an account that does not invoice.
+
+That is why `failure.code` has to be stable and `failure.message` actionable: they are not read
+only by our support team, they are read by the end customer's system.
+
+## What does NOT travel to the events
+
+| Does not travel | Why |
+|---|---|
+| `status` (`INVOICED` / `CANCELLED`) | `documentType` already says it |
+| `reused` | It belongs to the conversation with you, not to the sale |
+| `retryable` | It is reflected in `numberingStatus` |
+| `country` | It is already in the order |
+
+## And the authority's verdict, separately
+
+`fiscalRepresentation` is **the numbers that were printed**, and they never change. Their
+existence does **not** mean the authority authorized the receipt.
+
+The verdict arrives later via your callback and travels elsewhere in the event:
+
+```json
+"lastKnown": { "fiscal": { "status": "authorized", "sourceEvent": "order.invoiced" } }
+```
+
+They are two distinct lifecycles and the contract keeps them separate on purpose: one is
+immutable and the other gets updated.
