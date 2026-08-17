@@ -414,7 +414,16 @@ O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sand
 ```
 
 <Note>
-  Os valores monetários são **strings expressas como unidades menores inteiras × 10000** (ex.: `"229000"` = `22.9000` BRL). Isso evita drift de ponto flutuante através de múltiplas integrações. Parseie com uma biblioteca decimal, nunca com `parseFloat`. A exceção é `paymentMethods[].totalBill`, que a origem às vezes envia como número JSON — trate ambos.
+  Os valores monetários são **strings com o valor inteiro escalado ×10.000** — quatro casas decimais fixas. `"229000"` é **22,9 BRL**, não 229.000. Para ler, divida por 10.000.
+
+  É a escala com que o FIRE armazena: evita o drift de ponto flutuante ao somar impostos através de várias integrações. Parseie com uma biblioteca decimal, nunca com `parseFloat`.
+
+  A exceção é `paymentMethods[].totalBill`, que a origem às vezes envia como número JSON — trate os dois casos.
+
+  <Warning>
+    **Não é a escala de todos os caminhos.** A requisição de
+    [numeração fiscal](/pt/api-reference/fiscal-documents) leva os valores **sem escalar**, tal como foram cobrados. Se você tirar um valor deste evento para declará-lo ao órgão, divida antes.
+  </Warning>
 </Note>
 
 ## Referência de campos
@@ -498,7 +507,7 @@ O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sand
 ### `data.client`
 
 <ResponseField name="client" type="object | null">
-  Cliente que fez o pedido. `null` para pedidos de canal totalmente anônimos. Para pedidos BR de "consumidor final", `client` é populado com valores placeholder (`govIdType: "FINAL_CONSUMER"`, `govIdNumber: "00000000000"`).
+  Cliente que fez o pedido. `null` para pedidos de canal totalmente anônimos. Quando a venda **não identifica o comprador** —em qualquer país— `client` trafega populado com o marcador de consumidor final: `govIdType: "FINAL_CONSUMER"` e `govIdNumber` em zeros. **Não chega traduzido para a regra de cada regime** — o NIT genérico da DIAN, por exemplo, é resolvido pelo provedor fiscal.
 
   <Expandable title="client">
     <ResponseField name="uid" type="string | null">ID do cliente vindo do provedor de autenticação.</ResponseField>
@@ -687,7 +696,7 @@ Identifica a entidade legal que emite o documento e como autenticar com o proved
 
 ### 2. `data.payments.metadata.fiscal` — agregados fiscais a nível de pedido
 
-Totais agregados estilo SEFAZ, prontos para envio ao provedor fiscal (seu provedor fiscal no Brasil). Os valores são strings × 10000.
+Totais agregados estilo SEFAZ, prontos para envio ao provedor fiscal (seu provedor fiscal no Brasil). Os valores são strings escaladas ×10.000, igual ao resto do evento.
 
 ```json
 "metadata": {
@@ -979,7 +988,7 @@ async function onOrderCompleted(data) {
       storeCode: store.code,
       country: store.locationInfo.country.code,
       currency: store.locationInfo.currencyCode,
-      // payments.totals[0].total é "229000" unidades menores × 10000
+      // payments.totals[0].total é "229000" está escalado ×10.000 → 22,9
       totalMinorUnits: BigInt(payments.totals[0]?.total ?? "0"),
       completedAt: new Date(createdAt ?? Date.now()),
       service: fulfillment.service.code,
@@ -1039,7 +1048,7 @@ o evento onde estes blocos mais importam.
 - **Decimais como strings × 10000.** `payments.totals[0].total === "229000"` significa 22.9 BRL. Use uma biblioteca decimal; nunca com `parseFloat`.
 - **O casing é misto em `payments.totals[]` e partes de `paymentMethods[]`.** Leia tanto `currencyCode` quanto `currencyCode` defensivamente. O builder V4 transforma a maior parte do snapshot mas passa os objetos de payment sem alteração.
 - **`fulfillment.delivery` pode estar presente mesmo para serviços non-delivery** com zeros placeholder. Sempre ramifique em `fulfillment.service.code`.
-- **`client` pode ser um placeholder "FINAL_CONSUMER" populado** em BR — não é `null`. Trate `govIdType === "FINAL_CONSUMER"` como anônimo para analítica.
+- **`client` pode ser um placeholder "FINAL_CONSUMER" populado** em qualquer país — não é `null`. Trate `govIdType === "FINAL_CONSUMER"` como anônimo para analítica.
 - **`event.id` é o ID de execução do flow, não o ID do pedido.** Use `event.id` para idempotência (muda por entrega), e `orderId` como chave de negócio.
 - **Routing multi-tenant.** Use `store.account.uid`, `store.vendor.uid` e `store.code` para rotear ao tenant correto no seu sistema, mesmo que o Fire já dê escopo ao flow do lado dele.
 

@@ -95,7 +95,7 @@ numerar. Los nombres coinciden con los que ya usás (`store`, `device`, `orderCo
 lo armes recortando lo que ya tenés, pero no envíes el cuerpo completo de la orden — nada de
 `products`, `payments` ni `shippingMethod`.
 
-Cinco campos, y ninguno es un código del ente.
+Siete campos, y ninguno es un código del ente.
 
 <ParamField body="orderCode" type="string" required>
   Código de la venta. Es **la clave de idempotencia**, la de Fire y la del proveedor.
@@ -168,6 +168,133 @@ Cinco campos, y ninguno es un código del ente.
     `store.code`.
 
     Viene de vuelta en `countryData.puntoEmision`, con el que quedó efectivamente emitido.
+  </Note>
+</ParamField>
+
+<ParamField body="totals" type="array">
+  Lo que se cobró. **Es el mismo `payments.totals` que ya mandás en la inyección de órdenes**
+  — mandalo tal cual, entero.
+
+  <Expandable title="totals[] — lo que Fire usa para fiscalizar">
+    <ParamField body="currencyCode" type="string">
+      ISO 4217, el de la tienda: `USD` en Ecuador, `COP` en Colombia, `BRL` en Brasil.
+    </ParamField>
+    <ParamField body="total" type="number">Total cobrado, impuestos incluidos.</ParamField>
+    <ParamField body="subtotalWithoutTaxes" type="number">Base imponible, antes de impuestos.</ParamField>
+    <ParamField body="taxValue" type="number">Suma de los impuestos.</ParamField>
+    <ParamField body="taxes" type="array">
+      Un elemento **por impuesto**, con `name`, `base`, `rate` y `amount`. Siempre el array
+      granular: hay regímenes que los declaran por separado y no aceptan el total sumado.
+
+      El nombre es el tuyo (`IVA`, `ICMS`, `PIS`…): traducirlo al código del ente es trabajo
+      del proveedor fiscal, no tuyo.
+    </ParamField>
+  </Expandable>
+
+  <Note>
+    **Lo que se manda hoy, por país:**
+
+    | País | Moneda | Impuestos |
+    |---|---|---|
+    | Ecuador | `USD` | `IVA` 15% |
+    | Colombia | `COP` | `IVA` 19% |
+    | Brasil | `BRL` | seis: `ICMS`, `PIS`, `COFINS`, `IBS_UF`, `IBS_MUN`, `CBS` |
+
+    **Mandá `taxes[]` con `amount`, no un porcentaje suelto.** Un elemento por impuesto, con
+    `name`, `base`, `rate` y `amount` — la misma forma en todos los países.
+
+    El monto tiene que venir calculado por vos, que sos quien lo cobró e imprimió. Donde el
+    identificador fiscal es un hash de la factura —el CUFE colombiano— derivarlo del porcentaje
+    obliga a alguien más a redondear, y si redondea distinto que la caja, el identificador deja
+    de corresponder al papel que tiene el cliente.
+  </Note>
+
+  <Note>
+    **Los importes van sin escalar.** Mandá el número tal como lo cobraste: `50000`, `42016.81`.
+    No lo multipliques por 10.000.
+
+    Esa escala existe, pero es de **otro camino**: los eventos de la orden
+    ([`order.completed`](/es/events/order-completed) y los demás) llevan los mismos importes como
+    entero en string ×10.000, porque es como FIRE los almacena. Acá no.
+
+    Si integrás los dos caminos, esa es la única conversión que tenés que hacer — y hacerla al
+    revés significa declarar diez mil veces el monto.
+  </Note>
+  <Note>
+    **Mandá el importe tal como lo cobraste e imprimiste.** Fire no lo redondea ni lo
+    reformatea: el número del request y el del comprobante son el mismo.
+
+    Importa porque hay regímenes donde el identificador fiscal es un **hash de la factura** —
+    el CUFE colombiano, por ejemplo. Si el importe que entra al hash no es el que está
+    impreso, el identificador no corresponde a la factura que tiene el cliente en la mano.
+  </Note>
+</ParamField>
+
+<ParamField body="client" type="object">
+  Quién compró. **Es el mismo bloque que ya mandás en la inyección de órdenes: mandalo entero,
+  tal cual.** No lo recortes, no lo renombres, no lo traduzcas.
+
+  Fire lee de ahí lo que el régimen del país necesita y descarta el resto. Que sea el bloque
+  completo y no un subconjunto es a propósito: si cada país exigiera su propio recorte, el
+  punto de venta tendría que saber qué campo mira cada ente — que es exactamente lo que este
+  contrato evita.
+
+  <Expandable title="client — lo que Fire usa para fiscalizar">
+    <ParamField body="govIdType" type="string">
+      Tipo de documento. Fire espera uno de: **`FINAL_CONSUMER`** · **`CI`** · **`RUC`** ·
+      **`CC`** · **`NIT`**.
+    </ParamField>
+    <ParamField body="govIdNumber" type="string">Número del documento.</ParamField>
+    <ParamField body="name" type="string">Nombre. Para empresas, la razón social está en `billingInformation.businessName`.</ParamField>
+    <ParamField body="billingInformation" type="object">
+      Datos de facturación. Cuando trae `govIdType`/`govIdNumber`, **tienen prioridad** sobre
+      los de la raíz: es el documento que el cliente pidió para su factura.
+    </ParamField>
+    <ParamField body="additionalInfo.fiscal" type="object">
+      Domicilio fiscal del comprador, cuando el régimen lo exige para facturar a empresas.
+    </ParamField>
+  </Expandable>
+
+  El resto de los campos —`uid`, `email`, `phone`, `gender`, `birthdate`, `externalId`— viajan
+  y no se fiscalizan. Fire **no los reenvía al proveedor fiscal**: no son asunto del ente.
+
+  <Note>
+    **Los valores que Fire espera en `govIdType`:**
+
+    | Valor | Qué es | Dónde |
+    |---|---|---|
+    | `FINAL_CONSUMER` | venta sin comprador identificado — `govIdNumber` en ceros | todos |
+    | `CI` | cédula de identidad | Ecuador |
+    | `RUC` | Registro Único de Contribuyentes | Ecuador |
+    | `CC` | cédula de ciudadanía | Colombia |
+    | `NIT` | Número de Identificación Tributaria | Colombia |
+
+    **Hoy no hay guard: mandes lo que mandes, la venta se numera.** El campo viaja tal cual al
+    proveedor fiscal, así que un valor fuera de esta lista no rompe la numeración — le llega a
+    él, que es quien tiene que reconocerlo.
+
+    Por eso conviene ajustarse: un `CEDULA` donde va `CI`, o dos escrituras distintas para el
+    consumidor final, son documentos que salen mal sin que nada falle en el camino.
+  </Note>
+
+  <Note>
+    **Consumidor final: mandá los dos campos, sin traducir ninguno.**
+
+    ```json
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000"
+    ```
+
+    El número lo mandás vos, igual que en cualquier otra venta. Lo que **no** tenés que hacer es
+    convertirlo a lo que exige cada régimen: el NIT genérico `222222222222` de la DIAN en
+    Colombia, la ausencia de destinatario en Brasil. Eso lo resuelve el proveedor fiscal, que es
+    quien está certificado ante el ente.
+
+    Es deliberado: esa regla cambia por país y por resolución del ente, y no debería obligarte a
+    desplegar el punto de venta cuando cambie.
+
+    **Fire tampoco lo toca.** El bloque `client` viaja tal cual al proveedor: no completamos el
+    número, no lo normalizamos y no lo validamos. Lo que mandás es lo que él recibe.
   </Note>
 </ParamField>
 
@@ -270,7 +397,7 @@ que el proveedor de ese país necesite.
   En qué ambiente numeró **Fire**: `SANDBOX` o `PRODUCTION`.
 
   Es nuestro, no del ente. Sale de la configuración fiscal de la cuenta —que es por vendor y
-  por país, así que la misma cuenta puede tener Ecuador en producción y Venezuela en
+  por país, así que la misma cuenta puede tener Ecuador en producción y Colombia en
   sandbox— y queda congelado en la solicitud: si mañana se cambia la configuración, este
   valor sigue diciendo con qué numeró **esta** venta.
 
@@ -361,7 +488,9 @@ que el proveedor de ese país necesite.
 <ResponseField name="countryData" type="object">
   **Los identificadores del país, en el vocabulario de su ente y listos para imprimir.**
 
-  ```json
+  <CodeGroup>
+
+  ```json Ecuador (EC) — SRI
   {
     "numeroComprobante": "001-020-000000123",
     "claveAcceso": "1208202601179141513200110010200000001231234567813",
@@ -371,6 +500,29 @@ que el proveedor de ese país necesite.
     "ambiente": "PRODUCCION"
   }
   ```
+
+  ```json Colombia (CO) — DIAN
+  {
+    "numeroComprobante": "SETP990000001",
+    "cufe": "9c4f1e… (96)",
+    "prefijo": "SETP",
+    "numeroDian": "990000001",
+    "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+    "ambiente": "PRODUCCION"
+  }
+  ```
+
+  </CodeGroup>
+
+  <Note>
+    **El bloque cambia entero según el país, y los rótulos también.** En Colombia
+    `documentLabel` es `FACTURA ELECTRONICA DE VENTA` y `authorizationLabel` es
+    `VALIDACION PREVIA` — son los nombres de la DIAN, no una variante del texto ecuatoriano.
+
+    `ambiente` llega traducido en los dos países, y ahí está lo importante: la DIAN codifica
+    `1` como producción y el SRI como pruebas. Fire lo resuelve para que ningún canal tenga
+    que llevar esa tabla.
+  </Note>
 
   Es un **mapa abierto**: las claves las define el régimen de cada país, no este contrato. Un
   país nuevo entra sin que cambie la forma de la respuesta.
@@ -385,14 +537,14 @@ que el proveedor de ese país necesite.
 
   <Warning>
     **No busques campos fijos: recorré las claves que vengan.** Ecuador trae `claveAcceso`,
-    Brasil `chaveAcesso`, Colombia `cufe`, Venezuela `numeroControl`. Un canal que lea
+    Colombia `cufe`, Brasil `chaveAcesso`. Un canal que lea
     `countryData.claveAcceso` a secas funciona en Ecuador y se rompe en el segundo país.
   </Warning>
 </ResponseField>
 
 ### `countryData` por país
 
-Hoy el gateway numera en **Ecuador**. Cada país que entra suma su pestaña acá — y solo eso: la
+Hoy el gateway numera en **Ecuador** y **Colombia**. Cada país que entra suma su pestaña acá — y solo eso: la
 forma de la respuesta no cambia, porque el bloque es abierto.
 
 <Tabs>
@@ -438,17 +590,67 @@ forma de la respuesta no cambia, porque el bloque es abierto.
     </Warning>
   </Tab>
 
+  <Tab title="Colombia (CO) · disponible">
+    Comprobantes de la **DIAN**.
+
+    | Clave | Tipo | Siempre | Notas |
+    |---|---|---|---|
+    | `numeroComprobante` | string | ✓ | El número **visible**, ya armado: `prefijo + consecutivo` |
+    | `cufe` | string | ✓ | 96 caracteres hexadecimales (SHA-384). Es el identificador del documento ante la DIAN |
+    | `prefijo` | string | ✓ | Prefijo del rango de numeración autorizado por resolución |
+    | `numeroDian` | string | ✓ | El consecutivo **solo**, sin el prefijo |
+    | `qrCode` | string | ✓ | URL del catálogo de la DIAN. Es lo que se imprime como QR |
+    | `ambiente` | string | ✓ | `PRUEBAS` o `PRODUCCION` — **ya traducido**; la DIAN lo define como `"1"` / `"2"` |
+
+    ```json
+    {
+      "numeroComprobante": "SETP990000001",
+      "cufe": "9c4f1e… (96 caracteres hexadecimales)",
+      "prefijo": "SETP",
+      "numeroDian": "990000001",
+      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+      "ambiente": "PRODUCCION"
+    }
+    ```
+
+    <Warning>
+      **`ambiente` llega traducido, y menos mal.** La DIAN usa `1` para producción y `2` para
+      pruebas — **al revés que el SRI**. Fire lo resuelve acá para que ningún canal tenga que
+      llevar su propia copia de la tabla: el primero que la copie del lado equivocado imprime
+      "PRUEBAS" en una factura real.
+    </Warning>
+
+    <Note>
+      **`numeroComprobante` y `numeroDian` no son lo mismo.** El primero es el número visible
+      completo, tal como va impreso; el segundo es solo el consecutivo. Los dos llegan
+      resueltos por el proveedor — Fire no concatena nada, igual que en Ecuador.
+
+      `document.documentNumber` es un **eco** de `numeroComprobante`, para imprimir sin entrar
+      al bloque del país.
+    </Note>
+
+    <Warning>
+      **No hay `graphic` en Colombia.** El QR es la URL del catálogo de la DIAN y vive en
+      `countryData.qrCode`. Un canal que espere `graphic.qr` como en Ecuador no encuentra nada.
+    </Warning>
+
+    <Note>
+      **Solo CUFE, no CUDE.** Emitimos factura electrónica de venta, que lleva CUFE. El
+      "documento equivalente P.O.S." lleva CUDE y hoy no se emite.
+    </Note>
+  </Tab>
+
   <Tab title="Otros países · cuando entren">
     Un país entra con su adaptador, y con él llegan sus claves y su pestaña. La forma de la
     respuesta **no cambia**: `countryData` sigue siendo el mismo mapa abierto.
 
-    Lo que sí cambia es el vocabulario, y por eso no conviene indexar claves fijas: Brasil habla
-    de `chaveAcesso`, Colombia de `cufe`, Venezuela de `numeroControl`. Son ejemplos de cómo
-    nombra cada régimen, no un contrato ya disponible.
+    Lo que sí cambia es el vocabulario, y por eso no conviene indexar claves fijas: Ecuador
+    habla de `claveAcceso` y Colombia de `cufe`, para el mismo hecho. Brasil dirá
+    `chaveAcesso`. Son ejemplos de cómo nombra cada régimen, no un contrato ya disponible.
 
     <Warning>
       **Si tu integración opera en más de un país, recorré las claves.** Un canal que lea
-      `countryData.claveAcceso` directo funciona en Ecuador y se rompe con el primero que sume.
+      `countryData.claveAcceso` directo funciona en Ecuador y ya se rompe en Colombia.
     </Warning>
   </Tab>
 </Tabs>
@@ -670,7 +872,9 @@ forma de la respuesta no cambia, porque el bloque es abierto.
     Si `printing.reason` es `ISSUED_OFFLINE`, el comprobante es válido pero se emitió en
     contingencia: imprimí la leyenda que corresponda en ese país.
 
-    ```json
+    <CodeGroup>
+
+    ```json Ecuador (EC) — SRI
     {
       "requestStatus": "GENERATED",
       "documentStatus": "PENDING",
@@ -696,6 +900,35 @@ forma de la respuesta no cambia, porque el bloque es abierto.
       "failure": null
     }
     ```
+
+    ```json Colombia (CO) — DIAN
+    {
+      "requestStatus": "GENERATED",
+      "documentStatus": "PENDING",
+      "reused": false,
+      "document": {
+        "documentType": "SALE_INVOICE",
+        "documentLabel": "FACTURA ELECTRONICA DE VENTA",
+        "documentNumber": "SETP990000001",
+        "authorizationMode": "ONLINE",
+        "authorizationLabel": "VALIDACION PREVIA",
+        "issuedAt": "2026-08-16T14:21:03.118Z"
+      },
+      "countryData": {
+        "numeroComprobante": "SETP990000001",
+        "cufe": "9c4f1e… (96 hex)",
+        "prefijo": "SETP",
+        "numeroDian": "990000001",
+        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+        "ambiente": "PRODUCCION"
+      },
+      "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+      "graphic": null,
+      "failure": null
+    }
+    ```
+
+    </CodeGroup>
   </Accordion>
 
   <Accordion title="PENDING — no se sabe si hay comprobante" icon="circle-question">
@@ -819,6 +1052,14 @@ forma de la respuesta no cambia, porque el bloque es abierto.
 
 Mandás **el mismo `orderCode` de la venta** con `operation: "CANCEL"`. Nada más.
 
+**Mandá el mismo cuerpo, `totals` y `client` incluidos.** La anulación no es un borrado: emite
+un **documento nuevo** —una nota de crédito— que el proveedor calcula con los mismos datos que
+la factura.
+
+La anulación es **total en todos los países**: no existen anulaciones parciales, así que los
+importes que mandás son los de la venta completa. Qué documento se compensa lo resuelve Fire
+por el `orderCode` — eso sí, no lo mandes vos.
+
 ```json
 {
   "orderCode": "EC-K004-42-1786579046934",
@@ -904,6 +1145,70 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
   "operation": "INVOICE",
   "store": { "code": "K004" },
   "device": { "uid": "kiosk-01", "name": "KIOSK", "platform": "android" },
+  "totals": [
+    {
+      "currencyCode": "USD",
+      "total": 10,
+      "subtotalWithoutTaxes": 8.7,
+      "taxValue": 1.3,
+      "taxes": [
+        { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+      ]
+    }
+  ],
+  "client": {
+    "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+    "name": "CONSUMIDOR",
+    "lastName": "FINAL",
+    "email": "consumidor.final@kfc.com.ec",
+    "phone": "2222222",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000",
+    "externalId": "",
+    "additionalInfo": {
+      "fiscal": "",
+      "gender": "",
+      "birthdate": ""
+    },
+    "billingInformation": {
+      "email": "",
+      "phone": "2222222",
+      "address": "",
+      "govIdType": "FINAL_CONSUMER",
+      "externalId": "",
+      "govIdNumber": "00000000000",
+      "businessName": ""
+    }
+  },
+  "metadata": {}
+}
+```
+
+```json Facturar — Colombia (CO)
+{
+  "country": "CO",
+  "operation": "INVOICE",
+  "businessDayDate": "2026-08-16",
+  "orderCode": "CO-K039-1786901234",
+  "store": { "code": "K039" },
+  "device": { "uid": "52CAEA5A18D9B75F", "name": "CAJA 3", "platform": "android" },
+  "client": {
+    "name": "Consumidor",
+    "lastName": "final",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000"
+  },
+  "totals": [
+    {
+      "currencyCode": "COP",
+      "total": 50000,
+      "subtotalWithoutTaxes": 42016.81,
+      "taxValue": 7983.19,
+      "taxes": [
+        { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+      ]
+    }
+  ],
   "metadata": {}
 }
 ```
@@ -915,6 +1220,33 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
   "operation": "CANCEL",
   "store": { "code": "K004" },
   "device": { "uid": "kiosk-01", "name": "KIOSK", "platform": "android" },
+  "client": {
+    "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+    "name": "CONSUMIDOR",
+    "lastName": "FINAL",
+    "email": "consumidor.final@ejemplo.com",
+    "phone": "2222222",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000",
+    "externalId": "",
+    "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+    "billingInformation": {
+      "email": "", "phone": "2222222", "address": "",
+      "govIdType": "FINAL_CONSUMER", "externalId": "",
+      "govIdNumber": "00000000000", "businessName": ""
+    }
+  },
+  "totals": [
+    {
+      "currencyCode": "USD",
+      "total": 10,
+      "subtotalWithoutTaxes": 8.7,
+      "taxValue": 1.3,
+      "taxes": [
+        { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+      ]
+    }
+  ],
   "metadata": {}
 }
 ```
@@ -984,6 +1316,70 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "providerCode": "hio",
     "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
     "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K000" }
+  }
+}
+```
+
+```json 201 Numerado — Colombia (CO)
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "c1a7f0e2-9b34-4d21-8e55-3f60ab12cd90",
+    "orderCode": "CO-K039-1786901234",
+    "idempotencyKey": "2f81dcb4-77a0-4c19-9e3b-5a04e7f1b2c8",
+    "reused": false,
+    "countryCode": "CO",
+    "requestStatus": "GENERATED",
+    "documentStatus": "PENDING",
+    "retryable": false,
+    "environment": "PRODUCTION",
+    "document": {
+      "documentType": "SALE_INVOICE",
+      "documentLabel": "FACTURA ELECTRONICA DE VENTA",
+      "documentNumber": "SETP990000001",
+      "authorizationMode": "ONLINE",
+      "authorizationLabel": "VALIDACION PREVIA",
+      "issuedAt": "2026-08-16T14:21:03.118Z",
+      "compensates": null
+    },
+    "countryData": {
+      "numeroComprobante": "SETP990000001",
+      "cufe": "9c4f1e… (96 caracteres hexadecimales)",
+      "prefijo": "SETP",
+      "numeroDian": "990000001",
+      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+      "ambiente": "PRODUCCION"
+    },
+    "store": {
+      "code": "K039", "name": "Sucursal Chapinero",
+      "address": "CRA 13 # 63-39", "city": "Bogotá", "phone": "6013334444",
+      "govIdType": "NIT", "govIdNumber": "9001234567",
+      "secondaryGovIdType": null, "secondaryGovIdNumber": null
+    },
+    "company": {
+      "legalName": "COMERCIALIZADORA ANDINA S.A.S.",
+      "tradeName": "KFC",
+      "govIdType": "NIT",
+      "govIdNumber": "9001234567",
+      "headquartersAddress": "BOGOTA D.C. / CHAPINERO / CRA 13 # 63-39",
+      "countryLines": [
+        { "key": "regimen", "label": "REGIMEN", "value": "RESPONSABLE DE IVA" },
+        { "key": "resolucion", "label": "RESOLUCION DIAN", "value": "18760000001" }
+      ],
+      "legends": []
+    },
+    "graphic": null,
+    "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+    "failure": null,
+    "timestamps": {
+      "requestedAt": "2026-08-16T14:21:02.6Z",
+      "respondedAt": "2026-08-16T14:21:03.3Z",
+      "providerLatencyMs": 712
+    },
+    "correlationId": null,
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": { "externalStoreCode": "K039" }
   }
 }
 ```

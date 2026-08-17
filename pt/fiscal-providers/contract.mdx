@@ -4,15 +4,15 @@ description: "O que enviamos a um provedor fiscal e o que esperamos de volta. É
 ---
 
 <Info>
-  Antes deste documento convém ler [a introdução](/pt/fiscal-providers/overview):
-  ela explica por que o contrato usa o vocabulário do FIRE e não o do órgão tributário.
+  Antes deste documento convém ler [a introdução](/pt/fiscal-providers/overview): ela explica
+  por que o contrato usa o vocabulário do FIRE e não o do órgão fiscal.
 </Info>
 
 ## 1. Autenticação
 
 São duas direções distintas e convém não confundi-las.
 
-### 1.1 Como o Fiscal Gateway do FIRE é consumido
+### 1.1 Como se consome o Fiscal Gateway do FIRE
 
 **API key, e nada mais.** É o único mecanismo, hoje e sempre. Não há OAuth, nem JWT de usuário,
 nem sessão.
@@ -22,45 +22,41 @@ nem sessão.
 | `x-api-key` | string | **obrigatório** |
 | `Idempotency-Key` | string | **obrigatório** |
 
-A key é **account + vendor scoped** e precisa ter o scope `fiscal:write`. O tenant é derivado
-da key, **nunca do corpo**: um payload pode mentir, uma credencial não. Por isso o request
-não leva `accountId` nem `vendorId`.
+A key é **account + vendor scoped** e precisa ter o scope `fiscal:write`. O tenant é derivado da
+key, **nunca do corpo**: um payload pode mentir, uma credencial não. Por isso a requisição não
+leva `accountId` nem `vendorId`.
 
-A `Idempotency-Key` é gerada por **quem chama** e reutilizada em cada retentativa da mesma
-venda. Se fôssemos nós a gerá-la, seria idempotência decorativa: cada tentativa traria uma
-chave diferente e não haveria nada a comparar.
+A `Idempotency-Key` é gerada por **quem chama** e reutilizada em cada retentativa da mesma venda.
+Gerá-la nós seria idempotência decorativa: cada tentativa traria uma chave diferente e não haveria
+nada a comparar.
 
 <Note>
-  **Não é ela que evita o documento duplicado** — isso quem faz é o `orderCode`, a chave natural
+  **Não é o que evita o documento duplicado** — isso é papel do `orderCode`, a chave natural
   (`país + orderCode + operação`). Uma retentativa com o mesmo `orderCode` devolve o mesmo
   documento mesmo que o canal regenere a chave, que é o erro de implementação mais comum.
 
-  O que a chave acrescenta é **detectar que ela foi reutilizada para outra venda**: mesma chave
-  com corpo diferente responde `409` em vez de numerar.
+  O que a chave acrescenta é **detectar que foi reusada para outra venda**: mesma chave com corpo
+  diferente responde `409` em vez de numerar.
 </Note>
 
 <Warning>
-  **Esta chave não trafega até o provedor.** A chamada que sai em direção a ele leva apenas
-  `x-api-key` e `Content-Type`. Se você implementar a deduplicação do lado do provedor, faça-a
-  por `orderCode`.
+  **Essa chave não trafega até o provedor.** A chamada que sai em direção a ele leva apenas
+  `x-api-key` e `Content-Type`. Se você implementar a deduplicação do lado do provedor, faça por
+  `orderCode`.
 </Warning>
 
 ### 1.2 Como consumimos o provedor
 
-**Também API key.** Mesmo mecanismo nas duas direções: o provedor entrega uma key por
-ambiente e o FIRE a envia em `x-api-key` em cada chamada. Não há OAuth, nem endpoint de token,
-nem audience a configurar.
+**Também API key.** Mesmo mecanismo nas duas direções: o provedor entrega uma key por ambiente e
+o FIRE a envia em `x-api-key` a cada chamada. Não há OAuth, nem endpoint de token, nem audiência
+para configurar.
 
 | Header | Tipo | |
 |---|---|---|
 | `x-api-key` | string | **obrigatório** |
 
-A key é guardada criptografada na configuração da conta e não sai da instância. Ela é
-**write-only** no backoffice: é carregada, nunca exibida.
-
-O provedor precisa poder **rotacioná-la sem interromper o serviço** — aceitando a key anterior
-durante uma janela de sobreposição. Sem isso, rotacionar significa uma interrupção de
-faturamento coordenada, e na prática se traduz em keys que nunca são rotacionadas.
+A key fica guardada cifrada na configuração da conta e não sai da instância. É **write-only** no
+backoffice: é carregada, nunca exibida.
 
 ---
 
@@ -72,25 +68,25 @@ Content-Type: application/json
 x-api-key: <api key do provedor>
 ```
 
-`{country}` é o código **ISO 3166-1 alpha-2 em minúsculas**: `ec`, `ve`, `co`.
+`{country}` é o código **ISO 3166-1 alpha-2 em minúsculas**.
 
 ```
 POST {baseUrl}/api/v1/fiscal/ec/prekeys      Equador
-POST {baseUrl}/api/v1/fiscal/ve/prekeys      Venezuela
+POST {baseUrl}/api/v1/fiscal/co/prekeys      Colômbia
 ```
 
-**Uma única integração.** O provedor recebe uma `baseUrl` e uma credencial; as rotas são
-derivadas do país. O FIRE resolve o país antes de chamar — ele sai da loja — então não há
-nada a descobrir nem a configurar separadamente.
+**Uma única integração.** O provedor recebe um `baseUrl` e uma credencial; as rotas derivam do
+país. O FIRE resolve o país antes de chamar —ele sai da loja— então não há nada a descobrir nem a
+configurar à parte.
 
 <Note>
   **Por que por país e não uma rota única.** Uma integração fiscal é construída e certificada
-  contra um órgão, e as normas mudam por país. Com uma rota por país, uma mudança no
-  Equador é uma versão do endpoint do Equador: não toca a Venezuela, não obriga a versionar
-  tudo, e não pode quebrá-la. O versionamento fica com a mesma granularidade da mudança.
+  contra um órgão, e as normas mudam por país. Com uma rota por país, uma mudança no Equador é uma
+  versão do endpoint do Equador: não toca a Colômbia, não obriga a versionar tudo, e não pode
+  quebrá-lo. O versionamento fica com a mesma granularidade da mudança.
 
-  Isso também torna desnecessário declarar capacidades: **as rotas que existem são os países
-  que você atende**.
+  Também torna desnecessário declarar capacidades: **as rotas que existem são os países que você
+  atende**.
 </Note>
 
 <Warning>
@@ -98,54 +94,167 @@ nada a descobrir nem a configurar separadamente.
   para outros erros: um país suportado que falha responde `4xx`/`5xx` com o bloco `failure`.
 </Warning>
 
-**Síncrono.** Esta chamada está no caminho crítico da venda: o caixa está esperando os
-números para imprimir. Orçamento de latência alvo: **menos de 3 segundos**.
+**Síncrono.** Esta chamada está no caminho crítico da venda: o caixa está esperando os números
+para imprimir. Orçamento de latência alvo: **menos de 3 segundos**.
 
 ---
 
-## 3. Request
+## 3. Requisição
 
 ### 3.1 Numerar uma venda
 
-```json
-{
-  "country": "EC",
-  "operation": "INVOICE",
-  "businessDayDate": "2026-08-12",
-  "orderCode": "FUEL-EC-1786553720451",
-  "store": {
-    "code": "K0050",
-    "storeFiscalConfig": {
-      "govIdType": "RUC",
-      "govIdNumber": "1791415132001",
-      "secondaryGovIdType": "INSCRICAO_ESTADUAL",
-      "secondaryGovIdNumber": "000000000000",
-      "company": {
-        "govIdType": "CNPJ",
-        "govIdNumber": "00000000000000",
-        "legalName": "Sandbox LTDA",
-        "tradeName": "Sandbox"
+**Uma só requisição, igual para todos os países.** Ela não muda de forma conforme o órgão: o que
+muda é o que cada provedor usa. O do Equador monta a chave de acesso com a data, o emitente e o
+sequencial, e nem olha os valores. O da Colômbia precisa de todos eles, porque o seu identificador
+é um hash da nota.
+
+Os dois exemplos abaixo são **o mesmo contrato**: mesmos campos, mesma ordem. A única coisa que
+muda são os valores.
+
+<Tabs>
+  <Tab title="Equador (EC)">
+    ```json
+    {
+      "country": "EC",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-12",
+      "orderCode": "FUEL-EC-1786553720451",
+      "store": {
+        "code": "K0050",
+        "storeFiscalConfig": {
+          "govIdType": "RUC",
+          "govIdNumber": "1791415132001",
+          "company": {
+            "govIdType": "RUC",
+            "govIdNumber": "1791415132001",
+            "legalName": "INT FOOD SERVICES CORP S.A.",
+            "tradeName": "KFC"
+          },
+          "metadata": {}
+        }
       },
+      "device": {
+        "uid": "52CAEA5A18D9B75F",
+        "name": "KIOSK",
+        "platform": "android",
+        "metadata": { "ip": "10.0.0.0" }
+      },
+      "client": {
+        "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+        "name": "CONSUMIDOR",
+        "lastName": "FINAL",
+        "email": "consumidor.final@ejemplo.com",
+        "phone": "2222222",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000",
+        "externalId": "",
+        "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+        "billingInformation": {
+          "email": "", "phone": "2222222", "address": "",
+          "govIdType": "FINAL_CONSUMER", "externalId": "",
+          "govIdNumber": "00000000000", "businessName": ""
+        }
+      },
+      "totals": [
+        {
+          "currencyCode": "USD",
+          "total": 10,
+          "subtotalWithoutTaxes": 8.7,
+          "taxValue": 1.3,
+          "taxes": [
+            { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+          ]
+        }
+      ],
       "metadata": {}
     }
-  },
-  "device": {
-    "uid": "device_kiosk_001",
-    "name": "KIOSK",
-    "platform": "android",
-    "metadata": { "ip": "10.0.0.0" }
-  },
-  "metadata": {}
-}
-```
+    ```
+
+    `storeFiscalConfig.metadata` vai vazio: no Equador o estabelecimento e o ponto de emissão você
+    resolve do seu lado, no seu catálogo, a partir de `store.code` e `device.uid`.
+  </Tab>
+
+  <Tab title="Colômbia (CO)">
+    ```json
+    {
+      "country": "CO",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-16",
+      "orderCode": "CO-K039-1786901234",
+      "store": {
+        "code": "K039",
+        "storeFiscalConfig": {
+          "govIdType": "NIT",
+          "govIdNumber": "9001234567",
+          "company": {
+            "govIdType": "NIT",
+            "govIdNumber": "9001234567",
+            "legalName": "COMERCIALIZADORA ANDINA S.A.S.",
+            "tradeName": "KFC"
+          },
+          "metadata": {
+            "claveTecnica": "fc8eac422eba16e22ffd8c6f94b3f40a6e38162c",
+            "rangoFacturacion": {
+              "prefijo": "SETP",
+              "desde": "990000000",
+              "hasta": "995000000",
+              "resolucion": "18760000001",
+              "vigenteHasta": "2027-08-16"
+            },
+            "rangoNotaCredito": { "prefijo": "NC", "desde": "1", "hasta": "100000" }
+          }
+        }
+      },
+      "device": {
+        "uid": "52CAEA5A18D9B75F",
+        "name": "CAJA 3",
+        "platform": "android",
+        "metadata": { "ip": "10.0.0.0" }
+      },
+      "client": {
+        "uid": "usr_cf_001",
+        "name": "Consumidor",
+        "lastName": "final",
+        "email": "consumidor.final@ejemplo.com",
+        "phone": "2222222",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000",
+        "externalId": "",
+        "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+        "billingInformation": {
+          "email": "", "phone": "2222222", "address": "",
+          "govIdType": "FINAL_CONSUMER", "externalId": "",
+          "govIdNumber": "00000000000", "businessName": ""
+        }
+      },
+      "totals": [
+        {
+          "currencyCode": "COP",
+          "total": 50000,
+          "subtotalWithoutTaxes": 42016.81,
+          "taxValue": 7983.19,
+          "taxes": [
+            { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+          ]
+        }
+      ],
+      "metadata": {}
+    }
+    ```
+
+    Aqui `storeFiscalConfig.metadata` **traz dados sim**: o prefixo da faixa e a chave técnica que
+    a DIAN entrega junto com a resolução. São da loja, configurados uma vez e não trafegam por
+    venda — mas sem eles você não consegue calcular o CUFE.
+  </Tab>
+</Tabs>
 
 ### 3.2 Cancelar
 
-Idêntico, com `"operation": "CANCEL"`.
+**Idêntico**, com `"operation": "CANCEL"`. Mesmos campos, `client` e `totals` incluídos: o
+cancelamento emite um documento novo e precisa dos mesmos dados da emissão.
 
-**Não enviamos referência ao documento original.** O provedor resolve o que está sendo
-compensado buscando a emissão do mesmo `orderCode` — que é a sua própria chave de idempotência,
-já indexada.
+**Não enviamos referência ao documento original.** O provedor resolve o que compensa buscando a
+emissão do mesmo `orderCode` — que é a sua própria chave de idempotência, já indexada.
 
 ### 3.3 Campos
 
@@ -156,7 +265,7 @@ já indexada.
 | `businessDayDate` | sim | `YYYY-MM-DD`. **Dia de negócio da venda**, local do país. Não é a data de autorização do órgão nem um timestamp UTC |
 | `orderCode` | sim | Código da venda. Parte da chave de idempotência |
 | `store.code` | sim | Código de loja do negócio |
-| `store.storeFiscalConfig.govIdType` | sim | Tipo de identificação de **quem emite** (`RUC`, `CNPJ`, `RIF`, `NIT`…) |
+| `store.storeFiscalConfig.govIdType` | sim | Tipo de identificação de **quem emite** (`RUC`, `CNPJ`, `NIT`…) |
 | `store.storeFiscalConfig.govIdNumber` | sim | Identificação de quem emite — a filial |
 | `store.storeFiscalConfig.secondaryGovIdType` | não | Identificação secundária (`INSCRICAO_ESTADUAL` e equivalentes) |
 | `store.storeFiscalConfig.secondaryGovIdNumber` | não | Valor da anterior |
@@ -166,41 +275,394 @@ já indexada.
 | `device.name` | não | Nome do aparelho (`KIOSK`, `CAJA 3`) |
 | `device.platform` | não | `android`, `ios`, `web`… Informativo |
 | `device.metadata` | não | Chave-valor do aparelho (`ip`, …). Opaco |
+| `client` | não | **Quem comprou**, tal como o ponto de venda tem. Ver [3.5](#35-client-e-totals) |
+| `totals` | não | **O que foi cobrado**, com o detalhamento de impostos. Ver [3.5](#35-client-e-totals) |
 | `metadata` | não | Chave-valor **da venda**. Opaco |
 
 **Os campos vazios são omitidos.** Nunca enviamos `""`. Um campo ausente significa "não
 configurado"; uma string vazia não deve ser interpretada como valor válido.
 
 <Warning>
-  **Não enviamos estabelecimento nem ponto de emissão.** Quem os atribui é o órgão, sob o RUC do
-  emitente, e o FIRE não tem esse catálogo — o ponto de venda também não, e exigi-lo dele o
-  obrigaria a falar o idioma do SRI para poder faturar.
+  **Não enviamos estabelecimento nem ponto de emissão.** Quem os atribui é o órgão, sob o CNPJ/RUC
+  do emitente, e o FIRE não tem esse catálogo — o ponto de venda também não, e exigi-lo dele o
+  obrigaria a falar a língua do SRI só para faturar.
 
-  Você é quem os resolve: `store.code` → estabelecimento, `device.uid` → ponto de emissão, contra
-  o seu próprio catálogo. É o mesmo trato que vale para a identidade fiscal: mandamos
-  identificadores do **negócio** e você traduz para os do órgão.
+  Você os resolve: `store.code` → estabelecimento, `device.uid` → ponto de emissão, no seu próprio
+  catálogo. É o mesmo trato da identidade fiscal: mandamos identificadores do **negócio** e você
+  traduz para os do órgão.
 
-  Até pouco tempo atrás o canal declarava o seu ponto de emissão em `device.externalId`. Isso foi
-  removido: era um dado que exigíamos sem poder validá-lo, e que além disso podia não coincidir
-  com o que acabava sendo emitido.
+  Até há pouco o canal declarava o seu ponto de emissão em `device.externalId`. Foi retirado: era
+  um dado que exigíamos sem poder validar, e que ainda podia não coincidir com o que acabava
+  emitido.
 </Warning>
 
 ### 3.4 Os dois `metadata`
 
 Há dois blocos chave-valor, em níveis distintos e com propósitos distintos:
 
-- **`store.storeFiscalConfig.metadata`** — atributos da **loja**, constantes. É onde
-  vivem os dados de que o provedor precisa e que não fazem parte do domínio compartilhado: por
-  exemplo `serieStrongId` e `sucursalStrongId` na Venezuela. São configurados uma vez no
-  backoffice e trafegam em cada chamada dessa loja.
-- **`metadata`** (raiz) — atributos da **venda**, variáveis. Por exemplo `taxCode` ou
-  `exchangeRate` na Venezuela, que mudam a cada transação.
+- **`store.storeFiscalConfig.metadata`** — atributos da **loja**, constantes. É onde vivem os
+  dados de que o provedor precisa e que não fazem parte do domínio compartilhado: por exemplo a
+  **chave técnica** e a faixa de numeração que a DIAN entrega com a resolução. São configurados
+  uma vez no backoffice e trafegam em cada chamada daquela loja.
+- **`metadata`** (raiz) — atributos da **venda**, variáveis: os que mudam a cada transação e que
+  algum regime exige declarar.
 
 Ambos são **opacos**: o FIRE não os interpreta nem os valida.
 
-**Nenhuma chave dentro de `metadata` pode sobrescrever um campo de domínio.** Se aparecer uma
-chave `storeCode` ou `country` dentro de `metadata`, ela deve ser ignorada. Caso contrário o
-chave-valor vira a porta dos fundos pela qual o contrato é redefinido.
+#### Assim se carrega o da loja
+
+<Frame caption="Em cima: o NIT do emitente, a chave técnica e a faixa de faturamento como grupo aninhado.">
+  <img src="/images/fiscal/store-fiscal-metadata-1.jpg" alt="Configuração fiscal da loja: o NIT e um editor de chave e valor com claveTecnica e o grupo rangoFacturacion, com desde, hasta e prefijo." />
+</Frame>
+
+<Frame caption="Mais abaixo, na mesma tela: a faixa de notas de crédito e a prévia do JSON que será enviado.">
+  <img src="/images/fiscal/store-fiscal-metadata-2.jpg" alt="Continuação da mesma tela: o grupo rangoNotaCredito com desde, hasta e prefijo, e abaixo a prévia do JSON resultante." />
+</Frame>
+
+O que se carrega ali é **exatamente** o que você recebe em `store.storeFiscalConfig.metadata`. Na
+captura, aquela loja vai lhe mandar:
+
+```json
+"metadata": {
+  "claveTecnica": "fc8eac422eba16e22ffd8c6f94b3f40a6e38162c",
+  "rangoFacturacion": {
+    "prefijo": "SETP",
+    "desde": "990000000",
+    "hasta": "995000000",
+    "resolucion": "18760000001",
+    "vigenteHasta": "2027-08-16"
+  },
+  "rangoNotaCredito": {
+    "prefijo": "NC",
+    "desde": "1",
+    "hasta": "100000"
+  }
+}
+```
+
+<Warning>
+  **Isto é um exemplo, não o contrato.** Nem os nomes das chaves nem a lista de campos são fixados
+  pelo FIRE: são carregados como o provedor pedir, e acrescenta-se o que for preciso. Se amanhã o
+  seu regime precisar de mais um dado, é uma linha nova nesta tela — não uma versão nova do
+  contrato nem um deploy nosso.
+
+  **Publique as chaves que você espera, com o nome exato.** Um `claveTecnica` contra um
+  `clave_tecnica` é um dado que chega e que você não vai encontrar.
+</Warning>
+
+<Note>
+  **Por que é chave-valor e não um formulário com campos fixos.**
+
+  Os dados de que um provedor precisa são do **regime do seu país**, não do domínio que
+  compartilhamos: uma chave técnica da DIAN, uma faixa de numeração, o que vier depois. Tipificá-los
+  na nossa tela significaria que somar um país —ou um órgão acrescentar um requisito— obrigue a
+  fazer deploy do backoffice. Com chave-valor, é carregar uma linha.
+
+  Os valores podem ser **texto ou um grupo aninhado**, sem limite de profundidade. Por isso uma
+  faixa inteira —prefixo, de, até, resolução, vigência— entra como um bloco, em vez de cinco chaves
+  com o prefixo colado ao nome.
+
+  O exemplo leva **duas faixas** porque são duas coisas distintas: a de faturamento e a de notas de
+  crédito. Uma loja que só tenha a primeira pode emitir mas **não cancelar**.
+</Note>
+
+<Info>
+  **Esse mesmo bloco também trafega nos eventos do pedido**, não só na numeração. Aparece como
+  `data.store.storeFiscalConfig` —com o seu `metadata` dentro— em:
+
+  [`order.opened`](/pt/events/order-opened) ·
+  [`order.completed`](/pt/events/order-completed) ·
+  [`order.cancelled`](/pt/events/order-cancelled) ·
+  [`order.invoiced`](/pt/events/order-invoiced) ·
+  [`order.reversed`](/pt/events/order-reversed)
+
+  É o mesmo dado nos dois caminhos, e de propósito: quem consome eventos para conciliar vê com que
+  configuração aquela venda foi emitida, sem ter de perguntar a ninguém.
+
+  ```json
+  "store": {
+    "code": "K039",
+    "storeFiscalConfig": {
+      "enabled": true,
+      "govIdType": "NIT",
+      "govIdNumber": "9001234567",
+      "company": { "…": "razão social do emitente" },
+      "metadata": {
+        "claveTecnica": "fc8eac…",
+        "rangoFacturacion": { "prefijo": "SETP", "…": "" },
+        "rangoNotaCredito": { "prefijo": "NC", "…": "" }
+      }
+    }
+  }
+  ```
+
+  O detalhe campo a campo está em
+  [`order.completed` → Dados fiscais](/pt/events/order-completed#dados-fiscais).
+</Info>
+
+<Note>
+  **Os nomes das chaves são definidos por você, não por nós.** O campo é livre: quem configura a
+  loja escreve a chave que a sua integração espera. Por isso convém publicar quais você precisa e
+  com que nome exato — um `claveTecnica` contra um `clave_tecnica` é um dado que chega e que você
+  não vai encontrar.
+
+  O FIRE não valida esses nomes de propósito: o vocabulário é do regime e do provedor, e tipificá-lo
+  do nosso lado significaria fazer deploy do backoffice toda vez que um país novo pedir um dado
+  diferente.
+</Note>
+
+**Nenhuma chave dentro de `metadata` pode sobrescrever um campo de domínio.** Se aparecer uma chave
+`storeCode` ou `country` dentro de `metadata`, ela deve ser ignorada. Caso contrário o chave-valor
+vira a porta dos fundos por onde o contrato é redefinido.
+
+### 3.5 `client` e `totals` — o que vem da venda
+
+Estes dois blocos **são os mesmos que o ponto de venda monta para injetar o pedido**, e trafegam
+tal como estão: o FIRE não os recorta nem os renomeia. Por isso não levam vocabulário fiscal —
+levam o do negócio.
+
+Vão **sempre**, em todos os países. O que muda é quem os usa: o provedor do Equador os ignora,
+porque a chave de acesso é montada com data, emitente e sequencial. O da Colômbia precisa deles
+inteiros, porque o **CUFE é um hash da nota**: entram os valores, cada imposto separadamente, a
+data com hora e o documento do adquirente.
+
+#### `totals` — o que foi cobrado
+
+<Tabs>
+  <Tab title="Equador (EC)">
+    Moeda **`USD`**. Hoje, um único imposto: **`IVA` a 15%**.
+
+    ```json
+    "totals": [
+      {
+        "currencyCode": "USD",
+        "total": 10,
+        "subtotalWithoutTaxes": 8.7,
+        "taxValue": 1.3,
+        "taxes": [
+          { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+        ]
+      }
+    ]
+    ```
+
+    O SRI não os olha: a chave de acesso é montada com data, emitente e sequencial. Trafegam
+    mesmo assim, caso você precise deles para o seu próprio controle.
+  </Tab>
+
+  <Tab title="Colômbia (CO)">
+    Moeda **`COP`**. Hoje, um único imposto: **`IVA` a 19%**.
+
+    ```json
+    "totals": [
+      {
+        "currencyCode": "COP",
+        "total": 50000,
+        "subtotalWithoutTaxes": 42016.81,
+        "taxValue": 7983.19,
+        "taxes": [
+          { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+        ]
+      }
+    ]
+    ```
+
+    **Entra no hash do CUFE.** O montante declarado por imposto é `ValImp`, e o nome é você quem
+    traduz para o código da DIAN — `IVA` → `01`. Os campos que não se aplicam vão em `0.00`: isso
+    é regra do anexo técnico, não algo que o FIRE informe.
+  </Tab>
+</Tabs>
+
+#### `client` — quem comprou
+
+Chega **inteiro, tal como o ponto de venda o montou**. Não é um subconjunto fiscal: traz também
+dados que não servem a nenhum órgão.
+
+<Note>
+  **`govIdType` sai de um catálogo fechado.** Estes são todos os valores que o FIRE emite, e não
+  vão chegar outros:
+
+  | Valor | O que é | Onde se aplica |
+  |---|---|---|
+  | `FINAL_CONSUMER` | venda sem comprador identificado | todos os países |
+  | `CI` | cédula de identidade | Equador |
+  | `RUC` | Registro Único de Contribuyentes | Equador |
+  | `CC` | cédula de cidadania | Colômbia |
+  | `NIT` | Número de Identificación Tributaria | Colômbia |
+
+  Traduzi-los para o código que o seu órgão exige é parte da sua implementação, assim como o resto
+  da tradução para a língua do regime.
+</Note>
+
+<Note>
+  **Leia só o que é fiscal e descarte o resto.** O que um regime precisa está em `govIdType`,
+  `govIdNumber`, `name` e —para empresas— `billingInformation.businessName` e
+  `additionalInfo.fiscal`. O `uid`, o e-mail e o telefone são do negócio, não do órgão.
+
+  **`govIdType` e `govIdNumber` aparecem duas vezes**: na raiz e em `billingInformation`. Quando
+  divergem, **vale o de faturamento** — é o documento que o cliente pediu para a sua nota.
+</Note>
+
+<Tabs>
+  <Tab title="Equador (EC)">
+    | Caso | `govIdType` | `govIdNumber` |
+    |---|---|---|
+    | Consumidor final | `FINAL_CONSUMER` | `00000000000` |
+    | Pessoa | `CI` — cédula de identidade | a cédula, 10 dígitos |
+    | Empresa | `RUC` | o RUC, 13 dígitos |
+
+    ```json
+    "client": {
+      "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+      "name": "CONSUMIDOR",
+      "lastName": "FINAL",
+      "email": "consumidor.final@ejemplo.com",
+      "phone": "2222222",
+      "govIdType": "FINAL_CONSUMER",
+      "govIdNumber": "00000000000",
+      "externalId": "",
+      "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+      "billingInformation": {
+        "email": "", "phone": "2222222", "address": "",
+        "govIdType": "FINAL_CONSUMER", "externalId": "",
+        "govIdNumber": "00000000000", "businessName": ""
+      }
+    }
+    ```
+
+    O consumidor final chega com `FINAL_CONSUMER` e zeros. Traduzi-lo para o que o SRI espera no
+    comprovante é parte da sua implementação.
+  </Tab>
+
+  <Tab title="Colômbia (CO)">
+    | Caso | `govIdType` | `govIdNumber` |
+    |---|---|---|
+    | Consumidor final | `FINAL_CONSUMER` | `00000000000` |
+    | Pessoa | `CC` — cédula de cidadania | a cédula, sem pontos |
+    | Empresa | `NIT` | o NIT, sem dígito verificador |
+
+    ```json
+    "client": {
+      "uid": "usr_cf_001",
+      "name": "Consumidor",
+      "lastName": "final",
+      "email": "consumidor.final@ejemplo.com",
+      "phone": "2222222",
+      "govIdType": "FINAL_CONSUMER",
+      "govIdNumber": "00000000000",
+      "externalId": "",
+      "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+      "billingInformation": {
+        "email": "", "phone": "2222222", "address": "",
+        "govIdType": "FINAL_CONSUMER", "externalId": "",
+        "govIdNumber": "00000000000", "businessName": ""
+      }
+    }
+    ```
+
+    **O consumidor final NÃO chega traduzido.** Chega como `FINAL_CONSUMER` com o número em zeros,
+    igual a qualquer outro país. Que isso se resolva no NIT genérico `222222222222` com o nome
+    "Consumidor final" —Resolución 000042 de 2020— **é regra da DIAN, e portanto sua**.
+
+    É a mesma linha do número do comprovante e do CUFE: o FIRE manda o fato do negócio —"esta venda
+    não identificou o comprador"— e você aplica o que o órgão exige. E não é um caso de borda: em
+    restaurantes é a maioria das vendas.
+
+    Atenção à consequência: essa identificação entra no hash do CUFE como `NumAdq`. Se você a
+    resolver de outro jeito, o CUFE não corresponde à nota.
+
+  </Tab>
+</Tabs>
+
+<Warning>
+  **Os valores chegam como números JSON, não como texto**, e com as casas decimais que o valor
+  tiver — não com as que o seu regime exige. Na Colômbia são inteiros, porque o peso não usa
+  centavos; no Equador vêm com até duas casas.
+
+  E o JSON **não conserva os zeros à direita**: um valor de `8.70` chega como `8.7`, e um de
+  `50000.00` como `50000`.
+
+  Por isso, **se o seu identificador é um hash sobre uma string, a formatação é sua.** O CUFE é
+  calculado sobre `"50000.00"`, e essa string não existe na requisição: você a monta a partir do
+  número. O FIRE não a formata porque não conhece a regra do seu regime, e escolher um formato
+  errado deste lado seria pior do que não escolher nenhum.
+
+  O que garantimos é o **valor**: é exatamente o que foi cobrado e impresso.
+
+  **E isso importa especialmente porque você vai consumir os eventos do pedido.** Não é opcional: a
+  numeração lhe dá os identificadores, mas **a venda que você emite ao órgão sai do evento** — e de
+  lá você volta com o callback. Sem esse circuito, ninguém sabe se o documento foi emitido.
+
+  No evento, o mesmo valor trafega em **outra escala**: inteiro em string, **×10.000**, porque é
+  assim que o FIRE o armazena.
+
+  Um exemplo com a Colômbia — **cada país trafega na sua moeda e com os seus impostos, mas a regra
+  da escala é a mesma**. Uma venda de **50.000 COP** com IVA de **7.983,19 COP**:
+
+  <CodeGroup>
+
+  ```json NESTA requisição — valores reais
+  "totals": [
+    {
+      "currencyCode": "COP",
+      "total": 50000,
+      "subtotalWithoutTaxes": 42016.81,
+      "taxValue": 7983.19,
+      "taxes": [
+        { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+      ]
+    }
+  ]
+  ```
+
+  ```json No evento do pedido — inteiros ×10.000
+  "totals": [
+    {
+      "currencyCode": "COP",
+      "total": "500000000",
+      "subtotalWithoutTaxes": "420168100",
+      "taxValue": "79831900",
+      "taxes": [
+        { "name": "IVA", "base": "420168100", "rate": "0.19", "amount": "79831900" }
+      ]
+    }
+  ]
+  ```
+
+  </CodeGroup>
+
+  **Divida por 10.000 antes de declarar qualquer valor que tenha tirado do evento**, e use os desta
+  requisição para o hash. Os dois caminhos têm de terminar no mesmo número: o que está impresso no
+  comprovante.
+
+  Se você tirar o valor do evento sem dividir, declara **500.000.000 COP** por uma venda de **50.000
+  COP** — dez mil vezes o montante. O documento fica bem formado e o órgão o aceita.
+
+  Ver [O que chega ao integrador](/pt/fiscal-providers/in-events).
+</Warning>
+
+<Note>
+  **`taxes` traz sempre o detalhamento, um elemento por imposto**, cada um com `name`, `base`,
+  `rate` e `amount`. O montante por imposto é o dado que importa: `amount` é o que você declara ao
+  órgão, e o `taxValue` de cima é apenas a soma deles.
+
+  **Percorra o array, não leia `taxes[0]`.** Hoje no Equador e na Colômbia é um único IVA, mas um
+  regime pode declarar vários tributos por comprovante e o array os traz todos, sem que o contrato
+  mude.
+</Note>
+
+<Note>
+  **Os dois blocos trafegam nas duas operações**, `INVOICE` e `CANCEL`. É uma só requisição
+  canônica e não é recortada por operação.
+
+  Não é simetria por capricho: **o cancelamento produz um documento novo**. Uma nota de crédito
+  colombiana tem o seu próprio identificador calculado sobre os valores e o adquirente, então sem
+  `client` e `totals` não haveria com o que montá-lo.
+
+  O que não muda é o alcance: o cancelamento é **total**. Não existem cancelamentos parciais em
+  nenhum país que atendemos, então os valores que chegam são os da venda completa, e qual documento
+  você compensa se resolve pelo `orderCode`.
+</Note>
 
 ---
 
@@ -209,11 +671,8 @@ chave-valor vira a porta dos fundos pela qual o contrato é redefinido.
 A chave é **`country` + `orderCode` + `operation`**.
 
 Repetir essa tripla deve devolver **o mesmo documento** com `"reused": true`, sem consumir outro
-sequencial. É a mesma chave que o FIRE usa do seu lado, para que um choque seja detectado nas
-duas pontas ao mesmo tempo.
-
-Isso pressupõe que o `orderCode` é único por conta e país. É a mesma suposição que as duas
-partes já fazem.
+sequencial. É a mesma chave que o FIRE usa do seu lado, para que um choque seja detectado nas duas
+pontas ao mesmo tempo.
 
 ---
 
@@ -221,10 +680,10 @@ partes já fazem.
 
 A resposta tem **duas partes com regras distintas**:
 
-- **O envelope** — idêntico em todos os países. É com ele que o FIRE opera: decide se retenta,
-  se houve documento, qual erro reportar.
-- **`document`** — o idioma fiscal do país. Cada um manda o que existe no seu regime, com
-  os nomes do seu órgão, e **nada mais**.
+- **O envelope** — idêntico em todos os países. É com ele que o FIRE opera: decide se tenta de
+  novo, se houve comprovante, que erro reportar.
+- **`document`** — a língua fiscal do país. Cada um manda o que existe no seu regime, com os nomes
+  do seu órgão, e **nada mais**.
 
 ```json
 {
@@ -236,13 +695,7 @@ A resposta tem **duas partes com regras distintas**:
   "authorizationMode": "ONLINE",
   "issuedAt": "2026-08-12T16:55:29Z",
 
-  "document": {
-    "claveAcceso": "1208202601179141513200110010200000001231234567813",
-    "establecimiento": "001",
-    "puntoEmision": "020",
-    "secuencial": "000000123",
-    "ambiente": "2"
-  },
+  "document": { "…": "o bloco do SEU país — ver 5.2" },
 
   "graphic": { "qr": "https://…" },
 
@@ -252,10 +705,15 @@ A resposta tem **duas partes com regras distintas**:
 }
 ```
 
+Tudo o que está acima é igual para qualquer país. **`document` é a única coisa que muda**, e por
+isso aqui vai elidido: o seu conteúdo está em [5.2](#52-document--o-documento-numerado), com uma
+seção por país. Se você está implementando o Equador, o bloco que lhe cabe é o do Equador e nenhum
+outro.
+
 <Info>
   **`country` trafega mesmo estando na rota.** Não é redundância: o FIRE compara `country` e
-  `orderCode` com o que pediu e **descarta a resposta se não coincidirem**. É o que evita
-  imprimir o documento de outra venda quando há um cruzamento de respostas ou um proxy com cache.
+  `orderCode` com o que pediu e **descarta a resposta se não coincidirem**. É o que evita imprimir
+  o documento de outra venda quando há um cruzamento de respostas ou um proxy com cache.
 </Info>
 
 ### 5.1 `status`
@@ -267,114 +725,171 @@ Dois valores, um por operação:
 | `INVOICED` | Resposta a `operation: "INVOICE"` |
 | `CANCELLED` | Resposta a `operation: "CANCEL"` |
 
-**Não há mais estados, e isso é deliberado.** Este endpoint produz a *representação fiscal* — os
-identificadores para imprimir — e nada mais. O envio ao órgão e a sua autorização acontecem
-depois, do lado do provedor, e o desfecho chega pelo callback. Modelar aqui estados de
-autorização mistura dois ciclos de vida distintos.
+**Não há mais estados, e é deliberado.** Este endpoint produz a *representação fiscal* —os
+identificadores para imprimir— e nada mais. O envio ao órgão e a sua autorização ocorrem depois, do
+lado do provedor, e o desfecho chega pelo callback. Modelar aqui estados de autorização mistura
+dois ciclos de vida distintos.
 
-`status` é quase um eco de `operation`, e existe por um único caso: **quando a operação não
-produz documento**. O cancelamento no Brasil é um evento de cancelamento, não um documento novo,
-então a resposta chega com `document: null` e sem `graphic`. Aí o `status` é a única coisa que
-afirma que a operação foi concluída, em vez de deixar uma resposta bem-sucedida e vazia que não
-se distingue de um erro silencioso.
+`status` é quase um eco de `operation`, e existe por um único caso: **quando a operação não produz
+documento**. O cancelamento no Brasil é um evento de cancelamento, não um documento novo, então a
+resposta chega com `document: null` e sem `graphic`. Ali o `status` é a única coisa que afirma que a
+operação foi concluída, em vez de deixar uma resposta bem-sucedida e vazia que não se distingue de
+um erro silencioso.
 
 Em particular:
 
-- **Não existe `PENDING`.** Imediatamente depois de numerar, o documento está sempre
-  pendente de autorização: é a condição normal, não um estado a informar. O caixa imprime
-  com os identificadores que acabou de receber.
+- **Não existe `PENDING`.** Imediatamente depois de numerar, o documento está sempre pendente de
+  autorização: é a condição normal, não um estado a informar. O caixa imprime com os identificadores
+  que acabou de receber.
 - **Não existe `REJECTED`.** Se não foi possível numerar, é um erro: HTTP não-2xx com o bloco
-  `failure`. Uma rejeição com `200 OK` e o motivo escondido em um campo é um contrato onde
-  alguém não valida e acredita ter numerado.
-- **Não existe `REUSED`.** Isso é `reused: true`, um booleano ortogonal. É possível ter
-  `INVOICED` com `reused: true` — uma retentativa idempotente de uma venda já numerada — e essa
-  distinção se perde se `REUSED` fosse um estado.
+  `failure`. Uma rejeição com `200 OK` e o motivo escondido num campo é um contrato onde alguém não
+  valida e acredita ter numerado.
+- **Não existe `REUSED`.** Isso é `reused: true`, um booleano ortogonal. É possível ter `INVOICED`
+  com `reused: true` — uma retentativa idempotente de uma venda já numerada — e essa distinção se
+  perde se `REUSED` fosse um estado.
 
 ### 5.2 `document` — o documento numerado
 
-**Aqui se fala o idioma fiscal do país.** É o único bloco da resposta que muda entre
-países, e muda por inteiro: os nomes são os do órgão, não uma tradução nossa.
+**Aqui se fala a língua fiscal do país.** É o único bloco da resposta que muda entre países, e muda
+inteiro: os nomes são os do órgão, não uma tradução nossa.
 
-Um país manda **o que existe no seu regime e nada mais**. Um campo que não se aplica não trafega
-em `null`: simplesmente não está lá.
+Um país manda **o que existe no seu regime e nada mais**. Um campo que não se aplica não trafega em
+`null`: simplesmente não está.
 
-#### 🇪🇨 Equador — SRI
+<Tabs>
+  <Tab title="Equador (EC) — SRI">
+    ```json
+    "document": {
+      "numeroComprobante": "001-020-000000123",
+      "claveAcceso": "1208202601179141513200110010200000001231234567813",
+      "establecimiento": "001",
+      "puntoEmision": "020",
+      "secuencial": "000000123",
+      "ambiente": "2"
+    }
+    ```
 
-```json
-"document": {
-  "numeroComprobante": "001-020-000000123",
-  "claveAcceso": "1208202601179141513200110010200000001231234567813",
-  "establecimiento": "001",
-  "puntoEmision": "020",
-  "secuencial": "000000123",
-  "ambiente": "2"
-}
-```
+    | Campo | Regra |
+    |---|---|
+    | `numeroComprobante` | Obrigatório. O número **visível**, já montado: `estab-ptoEmi-sequencial` |
+    | `claveAcceso` | Obrigatório. **49 dígitos** exatos |
+    | `establecimiento` | Obrigatório. 3 dígitos |
+    | `puntoEmision` | Obrigatório. 3 dígitos — o ponto de emissão a partir do qual se faturou |
+    | `secuencial` | Obrigatório. 9 dígitos |
+    | `ambiente` | Obrigatório. `"1"` homologação · `"2"` produção |
 
-| Campo | Regra |
-|---|---|
-| `numeroComprobante` | Obrigatório. O número **visível**, já montado: `estab-ptoEmi-secuencial` |
-| `claveAcceso` | Obrigatório. **49 dígitos** exatos |
-| `establecimiento` | Obrigatório. 3 dígitos |
-| `puntoEmision` | Obrigatório. 3 dígitos — o ponto de emissão a partir do qual se faturou |
-| `secuencial` | Obrigatório. 9 dígitos |
-| `ambiente` | Obrigatório. `"1"` testes · `"2"` produção |
+    <Warning>
+      **O número visível é você quem monta, já pronto para imprimir.**
 
-<Warning>
-  **O número visível é você que monta, já pronto para imprimir.**
+      Quinze dígitos em três trechos separados por hífen —`establecimiento(3)`, `puntoEmision(3)`,
+      `secuencial(9)`— conforme o **art. 18 do Reglamento de Comprobantes de Venta**.
 
-  Quinze dígitos em três trechos separados por hífen — `establecimiento(3)`, `puntoEmision(3)`,
-  `secuencial(9)` — conforme o **art. 18 do Reglamento de Comprobantes de Venta** (norma
-  equatoriana).
+      Antes era o FIRE que o compunha com as três peças. Foi movido para cá de propósito: **o
+      formato é regra do regime, não apresentação**, e quem está certificado perante o SRI é você.
+      Se o Regulamento mudar a convenção, muda do seu lado sem que o FIRE faça deploy.
 
-  Antes quem o compunha era o FIRE, com as três peças. Isso foi movido para cá de propósito: **o
-  formato é regra do regime, não apresentação**, e quem está certificado perante o SRI é você. Se
-  o Reglamento mudar a convenção, a mudança acontece do seu lado sem que o FIRE faça deploy.
+      Há ainda uma razão concreta: o Regulamento **permite omitir os zeros à esquerda** do
+      sequencial. `001-020-123` pode ser tão legal quanto `001-020-000000123`. Montando-o nós,
+      estaríamos escolhendo uma variante em seu nome. Mande o que você emitiu — **o FIRE o imprime
+      tal como veio, sem reformatar**.
+    </Warning>
 
-  Há ainda uma razão concreta: o Reglamento **permite omitir os zeros à esquerda** do
-  sequencial. `001-020-123` pode ser tão legal quanto `001-020-000000123`. Montando-o nós,
-  estaríamos escolhendo uma variante em seu nome. Mande o que você emitiu — **o FIRE imprime tal
-  como veio, sem reformatar**.
-</Warning>
+    <Note>
+      **As três peças continuam trafegando igual**, como o SRI as nomeia e sem concatená-las numa
+      `serie` de 6 dígitos: elas servem para conciliar, não para compor o número.
 
-<Note>
-  **As três peças continuam trafegando do mesmo jeito**, como o SRI as nomeia e sem concatená-las
-  em uma `serie` de 6 dígitos: elas servem para conciliar, não para compor o número.
+      O `puntoEmision` que você devolver é o que ficou emitido, que pode não ser o que foi pedido em
+      `device.uid` através do seu catálogo. O que vale é sempre o que volta, nunca o que foi
+      mandado.
+    </Note>
 
-  O `puntoEmision` que você devolver é o que ficou emitido, que pode não ser o que foi pedido em
-  `device.uid` através do seu catálogo. O que vale é sempre o que volta, nunca o que foi enviado.
-</Note>
+    <Warning>
+      **`ambiente` não é informativo.** O FIRE o compara com o ambiente configurado para o vendor e
+      **corta se não coincidirem**. É o que pega um provedor emitindo contra o ambiente de
+      homologação do SRI enquanto a operação acredita estar em produção — sem essa verificação as
+      vendas saem com chaves de acesso que o órgão não reconhece, e isso se descobre quando um
+      cliente reclama a sua nota.
+    </Warning>
+  </Tab>
 
-<Warning>
-  **`ambiente` não é informativo.** O FIRE o compara com o ambiente configurado para o
-  vendor e **interrompe se não coincidirem**. É o que pega um provedor emitindo contra o
-  ambiente de testes do SRI enquanto a operação acredita estar em produção — sem essa
-  verificação, as vendas saem com chaves de acesso que o órgão não reconhece, e isso só se
-  descobre quando um cliente reclama a sua nota.
-</Warning>
+  <Tab title="Colômbia (CO) — DIAN">
+    ```json
+    "document": {
+      "numeroComprobante": "SETP990000001",
+      "cufe": "a2b4c6d8e0f2…  ← 96 caracteres hexadecimais",
+      "prefijo": "SETP",
+      "numeroDian": "990000001",
+      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=a2b4...",
+      "ambiente": "1"
+    }
+    ```
+
+    | Campo | Regra |
+    |---|---|
+    | `numeroComprobante` | Obrigatório. O número **visível**, já montado e tal como vai impresso. O FIRE não o compõe |
+    | `cufe` | Obrigatório. O **CUFE** que você calculou: SHA-384 → **96 caracteres hexadecimais** |
+    | `prefijo` | Obrigatório. Prefixo da faixa de numeração autorizada |
+    | `numeroDian` | Obrigatório. Somente o consecutivo, sem o prefixo |
+    | `qrCode` | Obrigatório. A URL do catálogo da DIAN que se imprime como QR. **A Colômbia não manda `graphic`** |
+    | `ambiente` | Obrigatório. `"1"` produção · `"2"` homologação |
+
+    <Warning>
+      **Atenção ao `ambiente`: na Colômbia é ao contrário do Equador.** A DIAN usa `1` para produção
+      e `2` para homologação; o SRI usa `1` para homologação e `2` para produção. Mande o código do
+      **seu** órgão, sem normalizar — o FIRE já sabe como cada país o lê, e é exatamente por isso
+      que o bloco `document` é do país e não um modelo comum.
+    </Warning>
+
+    <Note>
+      **O CUFE é você quem calcula, inteiro.** É um hash SHA-384 sobre uma string que concatena
+      valores, datas, identificações e a chave técnica, na ordem que o Anexo Técnico da DIAN fixa.
+
+      O FIRE **não monta essa string nem a aplica no hash**: manda os dados —valores em `totals`,
+      adquirente em `client`— e você aplica a regra. É o mesmo critério do `numeroComprobante`: quem
+      está certificado perante o órgão é quem conhece o algoritmo, e se o Anexo mudar, muda do seu
+      lado sem que o FIRE faça deploy.
+
+      A **chave técnica** também não trafega na requisição: a DIAN a entrega junto com a faixa de
+      numeração autorizada, então ela vive do seu lado assim como o estabelecimento no Equador.
+    </Note>
+
+    <Warning>
+      **Consumidor final: o `222222222222` é você quem coloca.**
+
+      Quando a venda não identifica o comprador, `client` chega com `FINAL_CONSUMER` e o número em
+      zeros — o fato do negócio, sem traduzir. Resolvê-lo para o NIT genérico `222222222222` com o
+      nome "Consumidor final" é **regra da DIAN** (Resolución 000042 de 2020) e entra no hash do
+      CUFE como `NumAdq`. Ver [3.5](#35-client-e-totals).
+
+      O FIRE não o traduz de propósito: o mesmo critério do número do comprovante e do CUFE. O que é
+      do regime é resolvido por quem está certificado perante o órgão.
+
+      Não é um caso de borda: na operação real de restaurantes é a maioria das vendas.
+    </Warning>
+  </Tab>
+</Tabs>
 
 #### Por que o bloco é do país e não um modelo comum
 
-Foi avaliado um bloco plano com nomes por papel — `accessKey`, `sequential`, `controlNumber` — e
-descartado. O custo não era um campo nulo: era que **cada país novo acrescentava um campo que
-todos os demais carregariam vazio para sempre**, e que o mesmo identificador tinha dois nomes
-conforme entrasse pelo prekey ou pelo callback.
+Avaliou-se um bloco plano com nomes por papel —`accessKey`, `sequential`, `controlNumber`— e ele foi
+descartado. O custo não era um campo nulo: era que **cada país novo acrescentava um campo que todos
+os demais carregariam vazio para sempre**, e que o mesmo identificador teria dois nomes conforme
+entrasse pelo prekey ou pelo callback.
 
-Este é, além disso, o mesmo mecanismo que o callback de resultado já usa, que valida por país
-sobre o `countryCode` da raiz. **Um único padrão nas duas direções.**
+Este é, além disso, o mesmo mecanismo que o callback de resultado já usa, validando por país sobre o
+`countryCode` da raiz. **Um único padrão nas duas direções.**
 
 #### O que `document` NÃO leva
 
-**Não leva `documentType`.** Com qual instrumento fiscal a operação se materializa — uma nota
-de crédito no Equador, um evento de cancelamento no Brasil — é assunto do país e do provedor.
-O que foi pedido o `status` já diz.
+**Não leva `documentType`.** Com que instrumento fiscal a operação se materializa —uma nota de
+crédito no Equador, um evento de cancelamento no Brasil— é assunto do país e do provedor. O que foi
+pedido já é dito pelo `status`.
 
-**Não leva o que o órgão atribui ao autorizar** — o `numeroAutorizacion` do SRI, o
-`protocolo` da SEFAZ. Isso chega pelo callback; declará-lo aqui o condena a vir sempre
-em `null`.
+**Não leva o que o órgão atribui ao autorizar** — o `numeroAutorizacion` do SRI, o `protocolo` da
+SEFAZ. Isso chega pelo callback; declará-lo aqui o condena a vir sempre em `null`.
 
-**Não leva `authorizationMode` nem `issuedAt`.** São comuns a todos os países e vivem na
-raiz da resposta.
+**Não leva `authorizationMode` nem `issuedAt`.** São comuns a todos os países e vivem na raiz da
+resposta.
 
 ### 5.3 `graphic` — o que é imprimível
 
@@ -385,36 +900,46 @@ produz nada para imprimir — o cancelamento no Brasil, por exemplo.
 "graphic": { "qr": "https://…" }
 ```
 
-Cada valor é a **string exata a codificar**, já pronta para renderizar. O FIRE não a interpreta
-nem a transforma: ele a repassa ao ponto de venda, que a renderiza com a sua própria biblioteca
-e a manda para a impressora. Não geramos imagens deste lado — o tamanho e a resolução dependem da
-impressora, e isso só quem imprime sabe.
+Cada valor é a **string exata a codificar**, já pronta para renderizar. O FIRE não a interpreta nem
+a transforma: repassa ao ponto de venda, que a renderiza com a sua própria biblioteca e a manda para
+a impressora. Não se geram imagens deste lado — o tamanho e a resolução dependem da impressora, e
+isso só quem imprime sabe.
 
-**É um mapa aberto e não um campo fixo** porque o comprovante de cada país nem sempre leva a
-mesma coisa: o Equador imprime o código da chave de acesso, o Brasil o QR da NFC-e, o Chile o
-timbre eletrônico (TED). Um país pode precisar de mais de um. Com um mapa, adicionar um é
-enviá-lo; com campos fixos, é versionar o contrato.
+**É um mapa aberto e não um campo fixo** porque o comprovante de cada país não leva sempre a mesma
+coisa: o Equador imprime o código da chave de acesso, o Brasil o QR da NFC-e, o Chile o timbre
+eletrônico (TED). Um país pode precisar de mais de um. Com um mapa, acrescentar um é enviá-lo; com
+campos fixos, é versionar o contrato.
 
-As chaves são estáveis e descritivas do propósito — `qr`, `barcode`, `ted` — não da
-simbologia do momento.
+As chaves são estáveis e descritivas do propósito — `qr`, `barcode`, `ted` — não da simbologia do
+momento.
 
-Este bloco é o único da resposta que o provedor fornece e que não pode ser derivado, por um
-caso concreto: **o QR da NFC-e brasileira é uma URL assinada com um hash que só o emitente pode
-construir**. Ele não é derivado da chave. Se não chegar, não há QR.
+Este bloco é o único da resposta que o provedor aporta e que não se pode derivar, por um caso
+concreto: **o QR da NFC-e brasileira é uma URL assinada com um hash que só o emitente consegue
+construir**. Não se deriva da chave. Se não chegar, não há QR.
 
-No Equador o valor vai coincidir com `document.claveAcceso`. **Essa redundância é deliberada:**
-a alternativa é o ponto de venda saber que no Equador se codifica a chave, no Brasil a
-URL e no Chile o TED.
+No Equador o valor vai coincidir com `document.claveAcceso`. **Essa redundância é deliberada:** a
+alternativa é o ponto de venda ter de saber que no Equador se codifica a chave, no Brasil a URL e no
+Chile o TED.
 
-**Não inclui `pdfUrl`, `xmlUrl` nem `lookupUrl`.** Os dois primeiros só existem depois de que
-o órgão autorizou e chegam pelo callback; declará-los aqui os condena a vir sempre em `null`,
-e um campo que é sempre nulo ensina a ignorá-lo. `lookupUrl` é uma constante por país e
-ambiente, não um dado do documento.
+<Warning>
+  **A Colômbia não manda `graphic`.** O seu QR já é uma URL pronta para imprimir e trafega em
+  `document.qrCode`; repeti-la aqui seria o mesmo dado em dois lugares que podem divergir, e na
+  dúvida ninguém saberia qual vence.
+
+  A diferença em relação ao Equador não é capricho: lá o QR **deriva** da chave de acesso, e
+  entregá-lo explícito poupa o ponto de venda de ter de saber disso. Aqui não deriva de nada — já
+  vem resolvido.
+</Warning>
+
+**Não inclui `pdfUrl`, `xmlUrl` nem `lookupUrl`.** Os dois primeiros só existem depois de o órgão
+autorizar e chegam pelo callback; declará-los aqui os condena a vir sempre em `null`, e um campo que
+é sempre nulo ensina a ignorá-lo. `lookupUrl` é uma constante por país e ambiente, não um dado do
+documento.
 
 ### 5.4 `provider` e `metadata` — os dois blocos do provedor
 
-São **dois blocos distintos e não intercambiáveis**, e o FIRE os guarda em duas colunas
-distintas. A diferença é se o campo tem forma acordada ou não.
+São **dois blocos distintos e não intercambiáveis**, e o FIRE os guarda em duas colunas diferentes.
+A diferença é se o campo tem forma acordada ou não.
 
 #### `provider` — identidade, com forma
 
@@ -424,46 +949,45 @@ distintas. A diferença é se o campo tem forma acordada ou não.
 
 | Campo | Tipo | Obrigatório | O que colocar |
 |---|---|---|---|
-| `name` | string \| null | ✓ | Quem resolveu esta numeração. Um identificador estável do serviço, não uma marca comercial nem um texto que mude a cada deploy |
-| `version` | string \| null | ✓ | Qual versão a resolveu. É o que permite dizer "a partir da 2026.08.1 parou de acontecer" em vez de comparar com a data |
-| `reference` | string \| null | ✓ | **A referência de suporte do provedor**: o identificador que precisa ser citado a ele para que encontre esta operação nos seus próprios registros |
+| `name` | string \| null | ✓ | Quem resolveu esta numeração. Um identificador estável do serviço, não uma marca comercial nem um texto que mude com o deploy |
+| `version` | string \| null | ✓ | Que versão a resolveu. É o que permite dizer "a partir da 2026.08.1 parou de acontecer" em vez de comparar com a data |
+| `reference` | string \| null | ✓ | **A referência de suporte do provedor**: o identificador que se cita a ele para que encontre esta operação nos seus próprios registros |
 
-Os três vão **sempre presentes**, com `null` quando não se aplicam. `null` diz "não tenho";
-ausente obriga a distinguir duas formas da mesma coisa.
+Os três vão **sempre presentes**, com `null` quando não se aplica. `null` diz "não tenho"; ausente
+obriga a distinguir duas formas da mesma coisa.
 
 <Note>
-  **`reference` não é a nossa `Idempotency-Key`.** Aquela é enviada por nós e o provedor a
-  ecoa por outro caminho. Esta é do provedor, e é a que serve quando é preciso escalar um caso
-  para ele: sem ela, a única forma de ele encontrar a operação é buscar por `orderCode` no
-  intervalo de datas correto.
+  **`reference` não é a nossa `Idempotency-Key`.** Aquela é mandada por nós e o provedor a ecoa por
+  outro lado. Esta é do provedor, e é a que serve quando é preciso escalar um caso a ele: sem ela, a
+  única forma de ele encontrar a operação é buscar por `orderCode` na faixa de datas certa.
 </Note>
 
-#### `metadata` — a bolsa opaca
+#### `metadata` — a sacola opaca
 
 ```json
 "metadata": { "externalStoreCode": "K004", "externalDeviceUid": "52CAEA5A18D9B75F" }
 ```
 
-**Sem forma acordada.** Vai o que for útil ao provedor para diagnosticar: os códigos com que
-ele nomeia a loja e o aparelho, um identificador da sua fila, o que for. O FIRE o guarda tal
-como veio e o publica tal como veio, e **nada nosso programa contra as suas chaves**.
+**Sem forma acordada.** Vai o que servir ao provedor para diagnosticar: os códigos com que ele nomeia
+a loja e o aparelho, um identificador da sua fila, o que for. O FIRE guarda tal como está e publica
+tal como está, e **nada nosso programa contra as suas chaves**.
 
 <Warning>
-  **Não mandem aqui o que já tem o seu lugar.** Repetir `failure` dentro de `metadata`, ou o
-  `name` do bloco de cima, produz o mesmo fato guardado duas vezes — e duas cópias se
-  dessincronizam. Se um dado tem campo próprio no contrato, ele vai no seu campo e não também aqui.
+  **Não mandem aqui o que já tem o seu lugar.** Repetir `failure` dentro de `metadata`, ou o `name`
+  do bloco de cima, produz o mesmo fato guardado duas vezes — e duas cópias dessincronizam. Se um
+  dado tem campo próprio no contrato, vai no seu campo e não também aqui.
 </Warning>
 
-Pode ser `{}`. O que ele não pode é **mudar entre uma emissão e a sua retentativa idempotente**:
-um `201` que traz a bolsa populada e um `200 REUSED` que a traz vazia descrevem a mesma operação
-de duas maneiras diferentes, e quem ler o evento vai ver que "mudou" algo que não mudou.
+Pode ser `{}`. O que não pode é **mudar entre uma emissão e a sua retentativa idempotente**: um `201`
+que traz a sacola populada e um `200 REUSED` que a traz vazia descrevem a mesma operação de duas
+maneiras diferentes, e quem ler o evento vai ver que "mudou" algo que não mudou.
 
 ---
 
 ## 6. Resposta com erro
 
-Trafega com **código HTTP não-2xx** — `422` para um problema de configuração ou de dados, `5xx`
-para um transitório. Nunca com `200`.
+Trafega com **código HTTP não-2xx** — `422` para um problema de configuração ou de dados, `5xx` para
+um transitório. Nunca com `200`.
 
 ```json
 {
@@ -479,40 +1003,58 @@ para um transitório. Nunca com `200`.
 }
 ```
 
-**`retryable` é obrigatório** e quem o decide é o provedor. É o que nos permite distinguir um
-problema de configuração — que não melhora com retentativa — de um transitório. Sem esse campo é
-preciso adivinhar pelo código HTTP, e adivinhar errado significa retentar no caixa enquanto o
-cliente espera, ou abandonar uma venda que podia ser numerada.
+**`retryable` é obrigatório** e quem decide é o provedor. É o que nos permite distinguir um problema
+de configuração —que não melhora tentando de novo— de um transitório. Sem esse campo é preciso
+adivinhar pelo código HTTP, e adivinhar errado significa tentar de novo no caixa enquanto o cliente
+espera, ou abandonar uma venda que podia ser numerada.
 
-**`failure.code` deve ser um código estável e acionável**, não um texto livre. É o que
-permite construir alertas e documentação de suporte.
+**`failure.code` deve ser um código estável e acionável**, não um texto livre. É o que permite
+construir alertas e documentação de suporte.
 
-**`failure.message` deve descrever o problema real**, não uma generalidade. `"identidad fiscal
-de tienda no configurada: EC / tienda K0050"` permite consertar; `"documento rejeitado"` obriga
-a abrir um ticket.
+**`failure.message` deve descrever o problema real**, não uma generalidade. `"identidad fiscal de
+tienda no configurada: EC / tienda K0050"` permite consertar; `"documento rejeitado"` obriga a abrir
+um chamado.
 
 ---
 
 ## 7. Regras da integração
 
-**O que enviamos manda.** Se o catálogo do provedor tiver uma identidade fiscal diferente da
-que enviamos, ele deve **rejeitar com erro explícito**, nunca emitir com a sua. Um
-comprovante emitido sob o contribuinte errado não se corrige com um deploy.
+**O que enviamos manda.** Se o catálogo do provedor tiver uma identidade fiscal diferente da que
+enviamos, ele deve **rejeitar com erro explícito**, nunca emitir com a sua. Um comprovante emitido
+sob o contribuinte errado não se conserta com um deploy.
 
 **`metadata` é opaco nos dois sentidos e não pode sobrescrever campos de domínio.**
 
 **Os códigos do órgão não trafegam no contrato.** Nada de `documentTypeCode: "01"`,
 `tipoComprobante` ou equivalentes. O provedor os deriva de `operation` + `country`.
 
-**O contrato é versionado.** Uma mudança quebrante exige uma versão nova do endpoint e
-uma janela de convivência; não se muda o significado de um campo existente.
+**O contrato é versionado.** Uma mudança quebrante requer uma versão nova do endpoint e uma janela de
+convivência; não se muda o significado de um campo existente.
 
 ---
 
 ## 8. O callback de resultado
 
-O callback de resultado permanece como está. Ele é correlacionado por **`orderCode` + `operation`**,
-com o tenant derivado da API key com a qual se autentica. Precisa incluir a operação: sem
-ela, uma nota e o seu cancelamento sobre o mesmo pedido são indistinguíveis.
+O callback de resultado segue como está. É correlacionado por **`orderCode` + `operation`**, com o
+tenant derivado da API key com que se autentica. Deve incluir a operação: sem ela, uma nota e o seu
+cancelamento sobre o mesmo pedido são indistinguíveis.
 
 Devolver identificadores adicionais no callback é opcional e bem-vindo, mas não obrigatório.
+
+<Note>
+  **Use os mesmos nomes da numeração.** O callback da Colômbia declara `cufe`, `prefijo`,
+  `numeroDian`, `numeroComprobante`, `qrCode` e `ambiente` — exatamente os de
+  [5.2](#52-document--o-documento-numerado). É o mesmo documento contado duas vezes, e se os nomes
+  divergirem, conciliar os dois caminhos deixa de ser comparar campos e passa a ser traduzir, que é
+  onde os erros se infiltram.
+</Note>
+
+<Warning>
+  **O callback não é rejeitado por um campo que falte.** Quando ele chega, o documento **já existe
+  perante o órgão**: devolver um `400` não o desfaz, só nos deixa sem saber de uma nota autorizada —
+  e esse aviso não volta.
+
+  Por isso os campos novos entram sempre **opcionais** e o que você mandar a mais é preservado. É o
+  contrário da numeração, que valida estrito: ali o dado acabou de ser calculado e ainda não se
+  imprimiu nada. A assimetria é deliberada, e depende de onde o erro dói.
+</Warning>
