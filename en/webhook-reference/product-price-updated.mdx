@@ -1,11 +1,13 @@
 ---
 title: "product.price_updated"
-description: "Fired when the price of one or more products changes. Targets all menus and stores where the affected products appear."
+description: "Fired when the price of one or more products changes, or the contextual price of a modifier option. Targets all menus and stores where the affected products appear."
 ---
 
-`product.price_updated` is a **scoped** event — unlike [`product.updated`](/en/webhook-reference/product-updated), it only carries `priceInfo` for each product. Every other product attribute (name, description, images, modifiers, etc.) is left untouched.
+`product.price_updated` is a **scoped** event — unlike [`product.updated`](/en/webhook-reference/product-updated), it only carries prices. Every other product attribute (name, description, images, modifiers, etc.) is left untouched.
 
 Supports multiple products in a single event. When the change affects multiple stores, Fire emits a **single event** with all affected stores listed in `targets`.
+
+A modifier option's price is **contextual**: it belongs to the combination (parent product × group × option), not to the option as a standalone product — the same option can be priced differently under two parents. That's why it travels where it already lives in [`menu.updated`](/en/webhook-reference/menu-updated-v2): in **`products[].productModifiers[].overrides[]`**, nested under the parent and scoped by the group's `modifierId`. There is no separate array.
 
 ## Payload
 
@@ -16,23 +18,25 @@ Supports multiple products in a single event. When the change affects multiple s
     "type": "product.price_updated",
     "executionId": "exec_pqr123",
     "createdAt": "2025-01-15T14:45:00.000Z",
-    "timezone": "America/Guayaquil"
+    "timezone": "America/Sao_Paulo"
   },
   "data": {
     "account": "1",
-    "country": "EC",
+    "country": "BR",
     "groupId": "a3f7c2d1-84be-4e10-9b3a-2c5d6e7f8091",
     "targets": [
       {
         "storeId": "b3d2a1f0-6e21-4c3a-9f5d-7a8b9c0d1e2f",
         "storeName": "Laboratorio Brasil",
         "vendorId": "100.6.1350",
-        "timezone": "America/Guayaquil",
+        "timezone": "America/Sao_Paulo",
         "channels": [
           {
             "channelId": "d5f4c3b2-8043-4e5c-9b7f-9c0d1e2f3a4b",
             "channelReferenceName": "iFood",
-            "listName": "Menu App"
+            "listId": "1350-IFOOD-DELIVERY",
+            "listName": "Menu App",
+            "fulfillmentType": "DELIVERY"
           }
         ]
       },
@@ -40,12 +44,14 @@ Supports multiple products in a single event. When the change affects multiple s
         "storeId": "c4e3b2a1-7f32-4d4b-8a6e-8b9c0d1e2f3a",
         "storeName": "Vila Olimpia",
         "vendorId": "100.6.1351",
-        "timezone": "America/Guayaquil",
+        "timezone": "America/Sao_Paulo",
         "channels": [
           {
             "channelId": "d5f4c3b2-8043-4e5c-9b7f-9c0d1e2f3a4b",
             "channelReferenceName": "iFood",
-            "listName": "Menu App"
+            "listId": "1351-IFOOD-DELIVERY",
+            "listName": "Menu App",
+            "fulfillmentType": "DELIVERY"
           }
         ]
       }
@@ -58,16 +64,22 @@ Supports multiple products in a single event. When the change affects multiple s
           "salePrice": 1100,
           "suggestedPrice": 1350,
           "suggestedPointPrice": 0
-        }
-      },
-      {
-        "productId": "prod_size_small",
-        "priceInfo": {
-          "price": 0,
-          "salePrice": 0,
-          "suggestedPrice": 0,
-          "suggestedPointPrice": 0
-        }
+        },
+        "productModifiers": [
+          {
+            "modifierId": "9f2a4c7d1b3e5081",
+            "overrides": [
+              { "productId": "prod_size_small", "priceInfo": { "price": 250 } },
+              { "productId": "prod_extra_cheese", "priceInfo": { "price": 98 } }
+            ]
+          },
+          {
+            "modifierId": "b2b4155986dd3083",
+            "overrides": [
+              { "productId": "prod_sauce_bbq", "priceInfo": { "price": 50 } }
+            ]
+          }
+        ]
       }
     ]
   }
@@ -84,11 +96,25 @@ Supports multiple products in a single event. When the change affects multiple s
 | `country` | string | ISO 3166-1 alpha-2 country code (e.g. `EC`, `BR`, `CO`) — required by downstream systems |
 | `groupId` | string | UUID correlating events from the same publication or sync batch |
 | `targets` | object[] | Stores where the price change must be applied |
-| `products` | object[] | Products whose price changed |
+| `products` | object[] | Products whose price is being asserted: the ones edited directly and the **parent** of each option with a contextual price |
 
 ### `data.targets[n]`
 
 Same structure as in [`product.updated`](/en/webhook-reference/product-updated#datatargetsn) — includes `vendorId` and `timezone`.
+
+### `data.targets[n].channels[n]`
+
+| Field | Type | Description |
+|---|---|---|
+| `channelId` | string | Internal channel UUID (PK `channels.id`) — not the channel's external identifier |
+| `channelReferenceName` | string | Sales channel reference name |
+| `listId` | string | Target list identifier, **same as the `list.listId` you received in [`menu.updated`](/en/webhook-reference/menu-updated-v2)**. It's the correlation key between this event and the published menu |
+| `listName` | string | Name of the source menu |
+| `fulfillmentType` | string | Fulfillment type of the target combination (e.g. `DELIVERY`, `PICKUP`). The price applies to this store × channel × fulfillment combination |
+
+⚠️ `listName` in this event is the **menu name** (e.g. `Menu App`), while `list.listName` in
+`menu.updated` is an auto-generated label (`IFOOD - Store 1350`). **They are not the same value and
+can't be used to correlate** — use `listId`, which is identical in both events.
 
 ### `data.products[n]`
 
@@ -96,21 +122,167 @@ Same structure as in [`product.updated`](/en/webhook-reference/product-updated#d
 |---|---|---|
 | `productId` | string | Product identifier |
 | `priceInfo` | object | Pricing information — fully replaces the existing `priceInfo` |
-| `priceInfo.price` | number | Regular price |
+| `priceInfo.price` | number | Regular price. **`0` when the product is a COMBO** — see below |
 | `priceInfo.salePrice` | number | Discounted price |
 | `priceInfo.suggestedPrice` | number | Suggested regular price |
 | `priceInfo.suggestedPointPrice` | number | Suggested points price |
+| `priceInfo.referencePrice` | number | **COMBO only.** Combo value, derived from its options. Absent on regular products |
+| `productModifiers` | object[] | Product's modifier groups, with the contextual prices of their options. Absent on products without groups |
+
+All four values come from the product's item in the **destination combination's price list**
+(the same one identified by `listId`), not from any default list.
+
+**`products[]` includes the parent product of each option with a contextual price**, even if its own
+price didn't change: that way you always have the context of the product the change comes from. That
+`priceInfo` is the parent's current price, so applying it is an **idempotent replace** (you write back
+the value it already has). If two edited options share the same parent, the parent appears **only
+once**. A product with no price in the destination list is omitted.
+
+⚠️ An option's **base** price does NOT travel in this event. This screen edits the **contextual**
+layer (the option's price under a parent), never the option-product's own price, so carrying the base
+price would assert a price that didn't change — and since `priceInfo` is a full replace, it could
+overwrite the one you already have. The base price comes from the last
+[`menu.updated`](/en/webhook-reference/menu-updated-v2), where the option travels as a product of type
+`MODIFIER`, and it stays valid.
+
+If what changed is a product's own price and that product also happens to be an option elsewhere, it
+arrives as a normal `products[]` entry: it's a product edit, not an option edit.
 
 ⚠️ This `priceInfo` does **not** have the same fields as the `priceInfo` of `products[n]` in
 [`menu.updated`](/en/webhook-reference/menu-updated-v2#datamenuproductsn) / `product.updated`
 (`{pointPrice, price, referencePrice, suggestedPrice}`). They're deliberately different: this event
 carries the sale price just saved along with its discount, not the product's catalog prices.
 
+### `data.products[n].productModifiers[n]`
+
+Same vocabulary as `products[n].productModifiers[n]` in
+[`menu.updated`](/en/webhook-reference/menu-updated-v2).
+
+| Field | Type | Description |
+|---|---|---|
+| `modifierId` | string | Modifier group — **same as the `modifierGroups[].modifierId`** you received in `menu.updated`. It's an id derived from the group's content, not a database identifier |
+| `overrides` | object[] | **Contextual** prices of that group's options under this parent. Always carries at least one |
+| `overrides[n].productId` | string | Product backing the option — the same one the option appears with in `products[]` |
+| `overrides[n].priceInfo.price` | number | Option's price in this combination (parent × group × option) |
+
+**Which groups arrive, and with what:**
+
+- Only groups that **have** some contextual price under that parent. A missing group means "its
+  options use their base price," not "no change": contextual prices are only added or updated, never
+  removed, so absence always reflects the actual state.
+- Groups that do arrive bring **all** of their current contextual prices, not just the ones just
+  edited. That lets you **merge by `modifierId`** without losing the ones you already had.
+- Unlike `menu.updated`, the group does **not** carry `position`: order is structure, and this event
+  only carries prices. Keep the order you already have from the menu.
+
+The key of a contextual price is the triple **parent × `modifierId` × option's `productId`**. The
+nesting already expresses it: applying the price by looking up only the option's `productId` is
+wrong, because the same option can appear under several parents, or under the same group assigned
+twice to the same parent (two different `modifierId`s), with different prices in each case.
+
+An `override` carries only `price`: an option's contextual price has no discounted or suggested price
+of its own — those concepts only exist at the product level, in `products[n].priceInfo`.
+
+### Combos: arrive reconstructed
+
+A **COMBO** has no price of its own: its value is derived from the options of its required groups.
+That's why it's emitted just like in [`menu.updated`](/en/webhook-reference/menu-updated-v2) —
+`price: 0` and the actual value in `referencePrice`:
+
+> `referencePrice` = for every group with `minOptions ≥ 1`, `minOptions × (lowest effective price
+> among its options)`, summed across all those groups. Optional groups (`minOptions = 0`) don't
+> contribute.
+
+`minOptions` **doesn't travel in this event** — it's a field of
+[`data.menu.modifierGroups[n]`](/en/webhook-reference/menu-updated-v2#datamenumodifiergroupsn) in
+`menu.updated`, correlated by `modifierId`. To recompute `referencePrice` you need both events: this
+one gives you the current contextual prices, `menu.updated` gives you which groups are required.
+
+Since changing **a single** option moves that value, when an option's price changes on a combo the
+event carries, for **all** groups with a current contextual price under this parent — not just the
+edited group —, the full set of their `overrides`, so you can recompute the reference on your own and
+validate it against the one we send. As with any product, a required group with no current override
+**does not appear** in this event (see
+["Which groups arrive"](#dataproductsnproductmodifiersn)); for its minimum use the base price of those
+options from `menu.updated`. Options with no resolvable price don't participate in the minimum
+calculation.
+
+#### Example
+
+```json
+{
+  "productId": "combo_001",
+  "priceInfo": {
+    "price": 0,
+    "referencePrice": 22,
+    "salePrice": 0,
+    "suggestedPrice": 0,
+    "suggestedPointPrice": 0
+  },
+  "productModifiers": [
+    {
+      "modifierId": "a4d8e21f9c306b57",
+      "overrides": [
+        { "productId": "prod_bun_white", "priceInfo": { "price": 14.1 } }
+      ]
+    },
+    {
+      "modifierId": "e91b3a7c05f4d268",
+      "overrides": [
+        { "productId": "prod_side_fries", "priceInfo": { "price": 7.9 } },
+        { "productId": "prod_side_salad", "priceInfo": { "price": 12.7 } }
+      ]
+    },
+    {
+      "modifierId": "7c2f9d4e83a1b650",
+      "overrides": [
+        { "productId": "prod_topping_bacon", "priceInfo": { "price": 9.9 } },
+        { "productId": "prod_topping_cheese", "priceInfo": { "price": 11.9 } }
+      ]
+    }
+  ]
+}
+```
+
+No group carries `position`. Cross-referencing `modifierId` with `minOptions` from `menu.updated`:
+
+| `modifierId` | `minOptions` | Cheapest option (effective) | Contributes to `referencePrice` |
+|---|---|---|---|
+| `a4d8e21f9c306b57` | 1 | 14.10 (`prod_bun_white`, group's only override) | 14.10 × 1 = **14.10** |
+| `e91b3a7c05f4d268` | 1 | 7.90 (`prod_side_fries`) | 7.90 × 1 = **7.90** |
+| `7c2f9d4e83a1b650` | 0 (optional) | 9.90 | Doesn't contribute — optional group |
+| **`referencePrice`** | | | **22.00** |
+
+⚠️ If this combo also had a required group whose options all kept their base price (no override at
+all), that group **wouldn't appear** in `productModifiers[]` — that doesn't mean it was removed, just
+that there's no contextual price to report. Its minimum comes from that `modifierId`'s options in
+`menu.updated`.
+
+⚠️ A group having `overrides` doesn't mean it's required: `7c2f9d4e83a1b650` carries contextual
+prices for its options (they're real add-ons, with their own price) but being optional
+(`minOptions = 0`) it doesn't participate in the sum.
+
+On a regular product, options are add-ons and don't change the parent's price: the parent keeps its
+list `price` and carries no `referencePrice`.
+
 ## Behavior
 
-This event only changes `priceInfo`. Name, description, images, modifiers, taxes, and every other product attribute remain unchanged. The received `priceInfo` object fully replaces the existing one for that `productId` — it is not a field-by-field merge.
+This event only changes prices. Name, description, images, modifiers, taxes, and every other
+attribute remain unchanged.
 
-A price change does **not** alter the product's menu assignment date (`additionalInfo.assignedAt`): that value is membership data, not edit data. That's why this event doesn't carry it — the `assignedAt` you already have on record for that product stays valid. It arrives in [`product.updated`](/en/webhook-reference/product-updated#menu-assignment-date) and in [`menu.updated`](/en/webhook-reference/menu-updated-v2).
+- For `products[n]`, the received `priceInfo` object **fully replaces** the existing one for that
+  `productId` — it is not a field-by-field merge.
+- For `productModifiers[n].overrides[n]`, `price` replaces that option's contextual price **only
+  under this parent and this `modifierId`**. Other occurrences of the same option are untouched.
+- An empty or absent array means "nothing to change here," **not** "delete everything."
+- A product appearing in `products[]` doesn't mean its price changed: it may be there as the parent
+  of an option (see [`data.products[n]`](#dataproductsn)). The replace is idempotent in that case.
+
+A price change does **not** alter the product's menu assignment date (`additionalInfo.assignedAt`):
+that value is membership data, not edit data. That's why this event doesn't carry it — the
+`assignedAt` you already have on record for that product stays valid. It arrives in
+[`product.updated`](/en/webhook-reference/product-updated#menu-assignment-date) and in
+[`menu.updated`](/en/webhook-reference/menu-updated-v2).
 
 ## Usage
 
