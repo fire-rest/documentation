@@ -9,75 +9,210 @@ implementación contra algo que ya funciona, en vez de contra una descripción.
 
 ## Numerar una venta
 
-### Lo que enviamos
+El request es **el mismo para los dos países** —mismos campos, mismo orden—; lo que cambia es
+qué usa cada proveedor y qué devuelve en `document`. Acá van los cuerpos recortados a lo que
+hace falta para leer el ejemplo; el request completo, campo por campo, está en el
+[contrato](/es/fiscal-providers/contract#3-request).
 
-```json
-POST {baseUrl}/api/v1/fiscal/ec/prekeys
-x-api-key: ••••
+<Tabs>
+  <Tab title="Ecuador (EC) — SRI">
+    ### Lo que enviamos
 
-{
-  "country": "EC",
-  "operation": "INVOICE",
-  "businessDayDate": "2026-08-13",
-  "orderCode": "E2E-NUM-B-1786636044723",
-  "store": {
-    "code": "K004",
-    "storeFiscalConfig": {
-      "govIdType": "RUC",
-      "govIdNumber": "0000000000001"
+    ```json
+    POST {baseUrl}/api/v1/fiscal/ec/prekeys
+    x-api-key: ••••
+
+    {
+      "country": "EC",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-13",
+      "orderCode": "E2E-NUM-B-1786636044723",
+      "store": {
+        "code": "K004",
+        "storeFiscalConfig": {
+          "govIdType": "RUC",
+          "govIdNumber": "1791415132001",
+          "company": {
+            "govIdType": "RUC",
+            "govIdNumber": "1791415132001",
+            "legalName": "INT FOOD SERVICES CORP S.A.",
+            "tradeName": "KFC"
+          },
+          "metadata": {}
+        }
+      },
+      "device": { "uid": "52CAEA5A18D9B75F", "name": "KIOSK", "platform": "android" },
+      "client": {
+        "name": "CONSUMIDOR",
+        "lastName": "FINAL",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000"
+      },
+      "totals": [
+        {
+          "currencyCode": "USD",
+          "total": 10,
+          "subtotalWithoutTaxes": 8.7,
+          "taxValue": 1.3,
+          "taxes": [{ "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }]
+        }
+      ],
+      "metadata": {}
     }
-  },
-  "device": { "externalId": "1" }
-}
-```
+    ```
 
-Fijate en lo que **no** viaja: ni `accountId`, ni `vendorId` —el tenant sale de la API
-key—, ni códigos del SRI, ni referencia al catálogo del proveedor. Y los campos sin
-configurar se omiten en vez de viajar en `""`.
+    `storeFiscalConfig.metadata` va vacío: en Ecuador el establecimiento y el punto de emisión
+    los resolvés vos contra tu catálogo, a partir de `store.code` y `device.uid`.
 
-### Lo que devolvió el proveedor
+    ### Lo que devolvió el proveedor
 
-```json
-HTTP 200
+    ```json
+    HTTP 200
 
-{
-  "status": "INVOICED",
-  "country": "EC",
-  "orderCode": "E2E-NUM-B-1786636044723",
-  "reused": false,
-  "retryable": false,
-  "authorizationMode": "ONLINE",
-  "issuedAt": "2026-08-13T15:47:26.057337855Z",
-  "document": {
-    "numeroComprobante": "005-004-000000052",
-    "claveAcceso": "1308202601000000000000110050040000000521234567811",
-    "establecimiento": "005",
-    "puntoEmision": "004",
-    "secuencial": "000000052",
-    "ambiente": "2"
-  },
-  "graphic": {
-    "qr": "1308202601000000000000110050040000000521234567811"
-  },
-  "failure": null,
-  "provider": { "name": "hio.fiscalization", "version": "dev" },
-  "metadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
-}
-```
+    {
+      "status": "INVOICED",
+      "country": "EC",
+      "orderCode": "E2E-NUM-B-1786636044723",
+      "reused": false,
+      "retryable": false,
+      "authorizationMode": "ONLINE",
+      "issuedAt": "2026-08-13T15:47:26.057337855Z",
+      "document": {
+        "numeroComprobante": "005-004-000000052",
+        "claveAcceso": "1308202601000000000000110050040000000521234567811",
+        "establecimiento": "005",
+        "puntoEmision": "004",
+        "secuencial": "000000052",
+        "ambiente": "2"
+      },
+      "graphic": {
+        "qr": "1308202601000000000000110050040000000521234567811"
+      },
+      "failure": null,
+      "provider": { "name": "hio.fiscalization", "version": "dev" },
+      "metadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+    }
+    ```
 
-Cuatro cosas para notar:
+    - **`document` habla ecuatoriano.** `claveAcceso`, `secuencial`, `ambiente` — los nombres
+      del SRI, no una traducción. Y no hay campos de otros países: el `cufe` colombiano
+      sencillamente no existe acá.
+    - **El número visible viene armado en `numeroComprobante`** (`005-004-000000052`). Lo
+      componés vos, que conocés la regla —art. 18 del Reglamento— y FIRE lo imprime tal cual,
+      sin reformatearlo. Las tres piezas siguen viajando aparte, como las define el SRI, pero
+      son para conciliar: nadie las vuelve a unir.
+    - **`graphic.qr` coincide con `document.claveAcceso`.** En Ecuador es así, y la redundancia
+      es deliberada: la alternativa es que el punto de venta sepa qué se codifica en cada país.
+    - **`ambiente: "2"` es pruebas** — en el SRI. En la DIAN el `2` es al revés; ver la pestaña
+      de Colombia.
+  </Tab>
 
-- **`document` habla ecuatoriano.** `claveAcceso`, `secuencial`, `ambiente` — los nombres del
-  SRI, no una traducción. Y no hay campos de otros países: el número de control venezolano
-  sencillamente no existe acá.
-- **El número visible viene armado en `numeroComprobante`** (`005-004-000000052`). Lo componés
-  vos, que conocés la regla —art. 18 del Reglamento— y FIRE lo imprime tal cual, sin
-  reformatearlo. Las tres piezas siguen viajando aparte, como las define el SRI, pero son para
-  conciliar: nadie las vuelve a unir.
+  <Tab title="Colombia (CO) — DIAN">
+    ### Lo que enviamos
+
+    ```json
+    POST {baseUrl}/api/v1/fiscal/co/prekeys
+    x-api-key: ••••
+
+    {
+      "country": "CO",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-16",
+      "orderCode": "CO-K039-1786901234",
+      "store": {
+        "code": "K039",
+        "storeFiscalConfig": {
+          "govIdType": "NIT",
+          "govIdNumber": "9001234567",
+          "company": {
+            "govIdType": "NIT",
+            "govIdNumber": "9001234567",
+            "legalName": "COMERCIALIZADORA ANDINA S.A.S.",
+            "tradeName": "KFC"
+          },
+          "metadata": {
+            "claveTecnica": "fc8eac422eba16e22ffd8c6f94b3f40a6e38162c",
+            "rangoFacturacion": {
+              "prefijo": "SETP",
+              "desde": "990000000",
+              "hasta": "995000000",
+              "resolucion": "18760000001",
+              "vigenteHasta": "2027-08-16"
+            }
+          }
+        }
+      },
+      "device": { "uid": "52CAEA5A18D9B75F", "name": "CAJA 3", "platform": "android" },
+      "client": {
+        "name": "Consumidor",
+        "lastName": "final",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000"
+      },
+      "totals": [
+        {
+          "currencyCode": "COP",
+          "total": 50000,
+          "subtotalWithoutTaxes": 42016.81,
+          "taxValue": 7983.19,
+          "taxes": [{ "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }]
+        }
+      ],
+      "metadata": {}
+    }
+    ```
+
+    Acá `storeFiscalConfig.metadata` **sí trae datos** —la clave técnica y el rango que la DIAN
+    entrega con la resolución—, y los importes de `totals` no son informativos: entran al hash
+    del CUFE.
+
+    ### Lo que devolvió el proveedor
+
+    ```json
+    HTTP 200
+
+    {
+      "status": "INVOICED",
+      "country": "CO",
+      "orderCode": "CO-K039-1786901234",
+      "reused": false,
+      "retryable": false,
+      "authorizationMode": "ONLINE",
+      "issuedAt": "2026-08-16T14:21:03.118Z",
+      "document": {
+        "numeroComprobante": "SETP990000001",
+        "prefijo": "SETP",
+        "numeroDian": "990000001",
+        "cufe": "9c4f1e…  ← 96 caracteres hexadecimales",
+        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+        "ambiente": "2"
+      },
+      "graphic": null,
+      "failure": null,
+      "provider": { "name": "hio.fiscalization", "version": "dev" },
+      "metadata": { "externalStoreCode": "K039" }
+    }
+    ```
+
+    - **`document` habla colombiano**, y no se parece al de Ecuador: no hay `claveAcceso` ni
+      `secuencial`, hay `cufe`, `prefijo` y `numeroDian`.
+    - **`graphic` viene en `null`.** En Colombia el QR es la URL del catálogo de la DIAN y viaja
+      dentro de `document.qrCode`, así que no se duplica afuera.
+    - **`numeroComprobante` y `numeroDian` no son lo mismo**: el primero es el número visible ya
+      armado (`prefijo + consecutivo`), el segundo es el consecutivo solo. Los dos se devuelven
+      resueltos; FIRE no concatena nada.
+    - **`ambiente: "2"` es pruebas en la DIAN** — el código es el del ente, sin normalizar, y
+      por eso significa lo contrario que en Ecuador.
+  </Tab>
+</Tabs>
+
+Fijate en lo que **no** viaja en ninguno de los dos: ni `accountId`, ni `vendorId` —el tenant
+sale de la API key—, ni códigos del ente, ni referencia al catálogo del proveedor.
+
+Y dos cosas comunes a los dos países:
+
 - **`authorizationMode` e `issuedAt` están en la raíz**, fuera de `document`: son comunes a
   todos los países, así que no pertenecen al bloque del país.
-- **`graphic.qr` coincide con `document.claveAcceso`.** En Ecuador es así, y la redundancia es
-  deliberada: la alternativa es que el punto de venta sepa qué se codifica en cada país.
 - **`status: "INVOICED"`**, no `"PENDING"`. Recién numerado el documento siempre está
   pendiente de autorización — es la condición normal, no un estado que informar.
 

@@ -72,11 +72,11 @@ Content-Type: application/json
 x-api-key: <api key del proveedor>
 ```
 
-`{country}` es el código **ISO 3166-1 alpha-2 en minúsculas**: `ec`, `ve`, `co`.
+`{country}` es el código **ISO 3166-1 alpha-2 en minúsculas**.
 
 ```
 POST {baseUrl}/api/v1/fiscal/ec/prekeys      Ecuador
-POST {baseUrl}/api/v1/fiscal/ve/prekeys      Venezuela
+POST {baseUrl}/api/v1/fiscal/co/prekeys      Colombia
 ```
 
 **Una sola integración.** El proveedor recibe un `baseUrl` y una credencial; las rutas se
@@ -86,7 +86,7 @@ nada que descubrir ni que configurar por separado.
 <Note>
   **Por qué por país y no una ruta única.** Una integración fiscal se construye y se certifica
   contra un ente, y las normativas cambian por país. Con una ruta por país, un cambio en
-  Ecuador es una versión del endpoint de Ecuador: no toca Venezuela, no obliga a versionar
+  Ecuador es una versión del endpoint de Ecuador: no toca Colombia, no obliga a versionar
   todo, y no puede romperlo. El versionado queda con la misma granularidad que el cambio.
 
   También hace innecesario declarar capacidades: **las rutas que existen son los países que
@@ -107,41 +107,155 @@ números para imprimir. Presupuesto de latencia objetivo: **menos de 3 segundos*
 
 ### 3.1 Numerar una venta
 
-```json
-{
-  "country": "EC",
-  "operation": "INVOICE",
-  "businessDayDate": "2026-08-12",
-  "orderCode": "FUEL-EC-1786553720451",
-  "store": {
-    "code": "K0050",
-    "storeFiscalConfig": {
-      "govIdType": "RUC",
-      "govIdNumber": "1791415132001",
-      "secondaryGovIdType": "INSCRICAO_ESTADUAL",
-      "secondaryGovIdNumber": "000000000000",
-      "company": {
-        "govIdType": "CNPJ",
-        "govIdNumber": "00000000000000",
-        "legalName": "Sandbox LTDA",
-        "tradeName": "Sandbox"
+**Un solo request, igual para todos los países.** No cambia de forma según el ente: lo que
+cambia es qué usa cada proveedor. El de Ecuador arma la clave de acceso con la fecha, el
+emisor y el correlativo, y no mira los importes. El de Colombia los necesita todos, porque su
+identificador es un hash de la factura.
+
+Los dos ejemplos de abajo son **el mismo contrato**: mismos campos, mismo orden. Lo único que
+cambia son los valores.
+
+<Tabs>
+  <Tab title="Ecuador (EC)">
+    ```json
+    {
+      "country": "EC",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-12",
+      "orderCode": "FUEL-EC-1786553720451",
+      "store": {
+        "code": "K0050",
+        "storeFiscalConfig": {
+          "govIdType": "RUC",
+          "govIdNumber": "1791415132001",
+          "company": {
+            "govIdType": "RUC",
+            "govIdNumber": "1791415132001",
+            "legalName": "INT FOOD SERVICES CORP S.A.",
+            "tradeName": "KFC"
+          },
+          "metadata": {}
+        }
       },
+      "device": {
+        "uid": "52CAEA5A18D9B75F",
+        "name": "KIOSK",
+        "platform": "android",
+        "metadata": { "ip": "10.0.0.0" }
+      },
+      "client": {
+        "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+        "name": "CONSUMIDOR",
+        "lastName": "FINAL",
+        "email": "consumidor.final@ejemplo.com",
+        "phone": "2222222",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000",
+        "externalId": "",
+        "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+        "billingInformation": {
+          "email": "", "phone": "2222222", "address": "",
+          "govIdType": "FINAL_CONSUMER", "externalId": "",
+          "govIdNumber": "00000000000", "businessName": ""
+        }
+      },
+      "totals": [
+        {
+          "currencyCode": "USD",
+          "total": 10,
+          "subtotalWithoutTaxes": 8.7,
+          "taxValue": 1.3,
+          "taxes": [
+            { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+          ]
+        }
+      ],
       "metadata": {}
     }
-  },
-  "device": {
-    "uid": "device_kiosk_001",
-    "name": "KIOSK",
-    "platform": "android",
-    "metadata": { "ip": "10.0.0.0" }
-  },
-  "metadata": {}
-}
-```
+    ```
+
+    `storeFiscalConfig.metadata` va vacío: en Ecuador el establecimiento y el punto de emisión
+    los resolvés vos contra tu catálogo, a partir de `store.code` y `device.uid`.
+  </Tab>
+
+  <Tab title="Colombia (CO)">
+    ```json
+    {
+      "country": "CO",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-16",
+      "orderCode": "CO-K039-1786901234",
+      "store": {
+        "code": "K039",
+        "storeFiscalConfig": {
+          "govIdType": "NIT",
+          "govIdNumber": "9001234567",
+          "company": {
+            "govIdType": "NIT",
+            "govIdNumber": "9001234567",
+            "legalName": "COMERCIALIZADORA ANDINA S.A.S.",
+            "tradeName": "KFC"
+          },
+          "metadata": {
+            "claveTecnica": "fc8eac422eba16e22ffd8c6f94b3f40a6e38162c",
+            "rangoFacturacion": {
+              "prefijo": "SETP",
+              "desde": "990000000",
+              "hasta": "995000000",
+              "resolucion": "18760000001",
+              "vigenteHasta": "2027-08-16"
+            },
+            "rangoNotaCredito": { "prefijo": "NC", "desde": "1", "hasta": "100000" }
+          }
+        }
+      },
+      "device": {
+        "uid": "52CAEA5A18D9B75F",
+        "name": "CAJA 3",
+        "platform": "android",
+        "metadata": { "ip": "10.0.0.0" }
+      },
+      "client": {
+        "uid": "usr_cf_001",
+        "name": "Consumidor",
+        "lastName": "final",
+        "email": "consumidor.final@ejemplo.com",
+        "phone": "2222222",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000",
+        "externalId": "",
+        "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+        "billingInformation": {
+          "email": "", "phone": "2222222", "address": "",
+          "govIdType": "FINAL_CONSUMER", "externalId": "",
+          "govIdNumber": "00000000000", "businessName": ""
+        }
+      },
+      "totals": [
+        {
+          "currencyCode": "COP",
+          "total": 50000,
+          "subtotalWithoutTaxes": 42016.81,
+          "taxValue": 7983.19,
+          "taxes": [
+            { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+          ]
+        }
+      ],
+      "metadata": {}
+    }
+    ```
+
+    Acá `storeFiscalConfig.metadata` **sí trae datos**: el prefijo del rango y la clave técnica
+    que la DIAN entrega con la resolución. Son de la tienda, se configuran una vez y no viajan
+    por venta — pero sin ellos no podés calcular el CUFE.
+  </Tab>
+</Tabs>
 
 ### 3.2 Anular
 
-Idéntico, con `"operation": "CANCEL"`.
+**Idéntico**, con `"operation": "CANCEL"`. Mismos campos, `client` y `totals` incluidos: la
+anulación emite un documento nuevo y necesita los mismos datos que la emisión.
 
 **No enviamos referencia al documento original.** El proveedor resuelve qué compensa buscando
 la emisión del mismo `orderCode` — que es su propia llave de idempotencia, ya indexada.
@@ -165,6 +279,8 @@ la emisión del mismo `orderCode` — que es su propia llave de idempotencia, ya
 | `device.name` | no | Nombre del aparato (`KIOSK`, `CAJA 3`) |
 | `device.platform` | no | `android`, `ios`, `web`… Informativo |
 | `device.metadata` | no | Llave-valor del aparato (`ip`, …). Opaco |
+| `client` | no | **Quién compró**, tal como lo tiene el punto de venta. Ver [3.5](#35-client-y-totals) |
+| `totals` | no | **Lo cobrado**, con el desglose de impuestos. Ver [3.5](#35-client-y-totals) |
 | `metadata` | no | Llave-valor **de la venta**. Opaco |
 
 **Los campos vacíos se omiten.** Nunca enviamos `""`. Un campo ausente significa "no
@@ -190,16 +306,370 @@ Hay dos bloques llave-valor, en niveles distintos y con propósitos distintos:
 
 - **`store.storeFiscalConfig.metadata`** — atributos de la **tienda**, constantes. Es donde
   viven los datos que el proveedor necesita y que no son parte del dominio compartido: por
-  ejemplo `serieStrongId` y `sucursalStrongId` en Venezuela. Se configuran una vez en el
-  backoffice y viajan en cada llamada de esa tienda.
-- **`metadata`** (raíz) — atributos de la **venta**, variables. Por ejemplo `taxCode` o
-  `exchangeRate` en Venezuela, que cambian en cada transacción.
+  ejemplo la **clave técnica** y el rango de numeración que la DIAN entrega con la resolución.
+  Se configuran una vez en el backoffice y viajan en cada llamada de esa tienda.
+- **`metadata`** (raíz) — atributos de la **venta**, variables: los que cambian en cada
+  transacción y que algún régimen exige declarar.
 
 Ambos son **opacos**: FIRE no los interpreta ni los valida.
+
+#### Así se carga el de la tienda
+
+<Frame caption="Arriba: el NIT del emisor, la clave técnica y el rango de facturación como grupo anidado.">
+  <img src="/images/fiscal/store-fiscal-metadata-1.jpg" alt="Configuración fiscal de la tienda: el NIT y un editor de clave y valor con claveTecnica y el grupo rangoFacturacion, con desde, hasta y prefijo." />
+</Frame>
+
+<Frame caption="Más abajo, en la misma pantalla: el rango de notas crédito y la vista previa del JSON que se va a enviar.">
+  <img src="/images/fiscal/store-fiscal-metadata-2.jpg" alt="Continuación de la misma pantalla: el grupo rangoNotaCredito con desde, hasta y prefijo, y debajo la vista previa del JSON resultante." />
+</Frame>
+
+Lo que se carga ahí es **exactamente** lo que recibís en
+`store.storeFiscalConfig.metadata`. En la captura, esa tienda va a mandarte:
+
+```json
+"metadata": {
+  "claveTecnica": "fc8eac422eba16e22ffd8c6f94b3f40a6e38162c",
+  "rangoFacturacion": {
+    "prefijo": "SETP",
+    "desde": "990000000",
+    "hasta": "995000000",
+    "resolucion": "18760000001",
+    "vigenteHasta": "2027-08-16"
+  },
+  "rangoNotaCredito": {
+    "prefijo": "NC",
+    "desde": "1",
+    "hasta": "100000"
+  }
+}
+```
+
+<Warning>
+  **Esto es un ejemplo, no el contrato.** Ni los nombres de las claves ni la lista de campos
+  están fijados por FIRE: se cargan como el proveedor los pida, y se agregan los que hagan
+  falta. Si mañana tu régimen necesita un dato más, es una fila nueva en esta pantalla — no
+  una versión nueva del contrato ni un despliegue nuestro.
+
+  **Publicá las claves que esperás, con el nombre exacto.** Un `claveTecnica` contra un
+  `clave_tecnica` es un dato que llega y que no vas a encontrar.
+</Warning>
+
+<Note>
+  **Por qué es llave-valor y no un formulario con campos fijos.**
+
+  Los datos que un proveedor necesita son del **régimen de su país**, no del dominio que
+  compartimos: una clave técnica de la DIAN, un rango de numeración, lo que venga después.
+  Tipificarlos en nuestra pantalla significaría que sumar un país —o que un ente agregue un
+  requisito— obligue a desplegar el backoffice. Con llave-valor, es cargar una fila.
+
+  Los valores pueden ser **texto o un grupo anidado**, sin límite de profundidad. Por eso un
+  rango entero —prefijo, desde, hasta, resolución, vigencia— entra como un bloque, en vez de
+  cinco claves con el prefijo pegado al nombre.
+
+  El ejemplo lleva **dos rangos** porque son dos cosas distintas: el de facturación y el de
+  notas crédito. Una tienda que solo tenga el primero puede emitir pero **no anular**.
+</Note>
+
+<Info>
+  **Ese mismo bloque viaja también en los eventos de la orden**, no solo en la numeración.
+  Aparece como `data.store.storeFiscalConfig` —con su `metadata` adentro— en:
+
+  [`order.opened`](/es/events/order-opened) ·
+  [`order.completed`](/es/events/order-completed) ·
+  [`order.cancelled`](/es/events/order-cancelled) ·
+  [`order.invoiced`](/es/events/order-invoiced) ·
+  [`order.reversed`](/es/events/order-reversed)
+
+  Es el mismo dato en los dos caminos, y a propósito: quien consume eventos para conciliar ve
+  con qué configuración se emitió esa venta, sin tener que preguntárselo a nadie.
+
+  ```json
+  "store": {
+    "code": "K039",
+    "storeFiscalConfig": {
+      "enabled": true,
+      "govIdType": "NIT",
+      "govIdNumber": "9001234567",
+      "company": { "…": "razón social del emisor" },
+      "metadata": {
+        "claveTecnica": "fc8eac…",
+        "rangoFacturacion": { "prefijo": "SETP", "…": "" },
+        "rangoNotaCredito": { "prefijo": "NC", "…": "" }
+      }
+    }
+  }
+  ```
+
+  El detalle campo por campo está en
+  [`order.completed` → Datos fiscales](/es/events/order-completed#datos-fiscales).
+</Info>
+
+<Note>
+  **Los nombres de las claves los definís vos, no nosotros.** El campo es libre: quien
+  configura la tienda escribe la clave que tu integración espera. Por eso conviene que
+  publiques cuáles necesitás y con qué nombre exacto — un `claveTecnica` contra un
+  `clave_tecnica` es un dato que llega y que no vas a encontrar.
+
+  FIRE no valida esos nombres a propósito: el vocabulario es del régimen y del proveedor, y
+  tipificarlo de nuestro lado significaría desplegar el backoffice cada vez que un país nuevo
+  pide un dato distinto.
+</Note>
 
 **Ninguna clave dentro de `metadata` puede pisar un campo de dominio.** Si aparece una clave
 `storeCode` o `country` dentro de `metadata`, debe ignorarse. De lo contrario el llave-valor
 se convierte en la puerta trasera por la que se redefine el contrato.
+
+### 3.5 `client` y `totals` — lo que viene de la venta
+
+Estos dos bloques **son los mismos que el punto de venta arma para inyectar la orden**, y
+viajan tal cual: FIRE no los recorta ni los renombra. Por eso no llevan vocabulario fiscal —
+llevan el del negocio.
+
+Van **siempre**, en todos los países. Lo que cambia es quién los usa: el proveedor de Ecuador
+los ignora, porque la clave de acceso se arma con fecha, emisor y correlativo. El de Colombia
+los necesita enteros, porque el **CUFE es un hash de la factura**: entran los importes, cada
+impuesto por separado, la fecha con hora y el documento del adquiriente.
+
+#### `totals` — lo cobrado
+
+<Tabs>
+  <Tab title="Ecuador (EC)">
+    Moneda **`USD`**. Hoy, un solo impuesto: **`IVA` al 15%**.
+
+    ```json
+    "totals": [
+      {
+        "currencyCode": "USD",
+        "total": 10,
+        "subtotalWithoutTaxes": 8.7,
+        "taxValue": 1.3,
+        "taxes": [
+          { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+        ]
+      }
+    ]
+    ```
+
+    El SRI no los mira: la clave de acceso se arma con fecha, emisor y secuencial. Viajan
+    igual, por si los necesitás para tu propio control.
+  </Tab>
+
+  <Tab title="Colombia (CO)">
+    Moneda **`COP`**. Hoy, un solo impuesto: **`IVA` al 19%**.
+
+    ```json
+    "totals": [
+      {
+        "currencyCode": "COP",
+        "total": 50000,
+        "subtotalWithoutTaxes": 42016.81,
+        "taxValue": 7983.19,
+        "taxes": [
+          { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+        ]
+      }
+    ]
+    ```
+
+    **Entra al hash del CUFE.** El monto declarado por impuesto es `ValImp`, y el nombre lo
+    traducís vos al código de la DIAN — `IVA` → `01`. Los casilleros que no aplican van en
+    `0.00`: eso es regla del anexo técnico, no algo que FIRE informe.
+  </Tab>
+</Tabs>
+
+#### `client` — quién compró
+
+Llega **entero, tal como lo armó el punto de venta**. No es un subconjunto fiscal: trae también
+datos que no le sirven a ningún ente.
+
+<Note>
+  **`govIdType` sale de un catálogo cerrado.** Estos son todos los valores que FIRE emite, y
+  no van a llegar otros:
+
+  | Valor | Qué es | Dónde aplica |
+  |---|---|---|
+  | `FINAL_CONSUMER` | venta sin comprador identificado | todos los países |
+  | `CI` | cédula de identidad | Ecuador |
+  | `RUC` | Registro Único de Contribuyentes | Ecuador |
+  | `CC` | cédula de ciudadanía | Colombia |
+  | `NIT` | Número de Identificación Tributaria | Colombia |
+
+  Traducirlos al código que exige tu ente es parte de tu implementación, igual que el resto de
+  la traducción al idioma del régimen.
+</Note>
+
+<Note>
+  **Leé solo lo fiscal y descartá el resto.** Lo que necesita un régimen está en `govIdType`,
+  `govIdNumber`, `name` y —para empresas— `billingInformation.businessName` y
+  `additionalInfo.fiscal`. El `uid`, el correo y el teléfono son del negocio, no del ente.
+
+  **`govIdType` y `govIdNumber` aparecen dos veces**: en la raíz y en `billingInformation`.
+  Cuando difieren, **manda el de facturación** — es el documento que el cliente pidió para su
+  factura.
+</Note>
+
+<Tabs>
+  <Tab title="Ecuador (EC)">
+    | Caso | `govIdType` | `govIdNumber` |
+    |---|---|---|
+    | Consumidor final | `FINAL_CONSUMER` | `00000000000` |
+    | Persona | `CI` — cédula de identidad | la cédula, 10 dígitos |
+    | Empresa | `RUC` | el RUC, 13 dígitos |
+
+    ```json
+    "client": {
+      "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+      "name": "CONSUMIDOR",
+      "lastName": "FINAL",
+      "email": "consumidor.final@ejemplo.com",
+      "phone": "2222222",
+      "govIdType": "FINAL_CONSUMER",
+      "govIdNumber": "00000000000",
+      "externalId": "",
+      "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+      "billingInformation": {
+        "email": "", "phone": "2222222", "address": "",
+        "govIdType": "FINAL_CONSUMER", "externalId": "",
+        "govIdNumber": "00000000000", "businessName": ""
+      }
+    }
+    ```
+
+    El consumidor final llega con `FINAL_CONSUMER` y ceros. Traducirlo a lo que el SRI espera
+    en el comprobante es parte de tu implementación.
+  </Tab>
+
+  <Tab title="Colombia (CO)">
+    | Caso | `govIdType` | `govIdNumber` |
+    |---|---|---|
+    | Consumidor final | `FINAL_CONSUMER` | `00000000000` |
+    | Persona | `CC` — cédula de ciudadanía | la cédula, sin puntos |
+    | Empresa | `NIT` | el NIT, sin dígito de verificación |
+
+    ```json
+    "client": {
+      "uid": "usr_cf_001",
+      "name": "Consumidor",
+      "lastName": "final",
+      "email": "consumidor.final@ejemplo.com",
+      "phone": "2222222",
+      "govIdType": "FINAL_CONSUMER",
+      "govIdNumber": "00000000000",
+      "externalId": "",
+      "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+      "billingInformation": {
+        "email": "", "phone": "2222222", "address": "",
+        "govIdType": "FINAL_CONSUMER", "externalId": "",
+        "govIdNumber": "00000000000", "businessName": ""
+      }
+    }
+    ```
+
+    **El consumidor final NO llega traducido.** Llega como `FINAL_CONSUMER` con el número en
+    ceros, igual que en cualquier otro país. Que eso se resuelva al NIT genérico
+    `222222222222` con nombre "Consumidor final" —Resolución 000042 de 2020— **es regla de la
+    DIAN, y por lo tanto tuya**.
+
+    Es la misma línea que con el número del comprobante y el CUFE: FIRE manda el hecho del
+    negocio —"esta venta no identificó al comprador"— y vos aplicás lo que exige el ente. Y no
+    es un caso de borde: en restaurantes es la mayoría de las ventas.
+
+    Ojo con la consecuencia: esa identificación entra al hash del CUFE como `NumAdq`. Si la
+    resolvés distinto, el CUFE no corresponde a la factura.
+
+  </Tab>
+</Tabs>
+
+<Warning>
+  **Los importes llegan como números JSON, no como texto**, y con los decimales que tenga el
+  valor — no con los que exige tu régimen. En Colombia son enteros, porque el peso no usa
+  centavos; en Ecuador vienen con hasta dos decimales.
+
+  Y JSON **no conserva los ceros a la derecha**: un importe de `8.70` llega como `8.7`, y uno
+  de `50000.00` como `50000`.
+
+  Por eso, **si tu identificador es un hash sobre una cadena, el formateo es tuyo.** El CUFE se
+  calcula sobre `"50000.00"`, y ese string no existe en el request: lo armás vos a partir del
+  número. FIRE no lo formatea porque no conoce la regla de tu régimen, y elegir un formato
+  equivocado de este lado sería peor que no elegir ninguno.
+
+  Lo que sí garantizamos es el **valor**: es exactamente el que se cobró y se imprimió.
+
+  **Y esto importa especialmente porque vas a consumir los eventos de la orden.** No es
+  opcional: la numeración te da los identificadores, pero **la venta que emitís al ente sale
+  del evento** — y de ahí volvés con el callback. Sin ese circuito, nadie sabe si el documento
+  se emitió.
+
+  En el evento, el mismo importe viaja en **otra escala**: entero en string, **×10.000**,
+  porque es como FIRE lo almacena.
+
+  Un ejemplo con Colombia — **cada país viaja en su moneda y con sus impuestos, pero la regla
+  de la escala es la misma**. Una venta de **50.000 COP** con IVA de **7.983,19 COP**:
+
+  <CodeGroup>
+
+  ```json En ESTE request — importes reales
+  "totals": [
+    {
+      "currencyCode": "COP",
+      "total": 50000,
+      "subtotalWithoutTaxes": 42016.81,
+      "taxValue": 7983.19,
+      "taxes": [
+        { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+      ]
+    }
+  ]
+  ```
+
+  ```json En el evento de la orden — enteros ×10.000
+  "totals": [
+    {
+      "currencyCode": "COP",
+      "total": "500000000",
+      "subtotalWithoutTaxes": "420168100",
+      "taxValue": "79831900",
+      "taxes": [
+        { "name": "IVA", "base": "420168100", "rate": "0.19", "amount": "79831900" }
+      ]
+    }
+  ]
+  ```
+
+  </CodeGroup>
+
+  **Dividí por 10.000 antes de declarar cualquier importe que hayas tomado del evento**, y usá
+  los de este request para el hash. Los dos caminos tienen que terminar en el mismo número: el
+  que está impreso en el comprobante.
+
+  Si tomás el importe del evento sin dividir, declarás **500.000.000 COP** por una venta de
+  **50.000 COP** — diez mil veces el monto. El documento queda bien formado y el ente lo acepta.
+
+  Ver [Qué llega al integrador](/es/fiscal-providers/in-events).
+</Warning>
+
+<Note>
+  **`taxes` trae siempre el desglose, un elemento por impuesto**, cada uno con `name`, `base`,
+  `rate` y `amount`. El monto por impuesto es el dato que importa: `amount` es lo que declarás
+  al ente, y `taxValue` de arriba es apenas su suma.
+
+  **Recorré el array, no leas `taxes[0]`.** Hoy en Ecuador y Colombia es un solo IVA, pero un
+  régimen puede declarar varios tributos por comprobante y el array los trae todos, sin que el
+  contrato cambie.
+</Note>
+
+<Note>
+  **Los dos bloques viajan en las dos operaciones**, `INVOICE` y `CANCEL`. Es un solo request
+  canónico y no se recorta por operación.
+
+  No es simetría por prolijidad: **la anulación produce un documento nuevo**. Una nota crédito
+  colombiana tiene su propio identificador calculado sobre los importes y el adquiriente, así
+  que sin `client` y `totals` no habría con qué armarlo.
+
+  Lo que no cambia es el alcance: la anulación es **total**. No existen anulaciones parciales
+  en ningún país que atendemos, así que los importes que llegan son los de la venta completa, y
+  qué documento compensás lo resolvés por el `orderCode`.
+</Note>
 
 ---
 
@@ -235,13 +705,7 @@ La respuesta tiene **dos partes con reglas distintas**:
   "authorizationMode": "ONLINE",
   "issuedAt": "2026-08-12T16:55:29Z",
 
-  "document": {
-    "claveAcceso": "1208202601179141513200110010200000001231234567813",
-    "establecimiento": "001",
-    "puntoEmision": "020",
-    "secuencial": "000000123",
-    "ambiente": "2"
-  },
+  "document": { "…": "el bloque de TU país — ver 5.2" },
 
   "graphic": { "qr": "https://…" },
 
@@ -250,6 +714,11 @@ La respuesta tiene **dos partes con reglas distintas**:
   "metadata": {}
 }
 ```
+
+Todo lo de arriba es igual para cualquier país. **`document` es lo único que cambia**, y por eso
+acá va elidido: su contenido está en [5.2](#52-document-—-el-documento-numerado), con una
+sección por país. Si estás implementando Ecuador, el bloque que te toca es el de Ecuador y
+ninguno más.
 
 <Info>
   **`country` viaja aunque esté en la ruta.** No es redundancia: FIRE compara `country` y
@@ -297,60 +766,119 @@ países, y cambia entero: los nombres son los del ente, no una traducción nuest
 Un país manda **lo que existe en su régimen y nada más**. Un campo que no aplica no viaja en
 `null`: sencillamente no está.
 
-#### 🇪🇨 Ecuador — SRI
+<Tabs>
+  <Tab title="Ecuador (EC) — SRI">
+    ```json
+    "document": {
+      "numeroComprobante": "001-020-000000123",
+      "claveAcceso": "1208202601179141513200110010200000001231234567813",
+      "establecimiento": "001",
+      "puntoEmision": "020",
+      "secuencial": "000000123",
+      "ambiente": "2"
+    }
+    ```
 
-```json
-"document": {
-  "numeroComprobante": "001-020-000000123",
-  "claveAcceso": "1208202601179141513200110010200000001231234567813",
-  "establecimiento": "001",
-  "puntoEmision": "020",
-  "secuencial": "000000123",
-  "ambiente": "2"
-}
-```
+    | Campo | Regla |
+    |---|---|
+    | `numeroComprobante` | Requerido. El número **visible**, ya armado: `estab-ptoEmi-secuencial` |
+    | `claveAcceso` | Requerido. **49 dígitos** exactos |
+    | `establecimiento` | Requerido. 3 dígitos |
+    | `puntoEmision` | Requerido. 3 dígitos — el punto de emisión desde el que se facturó |
+    | `secuencial` | Requerido. 9 dígitos |
+    | `ambiente` | Requerido. `"1"` pruebas · `"2"` producción |
 
-| Campo | Regla |
-|---|---|
-| `numeroComprobante` | Requerido. El número **visible**, ya armado: `estab-ptoEmi-secuencial` |
-| `claveAcceso` | Requerido. **49 dígitos** exactos |
-| `establecimiento` | Requerido. 3 dígitos |
-| `puntoEmision` | Requerido. 3 dígitos — el punto de emisión desde el que se facturó |
-| `secuencial` | Requerido. 9 dígitos |
-| `ambiente` | Requerido. `"1"` pruebas · `"2"` producción |
+    <Warning>
+      **El número visible lo armás vos, ya listo para imprimir.**
 
-<Warning>
-  **El número visible lo armás vos, ya listo para imprimir.**
+      Quince dígitos en tres tramos separados por guion —`establecimiento(3)`, `puntoEmision(3)`,
+      `secuencial(9)`— según el **art. 18 del Reglamento de Comprobantes de Venta**.
 
-  Quince dígitos en tres tramos separados por guion —`establecimiento(3)`, `puntoEmision(3)`,
-  `secuencial(9)`— según el **art. 18 del Reglamento de Comprobantes de Venta**.
+      Antes lo componía FIRE con las tres piezas. Se movió acá a propósito: **el formato es regla
+      del régimen, no presentación**, y quien está certificado ante el SRI sos vos. Si el
+      Reglamento cambia la convención, cambia de tu lado sin que FIRE despliegue.
 
-  Antes lo componía FIRE con las tres piezas. Se movió acá a propósito: **el formato es regla
-  del régimen, no presentación**, y quien está certificado ante el SRI sos vos. Si el
-  Reglamento cambia la convención, cambia de tu lado sin que FIRE despliegue.
+      Hay además una razón concreta: el Reglamento **permite omitir los ceros a la izquierda** del
+      secuencial. `001-020-123` puede ser tan legal como `001-020-000000123`. Armándolo nosotros
+      estaríamos eligiendo una variante en tu nombre. Mandá el que emitiste — **FIRE lo imprime tal
+      cual, sin reformatearlo**.
+    </Warning>
 
-  Hay además una razón concreta: el Reglamento **permite omitir los ceros a la izquierda** del
-  secuencial. `001-020-123` puede ser tan legal como `001-020-000000123`. Armándolo nosotros
-  estaríamos eligiendo una variante en tu nombre. Mandá el que emitiste — **FIRE lo imprime tal
-  cual, sin reformatearlo**.
-</Warning>
+    <Note>
+      **Las tres piezas siguen viajando igual**, como las nombra el SRI y sin concatenarlas en una
+      `serie` de 6 dígitos: se usan para conciliar, no para componer el número.
 
-<Note>
-  **Las tres piezas siguen viajando igual**, como las nombra el SRI y sin concatenarlas en una
-  `serie` de 6 dígitos: se usan para conciliar, no para componer el número.
+      El `puntoEmision` que devuelvas es el que quedó emitido, que puede no ser el que se pidió en
+      `device.uid` a través de tu catálogo. Lo que vale es siempre lo que vuelve, nunca lo que se
+      mandó.
+    </Note>
 
-  El `puntoEmision` que devuelvas es el que quedó emitido, que puede no ser el que se pidió en
-  `device.uid` a través de tu catálogo. Lo que vale es siempre lo que vuelve, nunca lo que se
-  mandó.
-</Note>
+    <Warning>
+      **`ambiente` no es informativo.** FIRE lo compara contra el ambiente configurado para el
+      vendor y **corta si no coinciden**. Es lo que atrapa a un proveedor emitiendo contra el
+      ambiente de pruebas del SRI mientras la operación cree estar en producción — sin ese
+      chequeo las ventas salen con claves de acceso que el ente no reconoce, y se descubre cuando
+      un cliente reclama su factura.
+    </Warning>
+  </Tab>
 
-<Warning>
-  **`ambiente` no es informativo.** FIRE lo compara contra el ambiente configurado para el
-  vendor y **corta si no coinciden**. Es lo que atrapa a un proveedor emitiendo contra el
-  ambiente de pruebas del SRI mientras la operación cree estar en producción — sin ese
-  chequeo las ventas salen con claves de acceso que el ente no reconoce, y se descubre cuando
-  un cliente reclama su factura.
-</Warning>
+  <Tab title="Colombia (CO) — DIAN">
+    ```json
+    "document": {
+      "numeroComprobante": "SETP990000001",
+      "cufe": "a2b4c6d8e0f2…  ← 96 caracteres hexadecimales",
+      "prefijo": "SETP",
+      "numeroDian": "990000001",
+      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=a2b4...",
+      "ambiente": "1"
+    }
+    ```
+
+    | Campo | Regla |
+    |---|---|
+    | `numeroComprobante` | Requerido. El número **visible**, ya armado y tal como va impreso. FIRE no lo compone |
+    | `cufe` | Requerido. El **CUFE** que calculaste: SHA-384 → **96 caracteres hexadecimales** |
+    | `prefijo` | Requerido. Prefijo del rango de numeración autorizado |
+    | `numeroDian` | Requerido. El consecutivo **solo**, sin el prefijo |
+    | `qrCode` | Requerido. La URL del catálogo de la DIAN que se imprime como QR. **Colombia no manda `graphic`** |
+    | `ambiente` | Requerido. `"1"` producción · `"2"` pruebas |
+
+    <Warning>
+      **Ojo con `ambiente`: en Colombia está al revés que en Ecuador.** La DIAN usa `1` para
+      producción y `2` para pruebas; el SRI usa `1` para pruebas y `2` para producción. Mandá el
+      código de **tu** ente, sin normalizar — FIRE ya sabe cómo se lee cada país, y es
+      exactamente por esto que el bloque `document` es del país y no un modelo común.
+    </Warning>
+
+    <Note>
+      **El CUFE lo calculás vos, entero.** Es un hash SHA-384 sobre una cadena que concatena
+      importes, fechas, identificaciones y la clave técnica, en el orden que fija el Anexo Técnico
+      de la DIAN.
+
+      FIRE **no arma esa cadena ni la hashea**: te manda los datos —importes en `totals`,
+      adquiriente en `client`— y vos aplicás la regla. Es el mismo criterio que con
+      `numeroComprobante`: quien está certificado ante el ente es quien conoce el algoritmo, y si
+      el Anexo cambia, cambia de tu lado sin que FIRE despliegue.
+
+      La **clave técnica** tampoco viaja en el request: la DIAN te la entrega junto con el rango de
+      numeración autorizado, así que vive de tu lado igual que el establecimiento en Ecuador.
+    </Note>
+
+    <Warning>
+      **Consumidor final: el `222222222222` lo ponés vos.**
+
+      Cuando la venta no identifica al comprador, `client` llega con `FINAL_CONSUMER` y el número
+      en ceros — el hecho del negocio, sin traducir. Resolverlo al NIT genérico `222222222222` con
+      nombre "Consumidor final" es **regla de la DIAN** (Resolución 000042 de 2020) y entra al hash
+      del CUFE como `NumAdq`. Ver [3.5](#35-client-y-totals).
+
+      FIRE no lo traduce a propósito: el mismo criterio que con el número del comprobante y el
+      CUFE. Lo que es del régimen lo resuelve quien está certificado ante el ente.
+
+      No es un caso de borde: en la operación real de restaurantes es la mayoría de las ventas.
+    </Warning>
+  </Tab>
+</Tabs>
 
 #### Por qué el bloque es del país y no un modelo común
 
@@ -404,6 +932,16 @@ construir el emisor**. No se deriva de la chave. Si no llega, no hay QR.
 En Ecuador el valor va a coincidir con `document.claveAcceso`. **Esa redundancia es deliberada:**
 la alternativa es que el punto de venta sepa que en Ecuador se codifica la clave, en Brasil la
 URL y en Chile el TED.
+
+<Warning>
+  **Colombia no manda `graphic`.** Su QR ya es una URL lista para imprimir y viaja en
+  `document.qrCode`; repetirla acá sería el mismo dato en dos lugares que pueden discrepar, y
+  ante la duda nadie sabría cuál gana.
+
+  La diferencia con Ecuador no es capricho: allá el QR **se deriva** de la clave de acceso, y
+  entregarlo explícito le ahorra al punto de venta tener que saberlo. Acá no se deriva de nada
+  — ya viene resuelto.
+</Warning>
 
 **No incluye `pdfUrl`, `xmlUrl` ni `lookupUrl`.** Los dos primeros solo existen después de que
 el ente autorizó y llegan por el callback; declararlos acá los condena a venir siempre en `null`,
@@ -515,3 +1053,21 @@ con el tenant derivado de la API key con la que se autentica. Debe incluir la op
 ella, una factura y su anulación sobre la misma orden son indistinguibles.
 
 Devolver identificadores adicionales en el callback es opcional y bienvenido, pero no requerido.
+
+<Note>
+  **Usá los mismos nombres que en la numeración.** El callback de Colombia declara `cufe`,
+  `prefijo`, `numeroDian`, `numeroComprobante`, `qrCode` y `ambiente` — exactamente los de
+  [5.2](#-colombia--dian). Es el mismo documento contado dos veces, y si los nombres divergen,
+  conciliar los dos caminos deja de ser comparar campos y pasa a ser traducir, que es donde se
+  cuelan los errores.
+</Note>
+
+<Warning>
+  **El callback no se rechaza por un campo que falte.** Cuando llega, el documento **ya existe
+  ante el ente**: devolver un `400` no lo deshace, solo nos deja sin enterarnos de una factura
+  autorizada — y ese aviso no vuelve.
+
+  Por eso los campos nuevos entran siempre **opcionales** y lo que mandes de más se conserva.
+  Es lo contrario de la numeración, que sí valida estricto: ahí el dato se acaba de calcular y
+  todavía no se imprimió nada. La asimetría es deliberada, y depende de dónde duele el error.
+</Warning>
