@@ -6,49 +6,51 @@ authMethod: "key"
 ---
 
 Fire resolves internally which fiscal provider matches the store's country, asks it for the
-numbering, and returns the data ready to print.
+numbering, and hands you the data ready to print.
 
 <Info>
   **Three things before you integrate:**
 
-  1. **There is no order id here.** At charge time the order does not exist in Fire yet. The
+  1. **There is no order id here.** When you charge, the order does not exist in Fire yet. The
      `orderCode` is the only thing tying this request to the sale, so it must be **the same
-     string** you later send when injecting the order.
-  2. **The response does not mean the document is authorized.** It means there are numbers to
-     print. The tax authority's approval arrives later, asynchronously.
+     string** you later send when injecting.
+  2. **The response does not say the document is authorized.** It says there are numbers to
+     print. The authority's approval arrives later, asynchronously.
   3. **You request an operation, not a document type.** `INVOICE` or `CANCEL`. Which fiscal
-     instrument materializes it — invoice, credit note, cancellation event — is decided by
-     the country, and is not the point of sale's concern.
+     instrument materializes it — invoice, credit note, cancellation event — is the country's
+     call, and not the point of sale's business.
 </Info>
 
 ## The full flow
 
 <Steps>
   <Step title="You charge">
-    The customer pays at the POS or kiosk.
+    The customer pays at the POS or the kiosk.
   </Step>
   <Step title="You request the numbering">
-    You call this endpoint. Fire resolves the store, the issuer and the provider, and stores
-    the request **before** going out for the numbers.
+    You call this endpoint. Fire resolves the store, the issuer and the provider, and stores the
+    request **before** going out for the numbers.
   </Step>
   <Step title="You print">
-    Based on `printing.mode` you print the fiscal receipt or a provisional ticket.
+    Depending on `printing.mode` you print the fiscal receipt or a provisional ticket.
   </Step>
   <Step title="You inject the order">
-    With your usual body, adding nothing. Fire correlates the sale with its numbering through
-    the `orderCode`.
+    With your usual body, adding nothing to it. Fire correlates the sale with its numbering
+    through the `orderCode`.
   </Step>
   <Step title="The authority approves">
-    Minutes later. Fire receives the provider's result and updates the order. Query this same
-    request if you need to see it.
+    Minutes later. Fire receives the provider's result and updates the order. If you want to see
+    it, query this same request.
   </Step>
 </Steps>
 
 <Warning>
-  **The sale is never blocked by fiscalization.** If the provider does not answer in time,
-  this endpoint returns `202` with an explicit state: you print a provisional ticket, inject
-  the order anyway, and Fire completes the numbering on its own. What you must not do is
-  retry in a loop or hold the sale.
+  **A sale is never blocked by fiscalization.** If the provider does not answer in time, this
+  endpoint returns `202` with an explicit status: you print a provisional ticket and inject the
+  order anyway.
+
+  What you must not do is retry in a loop or hold the sale while the customer waits. To complete
+  it later, **call again with the same `orderCode`**: nothing completes it on its own.
 </Warning>
 
 ## Headers
@@ -56,196 +58,702 @@ numbering, and returns the data ready to print.
 <ParamField header="x-api-key" type="string" required>
   Your Fire API key, with the **Fiscal Gateway (numbering)** permission.
 
-  Account and vendor are derived from the key, **never from the body**. That is why the
-  payload carries no `accountId` or `vendorId`: a credential cannot lie about who it belongs
-  to.
+  The account and the vendor are derived from the key, **never from the body**. That is why the
+  payload carries no `accountId` or `vendorId`: a credential cannot lie about who it belongs to.
 </ParamField>
 
 <ParamField header="Idempotency-Key" type="string" required>
-  UUID identifying **this fiscal operation**. If you retry after a network failure, send the
-  **same** value: you get the previous result instead of a new document.
+  A UUID identifying **this attempt**. Generate it once per sale and reuse it across the retries
+  of that same sale.
 
-  Generate it once per sale and keep it with the order until you inject it. If you reuse it
-  with a different body, Fire answers `409`: they are two different operations, and returning
-  the first one would hand this sale another sale's document.
+  <Note>
+    **This is not what prevents a duplicate document** — the `orderCode` does that, being the
+    natural key on both ends: if you repeat the same `orderCode`, you get the same document back
+    even if you generate a new key.
+
+    What this key adds is **detecting that you reused it for a different sale**: if the same key
+    arrives with a different body, Fire answers `409` instead of numbering. It guards against a
+    point-of-sale bug — not regenerating the key — that would otherwise go unnoticed.
+  </Note>
+</ParamField>
+
+<ParamField header="x-correlation-id" type="string">
+  **Optional.** An identifier of your own for this operation — the one you already use in your
+  logs.
+
+  Fire stores it with the request and returns it in `correlationId`. It changes no behaviour: it
+  exists so that, when something fails, you can cross your records with ours without matching by
+  timestamp and `orderCode`.
+
+  If you do not send it, `correlationId` comes back `null`.
 </ParamField>
 
 ## Body
 
-This is **its own payload**, not the order injection one: only what is needed to number. The
+It is a **payload of its own**, not the order injection one: only what numbering requires. The
 names match the ones you already use (`store`, `device`, `orderCode`) so you can build it by
-trimming what you have — but do not send the full order body: no `products`, no `payments`,
-no `shippingMethod`.
+trimming what you have, but do not send the full order body — no `products`, `payments` or
+`shippingMethod`.
 
-Seven fields, and none of them is a tax authority code.
+Five fields, and none of them is an authority code.
 
 <ParamField body="orderCode" type="string" required>
-  Code of the sale. It is **the idempotency key**, both Fire's and the provider's.
+  The sale's code. It is **the idempotency key**, both Fire's and the provider's.
 
-  It must be unique per account and country, and **the same** you later send when injecting
-  the order. If two stores of the same account use the same `orderCode`, Fire stops with
-  `409` before issuing: without that guard the second store would print the first one's
-  sequential.
+  It must be unique per account and country, and **the same one** you later send when injecting
+  the order. If two stores of the same account use the same `orderCode`, Fire stops with `409`
+  before issuing: without that stop, the second store would print the first one's sequential.
 </ParamField>
 
 <ParamField body="createdAt" type="string" required>
-  Order creation timestamp.
+  The order's creation date and time.
 
-  It is only the **fallback** for the issue date: the primary source is the store's open
-  business day. A sale made after midnight belongs to the day that is still open, not to the
-  clock's.
+  It has two uses, and they are worth keeping apart. It is the **fallback** for the issue date —
+  the primary source is the store's open business day, because a sale made after midnight belongs
+  to the day that is still open, not to the clock's — and it also **travels to the fiscal
+  provider** as the wall-clock time the sale happened, for regimes that require it on the receipt.
 
-  Without a timezone (`2026-08-12 17:26:09`) it is read as **UTC**.
+  With no timezone (`2026-08-12 17:26:09`), it is read as **UTC**. It always leaves for the
+  provider normalized, with `Z`.
 </ParamField>
 
 <ParamField body="operation" type="string" default="INVOICE">
   What you are asking for. One of:
 
   - `INVOICE` — number the sale.
-  - `CANCEL` — void it. Fire finds the original document of that same order on its own: **do
-    not send fiscal keys or Fire identifiers**.
+  - `CANCEL` — void it.
+
+  **You request an operation, not a document type.** Which fiscal instrument materializes it is
+  the country's call: in Ecuador a cancellation is a **credit note** with its own run of
+  sequentials; in Brazil it is a cancellation event that produces no new receipt.
+
+  <Note>
+    **To void, send the sale's same `orderCode`** with `operation: "CANCEL"`. Nothing else: no
+    fiscal keys, no original document number, no Fire identifiers.
+
+    Fire finds the document to compensate through the natural key —`country + orderCode +
+    operation`— and tells you which one it matched in `document.compensates`. Your point of sale
+    **does not need to store anything of ours** in order to void.
+  </Note>
 </ParamField>
 
 <ParamField body="store" type="object" required>
-  The issuing store. From `code`, Fire resolves the country, the issuer's fiscal identity and
-  the establishment — do not send them yourself.
+  The issuing store. From `code`, Fire resolves the country, the issuer's fiscal identity and the
+  establishment — do not send those yourself.
   <Expandable title="store">
-    <ParamField body="code" type="string" required>Store code in Fire (e.g. `K004`).</ParamField>
+    <ParamField body="code" type="string" required>The store's code in Fire (e.g. `K004`).</ParamField>
   </Expandable>
 </ParamField>
 
 <ParamField body="device" type="object" required>
-  The issuing device. **It is the only block that differs from order injection**:
-  `externalId` is added.
+  The issuing device. **It is the same block you already send when injecting orders** — nothing
+  needs to be added to it.
   <Expandable title="device">
     <ParamField body="uid" type="string" required>
-      Device identifier.
+      The device's identifier. **It is the only thing that identifies the terminal.**
     </ParamField>
-    <ParamField body="externalId" type="string" required>
-      **Point of emission** that device issues from. It travels to the provider exactly as
-      you declare it.
+    <ParamField body="name" type="string">Device name (`KIOSK`, `CAJA 3`).</ParamField>
+    <ParamField body="platform" type="string">`android`, `ios`, `web`… Informational.</ParamField>
+    <ParamField body="metadata" type="object">
+      Key-value of the device (`ip`, and whatever you need). Opaque: Fire does not interpret it.
 
-      Two registers in the same store number independently, so it cannot be inferred or
-      shared: each device declares its own. Without this field Fire answers `400` — there is
-      nothing sensible to invent in its place.
+      It travels because when a register issues badly, knowing which machine it came from is the
+      difference between fixing it and guessing.
     </ParamField>
   </Expandable>
+
+  <Note>
+    **Do not declare the point of emission.** There used to be an `externalId` the channel used
+    to report it; it was removed. The authority assigns it under the issuer's tax id and the
+    point of sale does not speak that language: the provider now resolves it from the `uid`, just
+    as it does with `store.code`.
+
+    It comes back in `countryData.puntoEmision`, with the value it was actually issued under.
+  </Note>
+</ParamField>
+
+<ParamField body="totals" type="array">
+  What was charged. **It is the same `payments.totals` you already send when injecting orders**
+  — send it as is, whole.
+
+  <Expandable title="totals[] — what Fire uses to fiscalize">
+    <ParamField body="currencyCode" type="string">
+      ISO 4217, the store's: `USD` in Ecuador, `COP` in Colombia, `BRL` in Brazil.
+    </ParamField>
+    <ParamField body="total" type="number">Total charged, taxes included.</ParamField>
+    <ParamField body="subtotalWithoutTaxes" type="number">Taxable base, before taxes.</ParamField>
+    <ParamField body="taxValue" type="number">Sum of the taxes.</ParamField>
+    <ParamField body="taxes" type="array">
+      One element **per tax**, with `name`, `base`, `rate` and `amount`. Always the granular
+      array: some regimes declare them separately and do not accept the summed total.
+
+      The name is yours (`IVA`, `ICMS`, `PIS`…): translating it into the authority's code is
+      the fiscal provider's job, not yours.
+    </ParamField>
+  </Expandable>
+
+  <Note>
+    **What is sent today, per country:**
+
+    | Country | Currency | Taxes |
+    |---|---|---|
+    | Ecuador | `USD` | `IVA` 15% |
+    | Colombia | `COP` | `IVA` 19% |
+    | Brazil | `BRL` | six: `ICMS`, `PIS`, `COFINS`, `IBS_UF`, `IBS_MUN`, `CBS` |
+
+    **Send `taxes[]` with `amount`, not a loose percentage.** One element per tax, with `name`,
+    `base`, `rate` and `amount` — the same shape in every country.
+
+    The amount has to come computed by you, who charged and printed it. Where the fiscal
+    identifier is a hash of the invoice —the Colombian CUFE— deriving it from the percentage
+    forces someone else to round, and if they round differently than the register, the identifier
+    stops matching the paper the customer is holding.
+  </Note>
+
+  <Note>
+    **Amounts travel unscaled.** Send the number exactly as you charged it: `50000`, `42016.81`.
+    Do not multiply it by 10,000.
+
+    That scale does exist, but it belongs to **another path**: the order's events
+    ([`order.completed`](/en/events/order-completed) and the rest) carry the same amounts as an
+    integer in a string ×10,000, because that is how FIRE stores them. Not here.
+
+    If you integrate both paths, that is the only conversion you have to make — and doing it
+    backwards means declaring ten thousand times the amount.
+  </Note>
+  <Note>
+    **Send the amount exactly as you charged and printed it.** Fire neither rounds it nor
+    reformats it: the number in the request and the one on the receipt are the same.
+
+    It matters because there are regimes where the fiscal identifier is a **hash of the invoice**
+    — the Colombian CUFE, for example. If the amount going into the hash is not the one printed,
+    the identifier does not correspond to the invoice the customer has in hand.
+  </Note>
+</ParamField>
+
+<ParamField body="client" type="object">
+  Who bought. **It is the same block you already send when injecting orders: send it whole, as
+  is.** Do not trim it, do not rename it, do not translate it.
+
+  Fire reads from there whatever the country's regime needs and discards the rest. That it is
+  the complete block and not a subset is deliberate: if each country demanded its own trim, the
+  point of sale would have to know which field each authority looks at — which is exactly what
+  this contract avoids.
+
+  <Expandable title="client — what Fire uses to fiscalize">
+    <ParamField body="govIdType" type="string">
+      Document type. Fire expects one of: **`FINAL_CONSUMER`** · **`CI`** · **`RUC`** ·
+      **`CC`** · **`NIT`**.
+    </ParamField>
+    <ParamField body="govIdNumber" type="string">Document number.</ParamField>
+    <ParamField body="name" type="string">Name. For companies, the legal name is in `billingInformation.businessName`.</ParamField>
+    <ParamField body="billingInformation" type="object">
+      Billing data. When it carries `govIdType`/`govIdNumber`, **they take precedence** over the
+      ones at the root: it is the document the customer asked for on their invoice.
+    </ParamField>
+    <ParamField body="additionalInfo.fiscal" type="object">
+      The buyer's fiscal address, when the regime requires it to invoice companies.
+    </ParamField>
+  </Expandable>
+
+  The remaining fields —`uid`, `email`, `phone`, `gender`, `birthdate`, `externalId`— travel and
+  are not fiscalized. Fire **does not forward them to the fiscal provider**: they are not the
+  authority's business.
+
+  <Note>
+    **The values Fire expects in `govIdType`:**
+
+    | Value | What it is | Where |
+    |---|---|---|
+    | `FINAL_CONSUMER` | sale with no identified buyer — `govIdNumber` in zeros | all |
+    | `CI` | identity card | Ecuador |
+    | `RUC` | Registro Único de Contribuyentes | Ecuador |
+    | `CC` | citizenship card | Colombia |
+    | `NIT` | Número de Identificación Tributaria | Colombia |
+
+    **There is no guard today: whatever you send, the sale gets numbered.** The field travels as
+    is to the fiscal provider, so a value outside this list does not break the numbering — it
+    reaches them, and they are the ones who have to recognize it.
+
+    That is why it pays to stick to it: a `CEDULA` where `CI` belongs, or two different spellings
+    for the final consumer, are documents that come out wrong without anything failing along the
+    way.
+  </Note>
+
+  <Note>
+    **Final consumer: send both fields, translating neither.**
+
+    ```json
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000"
+    ```
+
+    You send the number, same as in any other sale. What you must **not** do is convert it into
+    what each regime requires: the DIAN's generic NIT `222222222222` in Colombia, the absence of
+    a recipient in Brazil. That is resolved by the fiscal provider, who is the one certified
+    before the authority.
+
+    It is deliberate: that rule changes per country and per resolution of the authority, and it
+    should not force you to deploy the point of sale when it changes.
+
+    **Fire does not touch it either.** The `client` block travels as is to the provider: we do not
+    fill in the number, we do not normalize it and we do not validate it. What you send is what
+    they receive.
+  </Note>
 </ParamField>
 
 <ParamField body="metadata" type="object">
-  **Sale-level** key-value: what changes on every transaction and some country requires.
+  Key-value **of the sale**: what changes on every transaction and some country requires.
 
-  It is opaque to your integration: Fire does not interpret it, it transports it. Valid keys
-  depend on the store's country, and an unknown key is rejected with `400` — a Fire error is
-  better than an invented field travelling to the tax authority.
+  It is opaque to your integration: Fire does not interpret it, it carries it. Valid keys depend
+  on the store's country, and an unknown key is rejected with `400` — a Fire error is preferable
+  to a made-up field travelling to the authority.
 
-  Most of the time it is empty: **whatever is constant about the store is not sent here**, it
-  is configured once (see below).
-</ParamField>
-
-<ParamField body="reason" type="string">
-  Reason for the cancellation. Stored for support.
+  In most cases it goes empty: **what is constant about the store is not sent here**, it is
+  configured once (see below).
 </ParamField>
 
 ### What you do not send: the store configuration
 
-Everything **constant about the store** is configured once in the backoffice and travels on
-its own: the issuer's fiscal identity, and a **per-country key-value block** for whatever
+Everything that is **constant about the store** is configured once in the backoffice and travels
+on its own: the issuer's fiscal identity, plus a **key-value block per country** for the
 attributes that country's provider needs.
 
 <Info>
-  That key-value lives in the store's fiscal configuration, **separated by country**. It is
-  why this endpoint is the same everywhere: what is specific to each country is administered,
-  not programmed and not sent on every sale.
+  That key-value lives in the store's fiscal configuration, **separated by country**. It is the
+  reason this endpoint is the same everywhere: what is country-specific is administered, not
+  programmed and not sent on every sale.
 
-  If your integration starts needing a new per-country field, the answer is almost always to
+  If your integration starts needing a new field per country, the answer is almost always to
   configure it there — not to add it to the payload.
 </Info>
 
 <ParamField body="referencedFiscalRequestId" type="string">
-  Only for `CANCEL`, and only when automatic resolution is not enough: a cancellation
-  referencing a document from another order, or several invoices for the same one.
+  Only for `CANCEL`, and only when automatic resolution is not enough: a cancellation referencing
+  a document from another order, or several invoices for the same one.
 
-  **In the normal case, do not send it.** Fire finds the original through the natural key, so
-  your point of sale does not need to store any identifier of ours to be able to void a sale.
+  **In the normal case, do not send it.** Fire finds the original through the natural key, so your
+  point of sale does not need to store any identifier of ours in order to void.
 </ParamField>
 
 ## Response
 
 <ResponseField name="fiscalRequestId" type="string">
-  Identifier of the request in Fire. This is what you query the outcome with.
+  The request's identifier in Fire. It is what you query the outcome with later.
 </ResponseField>
 
 <ResponseField name="orderCode" type="string">Echo of the code you sent.</ResponseField>
+
+<ResponseField name="correlationId" type="string">
+  Echo of the `x-correlation-id` header, or `null` if you did not send it. It is for traceability:
+  it takes no part in numbering or idempotency.
+</ResponseField>
 
 <ResponseField name="reused" type="boolean">
   `true` if this request already existed and was returned as-is, without numbering again.
 </ResponseField>
 
 <ResponseField name="requestStatus" type="string">
-  State of **the numbering**: did I get numbers to print?
+  The status of **the numbering**: did I get numbers to print?
 
-  `GENERATED` · `PENDING` · `FAILED_RETRYABLE` · `FAILED_FINAL` · `UNAVAILABLE`
+  Five possible values. The first four describe how the attempt ended; the fifth says there was no
+  attempt because this store does not number.
+
+  | Value | What happened | HTTP |
+  |---|---|---|
+  | `GENERATED` | There are numbers. Print the fiscal receipt | `201` |
+  | `PENDING` | **Unknown.** The provider did not answer — it may have numbered | `202` |
+  | `FAILED_RETRYABLE` | The provider said "not now". You can retry | `202` |
+  | `FAILED_FINAL` | The provider said a definitive "no". Retrying will not help | `200` |
+  | `NOT_APPLICABLE` | This store has no fiscal numbering. **It is not an error** | `200` |
+
+  <Warning>
+    **`PENDING` does not mean "there is no receipt": it means "we do not know".** Communication
+    dropped and the provider may have numbered, consumed a sequential and issued the document
+    without us finding out.
+
+    Retry **with the same `orderCode`**. Fire resumes the request and asks the provider again; if
+    it numbered the first time, you get that same document instead of a new one. Numbering again
+    under a different `orderCode` would declare the same sale twice to the authority.
+  </Warning>
+
+  <Note>
+    `NOT_APPLICABLE` is the only one that is **not stored**: it creates no fiscal request
+    (`fiscalRequestId: null`) and does not appear in the order's events. It exists because the POS
+    always calls this endpoint — that is how it discovers whether the store numbers — and
+    answering with an error would make every sale of a gateway-less store look like a failure.
+  </Note>
 </ResponseField>
 
 <ResponseField name="documentStatus" type="string">
-  State of the **document before the tax authority**: did it approve?
+  The status of the **document before the authority**: did it approve it?
 
   `PENDING` · `AUTHORIZED` · `REJECTED` · `CANCELLED`
 
   <Note>
-    In this response it is **always** `PENDING`: there are numbers, there is no verdict. Only
-    the provider's result moves it, and that arrives later. Collapsing both states into one
-    is the mistake that makes a POS believe a sale is authorized when it is merely numbered.
+    In this response it is **always** `PENDING`: there are numbers, there is no verdict. Only the
+    provider's result moves it, and that arrives later. Collapsing the two statuses into one is
+    the mistake that makes a POS believe a sale is authorized when it is merely numbered.
   </Note>
 </ResponseField>
 
-<ResponseField name="document" type="object">
-  The receipt's identifiers. `null` if nothing was numbered.
-  <Expandable title="document">
-    <ResponseField name="documentType" type="string">`SALE_INVOICE` or `CREDIT_NOTE`.</ResponseField>
-    <ResponseField name="documentNumber" type="string">
-      Visible number, composed per the country's convention (`005-004-000000011`). It is for
-      **printing**: to search or reconcile use `sequential` + `serie`.
-    </ResponseField>
-    <ResponseField name="sequential" type="string">Document sequential.</ResponseField>
-    <ResponseField name="serie" type="string">Series. `null` in countries that do not use one.</ResponseField>
-    <ResponseField name="authorizationMode" type="string">
-      `ONLINE` · `OFFLINE` · `BATCH`. Determines the contingency legend to print.
-    </ResponseField>
-    <ResponseField name="issuedAt" type="string">Issue date.</ResponseField>
-  </Expandable>
-</ResponseField>
+<ResponseField name="environment" type="string">
+  Which environment **Fire** numbered in: `SANDBOX` or `PRODUCTION`.
 
-<ResponseField name="countryIdentifiers" type="object">
-  What varies per country. It carries `countryCode` inside so it can be read without looking
-  outside the block.
-
-  Ecuador and Brazil bring `accessKey`; Venezuela brings `controlNumber` and `accessKey: null`.
+  It is ours, not the authority's. It comes from the account's fiscal configuration —which is per
+  vendor and per country, so the same account can have Ecuador in production and Colombia in
+  sandbox— and it is frozen on the request: if the configuration changes tomorrow, this value
+  still says what **this** sale was numbered with.
 
   <Warning>
-    **`accessKey` can legitimately be `null`.** Do not assume it always comes: it is the
-    mistake that breaks multi-country fiscal integrations most often.
+    **Do not confuse it with the authority's environment**, which travels inside `countryData` in
+    the country's own vocabulary (`ambiente: "PRUEBAS" | "PRODUCCION"` in Ecuador). They are two
+    different facts: one says which configuration Fire issued against, the other what the tax
+    authority declared. They normally match — and when they do not, that is exactly what you need
+    to be able to see, which is why neither is derived from the other.
+  </Warning>
+
+  `null` when `requestStatus` is `NOT_APPLICABLE`: nothing was numbered, so there was no
+  environment to number in.
+</ResponseField>
+
+<ResponseField name="document" type="object">
+  What you need in order to print, **without knowing about countries**. `null` if nothing was
+  numbered.
+
+  <Expandable title="document">
+    <ResponseField name="documentType" type="string">
+      `SALE_INVOICE` or `CREDIT_NOTE`. Fire's vocabulary: it says which operation it is, not which
+      instrument the country materializes it with.
+    </ResponseField>
+    <ResponseField name="documentLabel" type="string">
+      **How it is titled on the receipt**: `FACTURA`, `NOTA DE CREDITO`. Fire translates it — the
+      fiscal instrument is defined by the tax regime, and we do not want every channel carrying
+      its own map.
+    </ResponseField>
+    <ResponseField name="documentNumber" type="string">
+      The visible number, **exactly as the provider composes it** per its country's convention
+      (`001-020-000000123`). It is for **printing**: to search or reconcile, use the identifiers
+      in `countryData`.
+
+      In Ecuador it is the echo of `countryData.numeroComprobante`. Fire does not recompose it or
+      change its format — the rule belongs to the regime, not to us.
+    </ResponseField>
+    <ResponseField name="authorizationMode" type="string">
+      `ONLINE` · `OFFLINE` · `BATCH`. Fire's vocabulary.
+    </ResponseField>
+    <ResponseField name="authorizationLabel" type="string">
+      **How it is printed**: `EMISION NORMAL`, `EMISION POR CONTINGENCIA`. Same reason as
+      `documentLabel`.
+    </ResponseField>
+    <ResponseField name="issuedAt" type="string">Issue date.</ResponseField>
+    <ResponseField name="compensates" type="object">
+      **Which document this one voids.** Only on credit notes; `null` on an invoice.
+
+      ```json
+      {
+        "documentNumber": "005-004-000000068",
+        "issuedAt": "2026-08-14T18:31:57.649Z",
+        "reason": "ORDER_CANCELLATION",
+        "reasonLabel": "Anulación de pedido"
+      }
+      ```
+
+      <Expandable title="compensates">
+        <ResponseField name="documentNumber" type="string">
+          The original document's visible number. In Ecuador it is printed as
+          `N. FACTURA MODIFICADA`.
+        </ResponseField>
+        <ResponseField name="issuedAt" type="string">
+          When the original was issued. Printed as `FECHA EMISION FAC.` — it differs from the
+          credit note's own date, which is one level up.
+        </ResponseField>
+        <ResponseField name="reason" type="string">
+          Why it is being voided. Fire's vocabulary. Today only `ORDER_CANCELLATION` exists: the
+          cancellation of the whole order.
+        </ResponseField>
+        <ResponseField name="reasonLabel" type="string">
+          How the reason is printed. **Each company writes it** in its configuration: the
+          authority requires the credit note to carry a reason, but does not dictate the wording.
+        </ResponseField>
+      </Expandable>
+
+      It is a **universal** block: every cancellation, in any country, references the document it
+      modifies. What changes per country is how it is labelled when printed, not the concept —
+      which is why it lives here and not in `countryData`.
+    </ResponseField>
+  </Expandable>
+
+  <Note>
+    **`sequential` and `serie` are no longer here.** They are country-shaped pieces —in Ecuador
+    the serie is six digits split in half— and they live in `countryData` under the name their
+    authority gives them. Only what means the same everywhere stayed in `document`.
+  </Note>
+</ResponseField>
+
+<ResponseField name="countryData" type="object">
+  **The country's identifiers, in its authority's vocabulary and ready to print.**
+
+  <CodeGroup>
+
+  ```json Ecuador (EC) — SRI
+  {
+    "numeroComprobante": "001-020-000000123",
+    "claveAcceso": "1208202601179141513200110010200000001231234567813",
+    "establecimiento": "001",
+    "puntoEmision": "020",
+    "secuencial": "000000123",
+    "ambiente": "PRODUCCION"
+  }
+  ```
+
+  ```json Colombia (CO) — DIAN
+  {
+    "numeroComprobante": "SETP990000001",
+    "cufe": "9c4f1e… (96)",
+    "prefijo": "SETP",
+    "numeroDian": "990000001",
+    "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+    "ambiente": "PRODUCCION"
+  }
+  ```
+
+  </CodeGroup>
+
+  <Note>
+    **The block changes entirely per country, and so do the labels.** In Colombia
+    `documentLabel` is `FACTURA ELECTRONICA DE VENTA` and `authorizationLabel` is
+    `VALIDACION PREVIA` — those are the DIAN's names, not a variant of the Ecuadorian text.
+
+    `ambiente` arrives translated in both countries, and that is the point: the DIAN encodes
+    `1` as production and the SRI encodes it as testing. Fire resolves it so no channel has to
+    carry that table.
+  </Note>
+
+  It is an **open map**: the keys are defined by each country's tax regime, not by this contract.
+  A new country comes in without the response's shape changing.
+
+  <Note>
+    **The values come translated, not as authority codes.** The provider sends
+    `ambiente: "2"` —that is how the SRI defines it— and what arrives here is `"PRODUCCION"`,
+    which is what the ticket says. Translating it on the channel's side would mean every
+    integrator carries its own copy of the authority's table, and the first one to copy it wrong
+    prints "PRUEBAS" on a production invoice.
+  </Note>
+
+  <Warning>
+    **Do not look for fixed fields: iterate the keys that arrive.** Ecuador brings `claveAcceso`,
+    Colombia `cufe`, Brazil `chaveAcesso`. A channel reading
+    `countryData.claveAcceso` outright works in Ecuador and breaks in the second country.
   </Warning>
 </ResponseField>
 
+### `countryData` by country
+
+Today the gateway numbers in **Ecuador** and **Colombia**. Every country that comes in adds its tab here — and
+only that: the response's shape does not change, because the block is open.
+
+<Tabs>
+  <Tab title="Ecuador (EC) · available">
+    **SRI** receipts.
+
+    | Key | Type | Always | Notes |
+    |---|---|---|---|
+    | `numeroComprobante` | string | ✓ | The **visible** number, already composed: `estab-ptoEmi-secuencial` |
+    | `claveAcceso` | string | ✓ | 49 digits. It is also what gets encoded in the QR |
+    | `establecimiento` | string | ✓ | 3 digits. The provider resolves it from `store.code` |
+    | `puntoEmision` | string | ✓ | 3 digits. The provider resolves it from `device.uid` |
+    | `secuencial` | string | ✓ | 9 digits. The invoice and the credit note run **different sequences** |
+    | `ambiente` | string | ✓ | `PRUEBAS` or `PRODUCCION` — **already translated**; the SRI defines it as `"1"` / `"2"` |
+
+    ```json
+    {
+      "numeroComprobante": "001-020-000000123",
+      "claveAcceso": "1208202601179141513200110010200000001231234567813",
+      "establecimiento": "001",
+      "puntoEmision": "020",
+      "secuencial": "000000123",
+      "ambiente": "PRODUCCION"
+    }
+    ```
+
+    <Note>
+      **The number is composed by the provider, not by Fire.** The format belongs to the regime
+      —fifteen digits in three segments, article 18 of the Reglamento de Comprobantes de Venta—
+      and it is known by whoever is certified before the SRI. If the regime changes the
+      convention, it changes there and Fire does not need to deploy.
+
+      `document.documentNumber` is an **echo** of this same value, so you do not have to reach
+      into the country block just to print. It is the same fact, not two.
+    </Note>
+
+    <Warning>
+      **The three loose pieces are not a substitute.** The Reglamento allows omitting the
+      sequential's leading zeros, so `001-020-123` can be just as legal as `001-020-000000123`.
+      Composing the number yourself out of `establecimiento`, `puntoEmision` and `secuencial`
+      means adopting a convention that is not yours to adopt: print `numeroComprobante` exactly
+      as it arrives.
+    </Warning>
+  </Tab>
+
+  <Tab title="Colombia (CO) · available">
+    **DIAN** receipts.
+
+    | Key | Type | Always | Notes |
+    |---|---|---|---|
+    | `numeroComprobante` | string | ✓ | The **visible** number, already assembled: `prefix + consecutive` |
+    | `cufe` | string | ✓ | 96 hexadecimal characters (SHA-384). The document's identifier before the DIAN |
+    | `prefijo` | string | ✓ | Prefix of the numbering range authorized by resolution |
+    | `numeroDian` | string | ✓ | The consecutive **alone**, without the prefix |
+    | `qrCode` | string | ✓ | DIAN catalog URL. This is what gets printed as a QR |
+    | `ambiente` | string | ✓ | `PRUEBAS` or `PRODUCCION` — **already translated**; the DIAN defines it as `"1"` / `"2"` |
+
+    ```json
+    {
+      "numeroComprobante": "SETP990000001",
+      "cufe": "9c4f1e… (96 hexadecimal characters)",
+      "prefijo": "SETP",
+      "numeroDian": "990000001",
+      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+      "ambiente": "PRODUCCION"
+    }
+    ```
+
+    <Warning>
+      **`ambiente` arrives translated, and just as well.** The DIAN uses `1` for production and
+      `2` for testing — **the opposite of the SRI**. Fire resolves it here so that no channel
+      has to carry its own copy of the table: the first one to copy it from the wrong side
+      prints "PRUEBAS" on a real invoice.
+    </Warning>
+
+    <Note>
+      **`numeroComprobante` and `numeroDian` are not the same thing.** The first is the full
+      visible number, exactly as printed; the second is only the consecutive. Both arrive
+      resolved by the provider — Fire concatenates nothing, same as in Ecuador.
+
+      `document.documentNumber` is an **echo** of `numeroComprobante`, so you can print without
+      stepping into the country block.
+    </Note>
+
+    <Warning>
+      **There is no `graphic` in Colombia.** The QR is the DIAN catalog URL and it lives in
+      `countryData.qrCode`. A channel expecting `graphic.qr` as in Ecuador finds nothing.
+    </Warning>
+
+    <Note>
+      **CUFE only, no CUDE.** We issue the electronic sales invoice, which carries a CUFE. The
+      "P.O.S. equivalent document" carries a CUDE and is not issued today.
+    </Note>
+  </Tab>
+
+  <Tab title="Other countries · when they arrive">
+    A country comes in with its adapter, and its keys and its tab arrive with it. The response's
+    shape **does not change**: `countryData` remains the same open map.
+
+    What does change is the vocabulary, which is why indexing fixed keys is a bad idea:
+    Ecuador says `claveAcceso` and Colombia `cufe` for the same fact. Brazil will say
+    `chaveAcesso`. Those are examples of how each regime names things, not a contract
+    already available.
+
+    <Warning>
+      **If your integration operates in more than one country, iterate the keys.** A channel
+      reading `countryData.claveAcceso` outright works in Ecuador and already breaks in
+      Colombia.
+    </Warning>
+  </Tab>
+</Tabs>
+
+<ResponseField name="store" type="object">
+  The issuing **branch**, for the receipt's header.
+
+  <Expandable title="store">
+    <ResponseField name="code" type="string">The business's store code.</ResponseField>
+    <ResponseField name="name" type="string">Store name.</ResponseField>
+    <ResponseField name="address" type="string">
+      The branch's address. **Not the headquarters' one** — the Ecuadorian receipt prints both,
+      and they are different.
+    </ResponseField>
+    <ResponseField name="city" type="string">City.</ResponseField>
+    <ResponseField name="phone" type="string">Phone.</ResponseField>
+    <ResponseField name="govIdType" type="string">The branch's tax id type.</ResponseField>
+    <ResponseField name="govIdNumber" type="string">The branch's tax id.</ResponseField>
+    <ResponseField name="secondaryGovIdType" type="string">Secondary id, where it applies.</ResponseField>
+    <ResponseField name="secondaryGovIdNumber" type="string">Value of the above.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="company" type="object">
+  The issuing **legal entity**: the receipt's header and footer, already resolved.
+
+  <Expandable title="company">
+    <ResponseField name="legalName" type="string">Legal name.</ResponseField>
+    <ResponseField name="tradeName" type="string">Trade name.</ResponseField>
+    <ResponseField name="govIdType" type="string">Id type (`RUC`, `CNPJ`…).</ResponseField>
+    <ResponseField name="govIdNumber" type="string">The company's id.</ResponseField>
+    <ResponseField name="headquartersAddress" type="string">
+      The **headquarters'** address, different from the branch's.
+    </ResponseField>
+    <ResponseField name="countryLines" type="array">
+      What the tax regime requires in the header, **already labelled and ordered**:
+
+      ```json
+      [
+        { "key": "granContribuyente", "label": "GRAN CONTRIBUYENTE", "value": "NAC-GCFOIOC21-00000900-E" },
+        { "key": "contribuyenteEspecial", "label": "CONTRIBUYENTE ESPECIAL", "value": "155" },
+        { "key": "obligadoContabilidad", "label": "Obligado a llevar contabilidad", "value": "SI" }
+      ]
+      ```
+
+      It comes with a `label` because the receipt prints it verbatim. If each channel supplied the
+      label, two registers of the same brand would print differently. **Iterate the list and
+      draw**: you do not need to know what "gran contribuyente" means, only where to put it.
+    </ResponseField>
+    <ResponseField name="legends" type="array">
+      The footer texts, **in order and already interpolated**:
+
+      ```json
+      [
+        { "key": "avisoCambios", "text": "Estimado cliente: Por favor verifique los datos…" },
+        { "key": "facturaElectronica", "text": "…con la Clave de Acceso: 1408…7811" }
+      ]
+      ```
+
+      The `key` is stable and chosen by whoever loads them: if you prefer your own texts, index by
+      it and ignore ours.
+
+      A legend interpolating a value that is missing **does not travel**: half a legend with a raw
+      placeholder printed on it is worse than not printing it.
+    </ResponseField>
+  </Expandable>
+
+  <Note>
+    **`store`, `company` and `document.compensates` come in every response of this endpoint**,
+    including the idempotent retry — the channel needs the header both the first time and when it
+    repeats after a network drop.
+
+    **Queries** (`GET` by `fiscalRequestId` or `orderCode`) return them as `null`: they are
+    resolved at issue time and are not stored with the request. If your integration needs them to
+    reprint, use [the printing data](/en/api-reference/fiscal-print).
+  </Note>
+</ResponseField>
+
 <ResponseField name="graphic" type="object">
-  Key → **exact string to encode**, ready to render. For example
+  Key → **the exact string to encode**, ready to render. For example
   `{ "qr": "1208202601…811" }`.
 
-  It is an open map because each country's receipt does not always carry the same thing, and
-  a country may need more than one element. **Iterate over the keys you receive**, do not
-  look for fixed fields.
+  It is an open map because each country's receipt does not always carry the same thing, and a
+  country may need more than one element. **Iterate the keys that arrive**, do not look for fixed
+  fields.
 
   Fire does not generate images: size and resolution depend on your printer, and only whoever
   prints knows that.
 </ResponseField>
 
 <ResponseField name="printing" type="object">
-  What you may print. **It is a legal rule of the country, not a derivation of whether there
-  is a document**: that is why Fire resolves it instead of each channel.
+  What you may print. **It is a legal rule of the country, not a derivation of whether there is a
+  document**: which is why Fire resolves it and not each channel.
   <Expandable title="printing">
-    <ResponseField name="printable" type="boolean">Whether you can hand over the fiscal receipt.</ResponseField>
+    <ResponseField name="printable" type="boolean">Whether you may hand over the fiscal receipt.</ResponseField>
     <ResponseField name="mode" type="string">
       `FISCAL_DOCUMENT` · `PROVISIONAL_RECEIPT` · `NONE`
     </ResponseField>
@@ -256,104 +764,409 @@ attributes that country's provider needs.
 </ResponseField>
 
 <ResponseField name="failure" type="object">
-  Why there is no document. `scope` is what you branch on: `TECHNICAL` → print "in progress"
-  and move on; `FUNCTIONAL` → some data is wrong and retrying will not fix it.
+  Why there is no document. `null` when there is one.
+
+  <Expandable title="failure">
+    <ResponseField name="scope" type="string">
+      **What you branch on.** `TECHNICAL` → the problem is communication or the service; you print
+      provisional and it gets resolved later. `FUNCTIONAL` → some data is wrong and retrying will
+      not fix it.
+    </ResponseField>
+    <ResponseField name="code" type="string">
+      A stable code, for alerting and support. **It is not a status**: the statuses are the five in
+      `requestStatus` and they do not grow; this catalogue does.
+    </ResponseField>
+    <ResponseField name="message" type="string">
+      Actionable text. It says which store, which point of emission or which value is missing.
+    </ResponseField>
+  </Expandable>
+
+  | `code` | What happened | `scope` |
+  |---|---|---|
+  | `FISCAL_BUSINESS_RULE` | The authority or the provider rejected it over a business rule. The `message` carries the real reason | `FUNCTIONAL` |
+  | `FISCAL_COUNTRY_NOT_SUPPORTED` | The provider does not serve that store's country | `TECHNICAL` |
+  | `PROVIDER_AUTH_FAILED` | Wrong or revoked provider credential. **It is configuration, not a numbering failure** | `TECHNICAL` |
+  | `PROVIDER_TIMEOUT` | It did not answer within the time budget | `TECHNICAL` |
+  | `PROVIDER_UNAVAILABLE` | It answered that it cannot right now | `TECHNICAL` |
+  | `PROVIDER_UNREACHABLE` | Communication could not be established | `TECHNICAL` |
+  | `PROVIDER_CONTRACT_VIOLATION` | It answered `2xx` with something that does not meet the contract | `TECHNICAL` |
+
+  <Warning>
+    **`PROVIDER_TIMEOUT` and `PROVIDER_CONTRACT_VIOLATION` arrive with `requestStatus: "PENDING"`,
+    not with a definitive failure.** In both cases the provider may have numbered without us being
+    able to read it: issuing another receipt outside would declare the same sale twice to the
+    authority.
+  </Warning>
+</ResponseField>
+
+<ResponseField name="providerCode" type="string">
+  **Our** adapter identifier (`hio`), not the provider's name. It says which integration
+  numbered this sale. `null` on `NOT_APPLICABLE`: none was involved.
+</ResponseField>
+
+<ResponseField name="providerIdentity" type="object">
+  Who numbered, on the provider's side. **It has a shape** —all three fields are part of the
+  contract— and that is why it travels apart from the opaque bag. `null` when nothing was numbered.
+
+  <Expandable title="providerIdentity">
+    <ResponseField name="name" type="string">
+      Stable identifier of the service that resolved the numbering.
+    </ResponseField>
+    <ResponseField name="version" type="string">
+      Which version resolved it. It is what lets you pin a problem to a deployment.
+    </ResponseField>
+    <ResponseField name="reference" type="string">
+      **The provider's own support reference**: the identifier you quote back to them so they
+      can find this operation in their records. **It is not your `Idempotency-Key`** — you sent
+      that one and it comes back in `idempotencyKey`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="providerMetadata" type="object">
+  The provider's diagnostic bag, exactly as it arrived. **Opaque**: it has no guaranteed shape
+  and nobody should program against its keys — they change with no notice and without versioning
+  the contract. It is there to paste into a ticket, not to branch on.
+
+  `null` when the provider sent nothing.
+
+  <Note>
+    **It is the same field that travels in the event**, same name and same content. All three
+    provider fields —`providerCode`, `providerIdentity`, `providerMetadata`— read the same here
+    and in `fiscalRepresentation`: what you learn at one end works at the other.
+  </Note>
 </ResponseField>
 
 ## Status codes
 
-| Code | Meaning |
-|---|---|
-| `200` with `NOT_APPLICABLE` | This vendor has no fiscal representation. Not an error |
-| `201` | Numbered now |
-| `200` | Already existed — idempotent retry (`reused: true`) |
-| `202` | The provider did not answer within the time budget. Print provisional and inject anyway |
-| `200` with `FAILED_FINAL` | Rejected. It is the answer to your question, not a call error |
-| `400` | Invalid body, store not configured, or missing point of emission |
-| `401` · `403` | Credentials or permission |
-| `404` | The store does not exist for your API key's vendor |
-| `409` | Same `Idempotency-Key` with a different body, or the `orderCode` was used by another store |
+<Warning>
+  **The HTTP code does not tell you whether you got a receipt.** `200` may be an idempotent retry
+  that numbered perfectly, or a definitive rejection by the authority. Branch on `printing.mode`
+  and `requestStatus`, never on the code alone.
+</Warning>
+
+| Code | When | `requestStatus` |
+|---|---|---|
+| `201` | Numbered now | `GENERATED` |
+| `200` | Idempotent retry — it already existed (`reused: true`) | any |
+| `200` | This store does not number. **It is not an error** | `NOT_APPLICABLE` |
+| `200` | Definitive rejection. It is the answer to your question, not a call failure | `FAILED_FINAL` |
+| `202` | There are no numbers **yet**. Print provisional and inject anyway | `PENDING` · `FAILED_RETRYABLE` |
+| `400` | Invalid body, or store not configured to issue | — |
+| `401` · `403` | Credentials or permission | — |
+| `404` | The store does not exist for your API key's vendor | — |
+| `409` | Same `Idempotency-Key` with a different body, or the `orderCode` was already used by another store | — |
 
 <Note>
-  **The call is synchronous, but it has a time budget.** The customer is standing at the
-  register: Fire waits a few seconds for the provider and, if there is no answer, it cuts and
-  returns `202` instead of leaving the sale hanging.
+  **The call is synchronous, but it has a time budget.** The customer is standing at the register:
+  Fire waits a few seconds for the provider and, if it does not answer, cuts and returns `202`
+  instead of leaving the sale hanging.
 
-  That `202` is **not a promise that it will reach your POS later through another channel**:
-  it is Fire saying "no numbers yet, print provisional and move on". The numbering is
-  completed on Fire's side and you query it whenever you want with the `fiscalRequestId`. It
-  is rare, but it exists because the alternative — failing the sale — is worse.
+  That `202` is **not a promise that it will reach your POS later through another channel**: it is
+  Fire saying "I have no numbers yet, print provisional and carry on".
+
+  **To complete it, retry with the same `orderCode`.** Fire resumes the request and asks the
+  provider again. It is rare, but it exists because the alternative — failing the sale — is worse.
 </Note>
 
 ## What to do with each response
 
 <AccordionGroup>
-  <Accordion title="GENERATED — the normal case">
-    Print the receipt with `document.documentNumber` and render the codes in `graphic`.
-    Inject the order.
+  <Accordion title="GENERATED — there is a receipt" icon="circle-check">
+    `printing.mode: "FISCAL_DOCUMENT"`. Print the receipt with `document.documentNumber` and draw
+    the codes from `graphic`. Inject the order with **the same `orderCode`**.
 
-    If `printing.reason` is `ISSUED_OFFLINE`, the receipt is valid but was issued in
+    If `printing.reason` is `ISSUED_OFFLINE`, the receipt is valid but was issued under
     contingency: print the legend that country requires.
+
+    <CodeGroup>
+
+    ```json Ecuador (EC) — SRI
+    {
+      "requestStatus": "GENERATED",
+      "documentStatus": "PENDING",
+      "reused": false,
+      "environment": "PRODUCTION",
+      "document": {
+        "documentType": "SALE_INVOICE",
+        "documentLabel": "FACTURA",
+        "documentNumber": "005-004-000000058",
+        "authorizationMode": "ONLINE",
+        "authorizationLabel": "EMISION NORMAL",
+        "issuedAt": "2026-08-14T01:01:14.722Z",
+        "compensates": null
+      },
+      "countryData": {
+        "numeroComprobante": "005-004-000000058",
+        "claveAcceso": "1308202601000000000000210050040000000581234567811",
+        "establecimiento": "005",
+        "puntoEmision": "004",
+        "secuencial": "000000058",
+        "ambiente": "PRODUCCION"
+      },
+      "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+      "graphic": { "qr": "1308202601000000000000210050040000000581234567811" },
+      "failure": null
+    }
+    ```
+
+    ```json Colombia (CO) — DIAN
+    {
+      "requestStatus": "GENERATED",
+      "documentStatus": "PENDING",
+      "reused": false,
+      "environment": "PRODUCTION",
+      "document": {
+        "documentType": "SALE_INVOICE",
+        "documentLabel": "FACTURA ELECTRONICA DE VENTA",
+        "documentNumber": "SETP990000001",
+        "authorizationMode": "ONLINE",
+        "authorizationLabel": "VALIDACION PREVIA",
+        "issuedAt": "2026-08-16T14:21:03.118Z",
+        "compensates": null
+      },
+      "countryData": {
+        "numeroComprobante": "SETP990000001",
+        "cufe": "9c4f1e… (96 hex)",
+        "prefijo": "SETP",
+        "numeroDian": "990000001",
+        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+        "ambiente": "PRODUCCION"
+      },
+      "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+      "graphic": null,
+      "failure": null
+    }
+    ```
+
+    </CodeGroup>
   </Accordion>
 
-  <Accordion title="PENDING or FAILED_RETRYABLE — the provider did not answer">
-    `printing.mode` comes as `PROVISIONAL_RECEIPT`. Print a non-fiscal ticket and inject the
-    order anyway.
+  <Accordion title="PENDING — unknown whether there is a receipt" icon="circle-question">
+    The provider **did not answer**: timeout or dropped connection. It may have numbered and
+    consumed a sequential without us finding out.
 
-    **Do not retry this call.** Fire completes the numbering on its own. If you need to show
-    the result, query with the `fiscalRequestId`.
+    Print the provisional ticket and inject the order. Then **retry with the same `orderCode`**:
+    Fire resumes the request and asks the provider again, so if it numbered the first time, you
+    recover that document.
+
+    <Warning>
+      **Do not assume the sale ended up without a receipt.** Issuing a new one through another
+      path may declare the same sale twice to the authority.
+    </Warning>
+
+    ```json
+    {
+      "requestStatus": "PENDING",
+      "document": null,
+      "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "AWAITING_FISCAL_NUMBERING" },
+      "graphic": null,
+      "retryable": true,
+      "environment": "PRODUCTION",
+      "failure": {
+        "code": "PROVIDER_TIMEOUT",
+        "scope": "TECHNICAL",
+        "message": "El proveedor fiscal no respondió dentro del tiempo configurado."
+      }
+    }
+    ```
   </Accordion>
 
-  <Accordion title="FAILED_FINAL — the authority or the provider rejected it">
-    Some data is not accepted and retrying will not fix it: read `failure.message`, which
-    carries the real reason (for example, that the store is not registered in the fiscal
-    catalog).
+  <Accordion title="FAILED_RETRYABLE — there is none, but there may be" icon="rotate-right">
+    The provider **answered** that it cannot right now. Unlike `PENDING`, here we know for certain
+    that **nothing was numbered**.
 
-    Print the provisional ticket, inject the order, and escalate with the `fiscalRequestId`.
+    Print provisional, inject the order and retry with the same `orderCode`.
+
+    ```json
+    {
+      "requestStatus": "FAILED_RETRYABLE",
+      "document": null,
+      "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "AWAITING_FISCAL_NUMBERING" },
+      "graphic": null,
+      "retryable": true,
+      "environment": "PRODUCTION",
+      "failure": {
+        "code": "PROVIDER_UNAVAILABLE",
+        "scope": "TECHNICAL",
+        "message": "El servicio de fiscalización no está disponible."
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="FAILED_FINAL — there is none, and retrying will not help" icon="circle-xmark">
+    Some value is not accepted. Read `failure.message`, which carries the real reason.
+
+    Print the provisional ticket, inject the order and escalate with the `fiscalRequestId`.
+    **The sale was charged without a fiscal receipt** — that also travels in the order's events, so
+    you can compensate for it.
+
+    ```json
+    {
+      "requestStatus": "FAILED_FINAL",
+      "document": null,
+      "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "FISCAL_REJECTED" },
+      "graphic": null,
+      "retryable": false,
+      "environment": "PRODUCTION",
+      "failure": {
+        "code": "FISCAL_BUSINESS_RULE",
+        "scope": "FUNCTIONAL",
+        "message": "identidad fiscal no configurada: EC / la tienda K004 no está cargada en el catálogo de identidades fiscales"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="NOT_APPLICABLE — this store does not number" icon="ban">
+    **It is not an error.** This vendor has no fiscal representation: there is nothing to number
+    and no request was created (`fiscalRequestId: null`).
+
+    Print your usual ticket and inject the order normally. It is the expected answer for
+    aggregators, countries with no fiscal gateway and businesses with numbering switched off.
+
+    ```json
+    {
+      "fiscalRequestId": null,
+      "requestStatus": "NOT_APPLICABLE",
+      "document": null,
+      "printing": { "printable": false, "mode": "NONE", "reason": "NUMBERING_DISABLED" },
+      "graphic": null,
+      "failure": null,
+      "documentStatus": null,
+      "environment": null,
+      "idempotencyKey": null
+    }
+    ```
   </Accordion>
 
   <Accordion title="4xx — the problem is in the request">
     In these cases **no fiscal request was created**: fix it and call again.
 
-    If you get a `404` about a store not found, check that your API key belongs to the vendor
-    that owns that store — the message includes which vendor it searched against.
+    If you get a `404` with a store-not-found message, check that your API key belongs to the
+    vendor that owns that store — the message includes which vendor it searched against.
   </Accordion>
 </AccordionGroup>
 
 <Info>
   **Always call it. This is how you find out whether the store numbers.**
 
-  You do not need to sync configuration or branch by country: if that vendor has no fiscal
+  You do not need to sync configuration or decide per country: if that vendor has no fiscal
   representation, the answer is `200` with `requestStatus: "NOT_APPLICABLE"` and
-  `printing.mode: "NONE"` — you print your ticket and move on. **It is not an error** and no
+  `printing.mode: "NONE"` — you print your ticket and carry on. **It is not an error** and no
   request is created.
 
-  It is the same branch you already have: you branch on `printing.mode`, not on the HTTP status
-  code.
+  It is the same branch you already have: you branch on `printing.mode`, not on the HTTP code.
 </Info>
+
+## Voiding
+
+You send **the sale's same `orderCode`** with `operation: "CANCEL"`. Nothing else.
+
+```json
+{
+  "orderCode": "EC-K004-42-1786579046934",
+  "createdAt": "2026-08-12T19:10:00.000Z",
+  "operation": "CANCEL",
+  "store": { "code": "K004" },
+  "device": { "uid": "kiosk-01", "name": "KIOSK", "platform": "android" },
+  "totals": [
+    {
+      "currencyCode": "USD",
+      "total": 10,
+      "subtotalWithoutTaxes": 8.7,
+      "taxValue": 1.3,
+      "taxes": [
+        { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+      ]
+    }
+  ],
+  "client": {
+    "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+    "name": "CONSUMIDOR",
+    "lastName": "FINAL",
+    "email": "consumidor.final@ejemplo.com",
+    "phone": "2222222",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000",
+    "externalId": "",
+    "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+    "billingInformation": {
+      "email": "", "phone": "2222222", "address": "",
+      "govIdType": "FINAL_CONSUMER", "externalId": "",
+      "govIdNumber": "00000000000", "businessName": ""
+    }
+  },
+  "metadata": {}
+}
+```
+
+The response has **the same shape** as an invoice's. Three things change:
+
+| | Invoice | Cancellation |
+|---|---|---|
+| `document.documentType` | `SALE_INVOICE` | `CREDIT_NOTE` |
+| `document.documentLabel` | `FACTURA` | `NOTA DE CREDITO RIDE` |
+| `document.compensates` | `null` | the document it voids |
+
+<Note>
+  **The credit note has its own numbering.** It does not continue the invoices': in the example,
+  the invoice is `005-004-000000068` and its cancellation `005-004-000000002`. They are two
+  different runs under the same establishment and point of emission.
+</Note>
+
+<Warning>
+  **A cancellation is a new fiscal receipt, not a deletion.** The original invoice still exists
+  before the authority and must be kept: what the credit note does is compensate it.
+
+  That is why `GET /numbering?orderCode=…` returns **two** documents for that order.
+</Warning>
+
+### If there is nothing to void
+
+If the sale was never numbered —because the store does not invoice, or because numbering failed—
+the cancellation answers **`400`**:
+
+```json
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "No existe un documento emitido para esa orden al que referenciar la nota de crédito"
+}
+```
+
+<Warning>
+  **It is a `400`, not a failure inside a `200`.** It is the one important difference between
+  voiding and invoicing: when invoicing, an authority rejection travels as a successful response
+  with `requestStatus: "FAILED_FINAL"`, because it is the answer to your question. Here there is
+  no question to answer — you asked to compensate something that does not exist.
+
+  Your point of sale prints its internal cancellation receipt and carries on.
+</Warning>
+
+### When the instrument is not a credit note
+
+In Ecuador a cancellation produces a new document. In other countries it does not: in Brazil it is
+a cancellation event that **generates no receipt**, and there the response arrives with
+`status: "CANCELLED"` and `document: null`. **It is not an error** — it is the correct outcome of
+that operation in that country.
+
+That is why you request an `operation` and not a document type: the instrument is the tax regime's
+call.
 
 ## Querying a request
 
-These are two read endpoints, and they exist for **when the normal path is not enough**: you
-lost the synchronous response, or you want to see whether the authority already approved
-without waiting for the event. In day-to-day operation you should not need them — the data
-arrives through the order events.
+There are two read endpoints, and they exist for **when the normal path is not enough**: you lost
+the synchronous response, or you want to see whether the authority already approved without
+waiting for the event. In day-to-day operation you should not need them — the data arrives through
+the order's events.
 
-By identifier:
-
-```
-GET /api/v1/external/fiscal/numbering/{fiscalRequestId}
-```
-
-By order — returns `items[]`, because an order can have **two** documents: the invoice and
-the cancellation compensating it.
-
-```
-GET /api/v1/external/fiscal/numbering?orderCode=FUEL-EC-1786579046934
-```
-
-This is what you use when you lose the response to a network failure: the `orderCode` is the
-only thing you have at hand.
+- **[By identifier](/en/api-reference/fiscal-document-get)** — `GET /numbering/{fiscalRequestId}`.
+- **[By order](/en/api-reference/fiscal-documents-query)** — `GET /numbering?orderCode=…`. It
+  returns `items[]`, because an order may have **two** documents: the invoice and the cancellation
+  compensating it. It is the one you use when you lose the response to a network drop — the
+  `orderCode` is all you have in hand.
 
 When the authority approves, `documentStatus` becomes `AUTHORIZED`.
 
@@ -364,19 +1177,73 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
   "createdAt": "2026-08-12T17:26:09.386Z",
   "operation": "INVOICE",
   "store": { "code": "K004" },
-  "device": { "uid": "kiosk-01", "externalId": "1" },
+  "device": { "uid": "kiosk-01", "name": "KIOSK", "platform": "android" },
+  "totals": [
+    {
+      "currencyCode": "USD",
+      "total": 10,
+      "subtotalWithoutTaxes": 8.7,
+      "taxValue": 1.3,
+      "taxes": [
+        { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+      ]
+    }
+  ],
+  "client": {
+    "uid": "8Z35YvBbgKVj67AJwZ3nFmAqrtk1",
+    "name": "CONSUMIDOR",
+    "lastName": "FINAL",
+    "email": "consumidor.final@ejemplo.com",
+    "phone": "2222222",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000",
+    "externalId": "",
+    "additionalInfo": { "fiscal": "", "gender": "", "birthdate": "" },
+    "billingInformation": {
+      "email": "", "phone": "2222222", "address": "",
+      "govIdType": "FINAL_CONSUMER", "externalId": "",
+      "govIdNumber": "00000000000", "businessName": ""
+    }
+  },
   "metadata": {}
 }
 ```
 
-```json Cancel
+```json Invoice — Colombia (CO)
+{
+  "orderCode": "CO-K039-1786901234",
+  "createdAt": "2026-08-16T14:03:22.145Z",
+  "operation": "INVOICE",
+  "store": { "code": "K039" },
+  "device": { "uid": "52CAEA5A18D9B75F", "name": "CAJA 3", "platform": "android" },
+  "client": {
+    "name": "Consumidor",
+    "lastName": "final",
+    "govIdType": "FINAL_CONSUMER",
+    "govIdNumber": "00000000000"
+  },
+  "totals": [
+    {
+      "currencyCode": "COP",
+      "total": 50000,
+      "subtotalWithoutTaxes": 42016.81,
+      "taxValue": 7983.19,
+      "taxes": [
+        { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+      ]
+    }
+  ],
+  "metadata": {}
+}
+```
+
+```json Void
 {
   "orderCode": "EC-K004-42-1786579046934",
   "createdAt": "2026-08-12T19:10:00.000Z",
   "operation": "CANCEL",
-  "reason": "Full refund",
   "store": { "code": "K004" },
-  "device": { "uid": "kiosk-01", "externalId": "1" },
+  "device": { "uid": "kiosk-01", "name": "KIOSK", "platform": "android" },
   "metadata": {}
 }
 ```
@@ -395,17 +1262,44 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
     "requestStatus": "GENERATED",
     "documentStatus": "PENDING",
     "retryable": false,
+    "environment": "PRODUCTION",
     "document": {
       "documentType": "SALE_INVOICE",
+      "documentLabel": "FACTURA",
       "documentNumber": "005-004-000000011",
-      "sequential": "000000011",
-      "serie": "005004",
       "authorizationMode": "ONLINE",
-      "issuedAt": "2026-08-12T23:57:47.118Z"
+      "authorizationLabel": "EMISION NORMAL",
+      "issuedAt": "2026-08-12T23:57:47.118Z",
+      "compensates": null
     },
-    "countryIdentifiers": {
-      "countryCode": "EC",
-      "accessKey": "1208202601000000000000110050040000000111234567811"
+    "countryData": {
+      "numeroComprobante": "005-004-000000011",
+      "claveAcceso": "1208202601000000000000110050040000000111234567811",
+      "establecimiento": "005",
+      "puntoEmision": "004",
+      "secuencial": "000000011",
+      "ambiente": "PRODUCCION"
+    },
+    "store": {
+      "code": "K004", "name": "Sucursal Amazonas",
+      "address": "AV. AMAZONAS N36-15", "city": "Quito", "phone": "022222222",
+      "govIdType": "RUC", "govIdNumber": "1791415132001",
+      "secondaryGovIdType": null, "secondaryGovIdNumber": null
+    },
+    "company": {
+      "legalName": "INT FOOD SERVICES CORP SA",
+      "tradeName": "KFC",
+      "govIdType": "RUC",
+      "govIdNumber": "1791415132001",
+      "headquartersAddress": "PICHINCHA / QUITO / INAQUITO / COREA 126 Y AV. AMAZONAS",
+      "countryLines": [
+        { "key": "granContribuyente", "label": "GRAN CONTRIBUYENTE", "value": "NAC-GCFOIOC21-00000900-E" },
+        { "key": "contribuyenteEspecial", "label": "CONTRIBUYENTE ESPECIAL", "value": "155" },
+        { "key": "obligadoContabilidad", "label": "Obligado a llevar contabilidad", "value": "SI" }
+      ],
+      "legends": [
+        { "key": "avisoCambios", "text": "Estimado cliente: Por favor verifique los datos de su factura…" }
+      ]
     },
     "graphic": { "qr": "1208202601000000000000110050040000000111234567811" },
     "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
@@ -415,7 +1309,119 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
       "respondedAt": "2026-08-12T23:57:47.2Z",
       "providerLatencyMs": 406
     },
-    "correlationId": null
+    "correlationId": null,
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K000" }
+  }
+}
+```
+
+```json 201 Numbered — Colombia (CO)
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "c1a7f0e2-9b34-4d21-8e55-3f60ab12cd90",
+    "orderCode": "CO-K039-1786901234",
+    "idempotencyKey": "2f81dcb4-77a0-4c19-9e3b-5a04e7f1b2c8",
+    "reused": false,
+    "countryCode": "CO",
+    "requestStatus": "GENERATED",
+    "documentStatus": "PENDING",
+    "retryable": false,
+    "environment": "PRODUCTION",
+    "document": {
+      "documentType": "SALE_INVOICE",
+      "documentLabel": "FACTURA ELECTRONICA DE VENTA",
+      "documentNumber": "SETP990000001",
+      "authorizationMode": "ONLINE",
+      "authorizationLabel": "VALIDACION PREVIA",
+      "issuedAt": "2026-08-16T14:21:03.118Z",
+      "compensates": null
+    },
+    "countryData": {
+      "numeroComprobante": "SETP990000001",
+      "cufe": "9c4f1e… (96 caracteres hexadecimales)",
+      "prefijo": "SETP",
+      "numeroDian": "990000001",
+      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+      "ambiente": "PRODUCCION"
+    },
+    "store": {
+      "code": "K039", "name": "Sucursal Chapinero",
+      "address": "CRA 13 # 63-39", "city": "Bogotá", "phone": "6013334444",
+      "govIdType": "NIT", "govIdNumber": "9001234567",
+      "secondaryGovIdType": null, "secondaryGovIdNumber": null
+    },
+    "company": {
+      "legalName": "COMERCIALIZADORA ANDINA S.A.S.",
+      "tradeName": "KFC",
+      "govIdType": "NIT",
+      "govIdNumber": "9001234567",
+      "headquartersAddress": "BOGOTA D.C. / CHAPINERO / CRA 13 # 63-39",
+      "countryLines": [
+        { "key": "regimen", "label": "REGIMEN", "value": "RESPONSABLE DE IVA" },
+        { "key": "resolucion", "label": "RESOLUCION DIAN", "value": "18760000001" }
+      ],
+      "legends": []
+    },
+    "graphic": null,
+    "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+    "failure": null,
+    "timestamps": {
+      "requestedAt": "2026-08-16T14:21:02.6Z",
+      "respondedAt": "2026-08-16T14:21:03.3Z",
+      "providerLatencyMs": 712
+    },
+    "correlationId": null,
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": { "externalStoreCode": "K039" }
+  }
+}
+```
+
+```json 201 Voided — credit note
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "b73b2fd9-c7a6-42bd-815f-d39c210983ef",
+    "orderCode": "EC-K004-42-1786579046934",
+    "idempotencyKey": "1e07b0e1-784b-40b9-8903-0326361ebefd",
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "GENERATED",
+    "documentStatus": "PENDING",
+    "retryable": false,
+    "environment": "PRODUCTION",
+    "document": {
+      "documentType": "CREDIT_NOTE",
+      "documentLabel": "NOTA DE CREDITO RIDE",
+      "documentNumber": "005-004-000000002",
+      "authorizationMode": "ONLINE",
+      "authorizationLabel": "EMISION NORMAL",
+      "issuedAt": "2026-08-14T18:32:32.242Z",
+      "compensates": {
+        "documentNumber": "005-004-000000068",
+        "issuedAt": "2026-08-14T18:31:57.649Z",
+        "reason": "ORDER_CANCELLATION",
+        "reasonLabel": "Anulación de pedido"
+      }
+    },
+    "countryData": {
+      "numeroComprobante": "005-004-000000002",
+      "claveAcceso": "1408202604179141513200110050040000000021234567815",
+      "establecimiento": "005",
+      "puntoEmision": "004",
+      "secuencial": "000000002",
+      "ambiente": "PRODUCCION"
+    },
+    "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+    "graphic": { "qr": "1408202604179141513200110050040000000021234567815" },
+    "failure": null,
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K000" }
   }
 }
 ```
@@ -431,8 +1437,9 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
     "requestStatus": "PENDING",
     "documentStatus": "PENDING",
     "retryable": true,
+    "environment": "PRODUCTION",
     "document": null,
-    "countryIdentifiers": null,
+    "countryData": null,
     "graphic": null,
     "printing": {
       "printable": false,
@@ -442,8 +1449,43 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
     "failure": {
       "code": "PROVIDER_UNREACHABLE",
       "scope": "TECHNICAL",
-      "message": "Could not reach the fiscal provider."
-    }
+      "message": "No se pudo establecer comunicación con el proveedor fiscal."
+    },
+    "providerCode": "hio",
+    "providerIdentity": { "name": null, "version": null, "reference": null },
+    "providerMetadata": null
+  }
+}
+```
+
+```json 202 Provider unavailable
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "c4f0a1e2-5d3b-4f77-9a10-6b2e8c4d1f03",
+    "orderCode": "EC-K000-42-1786579046934",
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "FAILED_RETRYABLE",
+    "documentStatus": "PENDING",
+    "retryable": true,
+    "environment": "PRODUCTION",
+    "document": null,
+    "countryData": null,
+    "graphic": null,
+    "printing": {
+      "printable": false,
+      "mode": "PROVISIONAL_RECEIPT",
+      "reason": "AWAITING_FISCAL_NUMBERING"
+    },
+    "failure": {
+      "code": "PROVIDER_UNAVAILABLE",
+      "scope": "TECHNICAL",
+      "message": "El servicio de fiscalización no está disponible."
+    },
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": null
   }
 }
 ```
@@ -459,8 +1501,9 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
     "requestStatus": "FAILED_FINAL",
     "documentStatus": "PENDING",
     "retryable": false,
+    "environment": "PRODUCTION",
     "document": null,
-    "countryIdentifiers": null,
+    "countryData": null,
     "graphic": null,
     "printing": {
       "printable": false,
@@ -470,8 +1513,42 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
     "failure": {
       "code": "FISCAL_BUSINESS_RULE",
       "scope": "FUNCTIONAL",
-      "message": "store fiscal identity not configured: EC / store EC-UIO-001"
-    }
+      "message": "identidad fiscal de tienda no configurada: EC / tienda EC-UIO-001"
+    },
+    "providerCode": "hio",
+    "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
+    "providerMetadata": null
+  }
+}
+```
+
+```json 200 Store without numbering
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": null,
+    "orderCode": "EC-K000-42-1786579046934",
+    "idempotencyKey": null,
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "NOT_APPLICABLE",
+    "documentStatus": null,
+    "retryable": false,
+    "environment": null,
+    "document": null,
+    "countryData": null,
+    "graphic": null,
+    "printing": { "printable": false, "mode": "NONE", "reason": "NUMBERING_DISABLED" },
+    "failure": null,
+    "timestamps": {
+      "requestedAt": "2026-08-14T01:01:14.7Z",
+      "respondedAt": "2026-08-14T01:01:14.7Z",
+      "providerLatencyMs": null
+    },
+    "correlationId": null,
+    "providerCode": null,
+    "providerIdentity": null,
+    "providerMetadata": null
   }
 }
 ```
@@ -480,7 +1557,7 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
 {
   "success": false,
   "error": "CONFLICT",
-  "message": "The Idempotency-Key was already used with a different body"
+  "message": "La Idempotency-Key ya fue usada con un cuerpo distinto"
 }
 ```
 </ResponseExample>

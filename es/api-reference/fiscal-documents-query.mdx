@@ -1,0 +1,131 @@
+---
+title: "Listar solicitudes de una orden"
+api: "GET /api/v1/external/fiscal/numbering"
+description: "Busca solicitudes de numeración por código de orden, clave de acceso o estado. Una orden puede tener más de un documento."
+---
+
+Devuelve `items[]` con el **mismo contrato** que
+[`POST /numbering`](/es/api-reference/fiscal-documents), uno por solicitud.
+
+Es un arreglo y no un objeto por una razón concreta: **una orden puede tener dos
+documentos** — la factura y la anulación que la compensa. Si asumís uno solo, el
+día que se anule una venta vas a leer el documento equivocado.
+
+<Info>
+  **Este es el que usás cuando perdiste la respuesta.** El `orderCode` es lo único
+  que tenés seguro en la mano: lo elegiste vos antes de numerar. El
+  `fiscalRequestId` te lo devolvimos nosotros, así que si se cortó la red no lo
+  tenés.
+</Info>
+
+## Autenticación
+
+| | |
+|---|---|
+| Header | `x-api-key: pk_live_…` |
+| Scope | `fiscal:write` |
+
+El *tenant* sale de la clave. Solo ves solicitudes de tu propia cuenta.
+
+## Parámetros de consulta
+
+<ParamField query="orderCode" type="string">
+  El código de orden con el que se numeró. Es el filtro que vas a usar el 99% de
+  las veces.
+</ParamField>
+
+<ParamField query="accessKey" type="string">
+  Clave de acceso del ente (`claveAcceso` en Ecuador). Sirve para el camino
+  inverso: tenés el número impreso en un ticket y querés saber de qué orden salió.
+</ParamField>
+
+<ParamField query="requestStatus" type="string">
+  Filtra por cómo terminó el acto de numerar. Uno de: `REQUESTED`, `GENERATED`,
+  `PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `UNAVAILABLE`.
+</ParamField>
+
+<ParamField query="documentStatus" type="string">
+  Filtra por el veredicto del ente. Uno de: `PENDING`, `AUTHORIZED`, `REJECTED`,
+  `CANCELLED`.
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Página, arrancando en 1.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="20">
+  Resultados por página. Entre 1 y 100.
+</ParamField>
+
+<Warning>
+  Para conciliar **no filtres por `documentStatus`**. Una venta cuya numeración
+  falló nunca llega a tener veredicto del ente, así que filtrar por
+  `AUTHORIZED` la deja afuera del reporte — y es justamente la que hay que mirar.
+  Filtrá por `orderCode` y ramificá en tu lado por `requestStatus`.
+</Warning>
+
+## Respuesta
+
+<ResponseExample>
+```json 200 — una factura y su anulación
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "fiscalRequestId": "9afef543-56ce-4911-a92e-5908366fa980",
+        "orderCode": "EC-K004-42-1786579046934",
+        "countryCode": "EC",
+        "requestStatus": "GENERATED",
+        "documentStatus": "AUTHORIZED",
+        "document": {
+          "documentType": "SALE_INVOICE",
+          "documentNumber": "005-004-000000045"
+        },
+        "failure": null
+      },
+      {
+        "fiscalRequestId": "c1d9e0a2-77b4-4f10-9f3e-2b0c5d6a1e88",
+        "orderCode": "EC-K004-42-1786579046934",
+        "countryCode": "EC",
+        "requestStatus": "GENERATED",
+        "documentStatus": "AUTHORIZED",
+        "document": {
+          "documentType": "CREDIT_NOTE",
+          "documentNumber": "005-004-000000046",
+          "compensates": { "documentNumber": "005-004-000000045" }
+        },
+        "failure": null
+      }
+    ]
+  }
+}
+```
+
+```json 200 — la orden no se numeró
+{
+  "success": true,
+  "data": { "items": [] }
+}
+```
+</ResponseExample>
+
+<Note>
+  Una orden que **no se numeró** devuelve `items: []`, no un `404`. No es un error:
+  es la respuesta correcta a "¿qué documentos tiene esta orden?" cuando no tiene
+  ninguno.
+</Note>
+
+## Errores
+
+| Código | Cuándo |
+|---|---|
+| `400` | Ningún filtro utilizable, o un valor fuera del enum |
+| `401` | La API key falta, no existe o está revocada |
+| `403` | La key no tiene el scope `fiscal:write` |
+
+## Relacionado
+
+- [Solicitar numeración fiscal](/es/api-reference/fiscal-documents) — el `POST` que la crea
+- [Consultar una solicitud](/es/api-reference/fiscal-document-get) — cuando tenés el `fiscalRequestId`
+- [Guía de integración fiscal](/es/guides/fiscal-integration) — el flujo completo de punta a punta

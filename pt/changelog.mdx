@@ -26,6 +26,47 @@ description: Atualizações recentes na documentação e na referência da API.
   <a href="https://buttondown.com/fire-docs" target="_blank" rel="noopener" style={{display: 'inline-block', marginTop: '0.875rem', padding: '0.5rem 1.25rem', borderRadius: '0.5rem', background: '#E6293D', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none'}}>Assinar</a>
 </div>
 
+## 15 de agosto de 2026 — O bloco fiscal: identificadores por país, cancelamento e provedor
+
+`fiscalRepresentation` deixa de ter campos fixos por país e passa a levar o documento
+**vigente** do pedido, com os anteriores em `history`.
+
+- **Breaking** — `sequential`, `serie` e `claveAcceso` não são mais campos do bloco. Os
+  identificadores do órgão vivem agora em **`countryData`**, com o vocabulário do país que
+  numerou: `claveAcceso`, `establecimiento`, `puntoEmision`, `secuencial` e `ambiente` no
+  Equador; `numeroControl`, `numeroFactura` e `serie` na Venezuela. **Percorra as chaves, não
+  as indexe**: um canal que leia `countryData.claveAcceso` direto funciona no Equador e quebra
+  com o primeiro país que entrar. Os campos que significam o mesmo em qualquer país
+  —`documentNumber`, `issuedAt`, `authorizationMode`, `numberingStatus`— não se moveram.
+- **`history`** e **`compensates`** — quando um cancelamento numera, a nota de crédito passa a
+  ser o documento do topo, `compensates` aponta para a nota de venda que ela cancela, e a nota
+  de venda inteira desce para `history`. Cada entrada de `history` tem **as mesmas chaves** que
+  o bloco acima, então se leem igual.
+- **`environment`** — em qual ambiente o Fire numerou: `SANDBOX` ou `PRODUCTION`. É nosso, não
+  do órgão; o do órgão continua viajando dentro de `countryData` com o próprio código.
+- **`providerCode`, `providerIdentity` e `providerMetadata`** — antes eram um único objeto que
+  misturava três coisas. `providerCode` é o nosso identificador de adaptador;
+  `providerIdentity` é o bloco do provedor (`name`, `version`, `reference`) e **tem forma**;
+  `providerMetadata` é uma bolsa **opaca** e não se deve programar contra suas chaves. A
+  resposta do endpoint de numeração devolve agora exatamente os mesmos três campos, com os
+  mesmos nomes.
+
+<Note>
+  Se a sua conciliação assume que `documentNumber` é sempre o da venda, revise-a: após um
+  cancelamento o número do topo é o da nota de crédito. O que o cliente levou impresso não se
+  perde — está em `history` — mas é preciso ir buscá-lo lá.
+</Note>
+
+Documentado em [`order.opened`](/pt/events/order-opened),
+[`order.completed`](/pt/events/order-completed),
+[`order.cancelled`](/pt/events/order-cancelled),
+[`order.invoiced`](/pt/events/order-invoiced),
+[`order.reversed`](/pt/events/order-reversed), na
+[referência do endpoint](/pt/api-reference/fiscal-documents) e no guia
+[Integrar um ponto de venda](/pt/guides/fiscal-integration).
+
+Atualizado em **EN / ES / PT**.
+
 ## 13 de agosto de 2026 — A numeração fiscal agora viaja em todos os eventos do pedido
 
 Os pedidos que o Fiscal Gateway numerou antes da injeção agora levam esses
@@ -33,15 +74,17 @@ identificadores em todos os seus eventos, então não é mais preciso uma segund
 para imprimir ou conciliar.
 
 - **`data.fiscalRepresentation`** — série, sequencial, número do documento, chave de
-  acesso e o QR (`graphic`), exatamente como foram impressos no caixa. **Sua presença
-  significa que se tentou numerar**, não que foi numerado: `numberingStatus` diz como a
-  tentativa terminou e `failure` por quê, quando não terminou bem — uma venda cobrada que
-  ficou **sem comprovante fiscal** chega com os identificadores em `null` e o motivo em
-  `failure`. **É omitido** (a chave não aparece, não vem `null`) apenas quando não houve
-  tentativa: agregadores, países sem representação fiscal, ou numeração desativada. Sua
-  presença **não** significa que o comprovante esteja autorizado — o veredito do órgão
-  continua em `lastKnown.fiscal.status`. Nunca muda, nem depois que o órgão autoriza ou
-  rejeita.
+  acesso e o QR (`graphic`), exatamente como foram impressos no caixa. **A chave viaja
+  sempre**: chega em `null` quando não se tentou numerar — agregadores, países sem
+  representação fiscal, ou numeração desativada — e traz o bloco quando houve tentativa.
+  Ramifique pelo valor (`if (data.fiscalRepresentation)`), não pela presença da chave.
+
+  Trazer o bloco significa **que se tentou numerar, não que foi numerado**: `numberingStatus`
+  diz como a tentativa terminou e `failure` por quê, quando não terminou bem — uma venda
+  cobrada que ficou **sem comprovante fiscal** chega com os identificadores em `null` e o
+  motivo em `failure`. Trazer o bloco **não** significa que o comprovante esteja autorizado:
+  o veredito do órgão continua em `lastKnown.fiscal.status`. O bloco nunca muda, nem depois
+  que o órgão autoriza ou rejeita.
 - **`data.lastKnown.fiscal.sourceEvent`** — agora informa a procedência real em vez de
   deduzi-la do status. Um `processing` semeado na injeção era reportado como
   `fiscal.callback` sem que nenhum callback tivesse ocorrido; agora diz `order.injected`.

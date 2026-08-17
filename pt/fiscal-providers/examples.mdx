@@ -1,0 +1,290 @@
+---
+title: "Exemplos reais"
+description: "Requisições e respostas capturadas de uma integração em funcionamento — sucesso e erro, tal como trafegaram."
+---
+
+Nada disso é inventado: são chamadas reais entre o FIRE e um provedor fiscal em
+funcionamento, com os identificadores trocados. Elas servem para contrastar uma
+implementação com algo que já funciona, em vez de com uma descrição.
+
+## Numerar uma venda
+
+A requisição é **a mesma para os dois países** —mesmos campos, mesma ordem—; o que muda é o
+que cada provedor usa e o que devolve em `document`. Os corpos abaixo estão reduzidos ao que
+é preciso para ler o exemplo; a requisição completa, campo a campo, está no
+[contrato](/pt/fiscal-providers/contract#3-request).
+
+<Tabs>
+  <Tab title="Equador (EC) — SRI">
+    ### O que enviamos
+
+    ```json
+    POST {baseUrl}/api/v1/fiscal/ec/prekeys
+    x-api-key: ••••
+
+    {
+      "country": "EC",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-13",
+      "createdAt": "2026-08-13T20:41:05.512Z",
+      "orderCode": "E2E-NUM-B-1786636044723",
+      "store": {
+        "code": "K004",
+        "storeFiscalConfig": {
+          "govIdType": "RUC",
+          "govIdNumber": "1791415132001",
+          "company": {
+            "govIdType": "RUC",
+            "govIdNumber": "1791415132001",
+            "legalName": "INT FOOD SERVICES CORP S.A.",
+            "tradeName": "KFC"
+          },
+          "metadata": {}
+        }
+      },
+      "device": { "uid": "52CAEA5A18D9B75F", "name": "KIOSK", "platform": "android" },
+      "client": {
+        "name": "CONSUMIDOR",
+        "lastName": "FINAL",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000"
+      },
+      "totals": [
+        {
+          "currencyCode": "USD",
+          "total": 10,
+          "subtotalWithoutTaxes": 8.7,
+          "taxValue": 1.3,
+          "taxes": [{ "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }]
+        }
+      ],
+      "metadata": {}
+    }
+    ```
+
+    `storeFiscalConfig.metadata` vai vazio: no Equador o estabelecimento e o ponto de emissão
+    você resolve do seu lado, no seu catálogo, a partir de `store.code` e `device.uid`.
+
+    ### O que o provedor devolveu
+
+    ```json
+    HTTP 200
+
+    {
+      "status": "INVOICED",
+      "country": "EC",
+      "orderCode": "E2E-NUM-B-1786636044723",
+      "reused": false,
+      "retryable": false,
+      "authorizationMode": "ONLINE",
+      "issuedAt": "2026-08-13T15:47:26.057337855Z",
+      "document": {
+        "numeroComprobante": "005-004-000000052",
+        "claveAcceso": "1308202601000000000000110050040000000521234567811",
+        "establecimiento": "005",
+        "puntoEmision": "004",
+        "secuencial": "000000052",
+        "ambiente": "2"
+      },
+      "graphic": {
+        "qr": "1308202601000000000000110050040000000521234567811"
+      },
+      "failure": null,
+      "provider": { "name": "hio.fiscalization", "version": "dev" },
+      "metadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+    }
+    ```
+
+    - **`document` fala equatoriano.** `claveAcceso`, `secuencial`, `ambiente` — os nomes do
+      SRI, não uma tradução. E não há campos de outros países: o `cufe` colombiano
+      simplesmente não existe aqui.
+    - **O número visível chega pronto em `numeroComprobante`** (`005-004-000000052`). Quem o
+      monta é você, que conhece a regra —art. 18 do Regulamento— e o FIRE o imprime tal
+      como veio, sem reformatar. As três partes continuam trafegando à parte, como o SRI as
+      define, mas servem para conciliar: ninguém volta a juntá-las.
+    - **`graphic.qr` coincide com `document.claveAcceso`.** No Equador é assim, e a redundância
+      é deliberada: a alternativa é o ponto de venda ter de saber o que se codifica em cada
+      país.
+    - **`ambiente: "2"` é homologação** — no SRI. Na DIAN o `2` é o contrário; veja a aba da
+      Colômbia.
+  </Tab>
+
+  <Tab title="Colômbia (CO) — DIAN">
+    ### O que enviamos
+
+    ```json
+    POST {baseUrl}/api/v1/fiscal/co/prekeys
+    x-api-key: ••••
+
+    {
+      "country": "CO",
+      "operation": "INVOICE",
+      "businessDayDate": "2026-08-16",
+      "createdAt": "2026-08-16T14:03:22.145Z",
+      "orderCode": "CO-K039-1786901234",
+      "store": {
+        "code": "K039",
+        "storeFiscalConfig": {
+          "govIdType": "NIT",
+          "govIdNumber": "9001234567",
+          "company": {
+            "govIdType": "NIT",
+            "govIdNumber": "9001234567",
+            "legalName": "COMERCIALIZADORA ANDINA S.A.S.",
+            "tradeName": "KFC"
+          },
+          "metadata": {
+            "claveTecnica": "fc8eac422eba16e22ffd8c6f94b3f40a6e38162c",
+            "rangoFacturacion": {
+              "prefijo": "SETP",
+              "desde": "990000000",
+              "hasta": "995000000",
+              "resolucion": "18760000001",
+              "vigenteHasta": "2027-08-16"
+            }
+          }
+        }
+      },
+      "device": { "uid": "52CAEA5A18D9B75F", "name": "CAJA 3", "platform": "android" },
+      "client": {
+        "name": "Consumidor",
+        "lastName": "final",
+        "govIdType": "FINAL_CONSUMER",
+        "govIdNumber": "00000000000"
+      },
+      "totals": [
+        {
+          "currencyCode": "COP",
+          "total": 50000,
+          "subtotalWithoutTaxes": 42016.81,
+          "taxValue": 7983.19,
+          "taxes": [{ "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }]
+        }
+      ],
+      "metadata": {}
+    }
+    ```
+
+    Aqui `storeFiscalConfig.metadata` **traz dados sim** —a chave técnica e a faixa que a DIAN
+    entrega junto com a resolução— e os valores de `totals` não são informativos: entram no
+    hash do CUFE.
+
+    ### O que o provedor devolveu
+
+    ```json
+    HTTP 200
+
+    {
+      "status": "INVOICED",
+      "country": "CO",
+      "orderCode": "CO-K039-1786901234",
+      "reused": false,
+      "retryable": false,
+      "authorizationMode": "ONLINE",
+      "issuedAt": "2026-08-16T14:21:03.118Z",
+      "document": {
+        "numeroComprobante": "SETP990000001",
+        "prefijo": "SETP",
+        "numeroDian": "990000001",
+        "cufe": "9c4f1e…  ← 96 caracteres hexadecimais",
+        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+        "ambiente": "2"
+      },
+      "graphic": null,
+      "failure": null,
+      "provider": { "name": "hio.fiscalization", "version": "dev" },
+      "metadata": { "externalStoreCode": "K039" }
+    }
+    ```
+
+    - **`document` fala colombiano**, e não se parece em nada com o do Equador: não há
+      `claveAcceso` nem `secuencial`, há `cufe`, `prefijo` e `numeroDian`.
+    - **`graphic` vem em `null`.** Na Colômbia o QR é a URL do catálogo da DIAN e trafega
+      dentro de `document.qrCode`, então não se duplica fora.
+    - **`numeroComprobante` e `numeroDian` não são a mesma coisa**: o primeiro é o número
+      visível já montado (`prefixo + consecutivo`), o segundo é só o consecutivo. Os dois vêm
+      resolvidos; o FIRE não concatena nada.
+    - **`ambiente: "2"` é homologação na DIAN** — o código é o do próprio fisco, sem
+      normalizar, e por isso significa o contrário do Equador.
+  </Tab>
+</Tabs>
+
+Repare no que **não** trafega em nenhum dos dois: nem `accountId`, nem `vendorId` —o tenant
+sai da API key—, nem códigos do fisco, nem referência ao catálogo do provedor.
+
+E duas coisas comuns aos dois países:
+
+- **`authorizationMode` e `issuedAt` ficam na raiz**, fora de `document`: são comuns a todos
+  os países, então não pertencem ao bloco do país.
+- **`status: "INVOICED"`**, não `"PENDING"`. Recém-numerado, o documento está sempre pendente
+  de autorização — é a condição normal, não um estado a informar.
+
+## Quando falha
+
+### A mesma requisição, com a loja fora do catálogo do provedor
+
+```json
+HTTP 422
+
+{
+  "orderCode": "E2E-FUEL-FALLA-01",
+  "retryable": false,
+  "failure": {
+    "code": "UNMAPPED_STORE_IDENTITY",
+    "message": "identidad fiscal no configurada: EC / la tienda K004 no está cargada en el catálogo de identidades fiscales",
+    "details": [
+      { "field": "store.code", "issue": "no está en el catálogo de identidades fiscales" }
+    ]
+  },
+  "document": null,
+  "graphic": null,
+  "provider": { "name": "hio.fiscalization", "version": "" }
+}
+```
+
+Por que este erro está bem construído:
+
+| | |
+|---|---|
+| **HTTP `422`, não `200`** | Uma rejeição com `200` e o motivo escondido em um campo é um contrato onde alguém não valida e acredita ter numerado |
+| **`retryable: false`** | É configuração: retentar no caixa enquanto o cliente espera não vai resolver |
+| **`failure.code` estável** | `UNMAPPED_STORE_IDENTITY` serve para alertas e documentação de suporte. Um texto livre não |
+| **`message` acionável** | Diz qual loja e qual catálogo. Dá para consertar sem abrir um ticket |
+| **`details[]`** | Aponta para o campo exato do request |
+
+<Warning>
+  **`retryable` é o que decide o que acontece depois.** Com `false` interrompemos e a venda fica
+  sem comprovante fiscal, com o motivo registrado. Com `true` a solicitação fica aberta e
+  pode ser retomada.
+
+  Sem esse campo é preciso adivinhar pelo código HTTP — e adivinhar errado significa retentar
+  enquanto o cliente espera, ou abandonar uma venda que podia ser numerada.
+</Warning>
+
+## O que fazemos com cada resposta
+
+O estado que o FIRE expõe aos seus canais é **derivado** do que o provedor devolve. O
+provedor não conhece esses estados nem precisa emiti-los:
+
+| O que o provedor devolve | Estado que o FIRE expõe |
+|---|---|
+| `2xx` com `document` | `GENERATED` — há comprovante |
+| Não-`2xx` com `retryable: false` | `FAILED_FINAL` — não há, e retentar não adianta |
+| Não-`2xx` com `retryable: true` | `FAILED_RETRYABLE` — não há, dá para retentar |
+| **Não respondeu** (timeout, conexão caída) | `PENDING` — **não sabemos se numerou** |
+
+<Note>
+  `PENDING` não pode vir do provedor por definição: dizê-lo implicaria ter
+  respondido. É o estado de "não houve resposta", e é o mais delicado — o provedor pode
+  ter numerado e consumido um sequencial sem que fiquemos sabendo.
+
+  Por isso **a sua deduplicação tem que ser por `orderCode`**: a retentativa chega com o mesmo
+  `orderCode` e deve devolver **o mesmo documento** com `reused: true`, em vez de numerar outro.
+
+  <Warning>
+    **Não a baseie em um header de idempotência: não mandamos nenhum para você.** A chamada ao
+    provedor leva apenas `x-api-key` e `Content-Type`. A chave natural
+    — `país + orderCode + operação` — é a única coisa que liga uma retentativa à tentativa
+    original, nas duas pontas.
+  </Warning>
+</Note>

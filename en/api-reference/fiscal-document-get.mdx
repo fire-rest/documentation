@@ -1,0 +1,137 @@
+---
+title: "Get a fiscal request"
+api: "GET /api/v1/external/fiscal/numbering/{fiscalRequestId}"
+description: "Returns the current state of a numbering request by its identifier — including the authority's verdict once it arrives."
+---
+
+Returns **the same contract** as [`POST /numbering`](/en/api-reference/fiscal-documents),
+with the state refreshed. What changes between calls is `documentStatus`: it starts
+as `PENDING` and becomes `AUTHORIZED` once the authority rules.
+
+<Info>
+  **You should not need this in day-to-day operation.** The identifiers already
+  reach you in `data.fiscalRepresentation` on the order events, and the authority's
+  verdict in `lastKnown.fiscal.status`. This endpoint exists for when the normal
+  path is not enough: you lost the synchronous response to a network drop, or you
+  want to confirm the state without waiting for the event.
+</Info>
+
+## Authentication
+
+| | |
+|---|---|
+| Header | `x-api-key: pk_live_…` |
+| Scope | `fiscal:write` |
+
+It is the **same scope as issuing**, deliberately: whoever can number can read what
+they numbered. There is no read-only scope that grants less.
+
+The tenant comes from the key, never from the request. A request belonging to
+another account returns `404`, exactly like one that does not exist — the two are
+indistinguishable so we don't leak which identifiers are real.
+
+## Path parameters
+
+<ParamField path="fiscalRequestId" type="string" required>
+  The `fiscalRequestId` returned by the numbering call. A UUID.
+</ParamField>
+
+## Response
+
+Identical to `POST /numbering` — see
+[the full contract reference](/en/api-reference/fiscal-documents#response).
+
+<ResponseExample>
+```json 200 — the authority authorized it
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "9afef543-56ce-4911-a92e-5908366fa980",
+    "orderCode": "EC-K004-42-1786579046934",
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "GENERATED",
+    "documentStatus": "AUTHORIZED",
+    "retryable": false,
+    "environment": "PRODUCTION",
+    "document": {
+      "documentType": "SALE_INVOICE",
+      "documentLabel": "FACTURA",
+      "documentNumber": "005-004-000000045",
+      "authorizationMode": "ONLINE",
+      "authorizationLabel": "EMISION NORMAL",
+      "issuedAt": "2026-08-13T13:33:41.438Z",
+      "compensates": null
+    },
+    "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+    "graphic": { "qr": "1208202601000000000000110050040000000451234567817" },
+    "failure": null,
+    "countryData": {
+      "claveAcceso": "1208202601000000000000110050040000000451234567817",
+      "establecimiento": "005",
+      "puntoEmision": "004",
+      "secuencial": "000000045",
+      "ambiente": "PRODUCCION"
+    }
+  }
+}
+```
+
+```json 200 — Colombia (CO)
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": "c1a7f0e2-9b34-4d21-8e55-3f60ab12cd90",
+    "orderCode": "CO-K039-1786901234",
+    "reused": false,
+    "countryCode": "CO",
+    "requestStatus": "GENERATED",
+    "documentStatus": "AUTHORIZED",
+    "retryable": false,
+    "environment": "PRODUCTION",
+    "document": {
+      "documentType": "SALE_INVOICE",
+      "documentLabel": "FACTURA ELECTRONICA DE VENTA",
+      "documentNumber": "SETP990000001",
+      "authorizationMode": "ONLINE",
+      "authorizationLabel": "VALIDACION PREVIA",
+      "issuedAt": "2026-08-16T14:21:03.118Z",
+      "compensates": null
+    },
+    "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
+    "graphic": null,
+    "failure": null,
+    "countryData": {
+      "numeroComprobante": "SETP990000001",
+      "cufe": "9c4f1e… (96 caracteres hexadecimales)",
+      "prefijo": "SETP",
+      "numeroDian": "990000001",
+      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+      "ambiente": "PRODUCCION"
+    }
+  }
+}
+```
+
+```json 404 — not found, or belongs to another account
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "FiscalRequest not found"
+}
+```
+</ResponseExample>
+
+## Errors
+
+| Code | When |
+|---|---|
+| `401` | The API key is missing, unknown or revoked |
+| `403` | The key lacks the `fiscal:write` scope |
+| `404` | The `fiscalRequestId` does not exist **or belongs to another account** |
+
+## Related
+
+- [Request fiscal numbering](/en/api-reference/fiscal-documents) — the `POST` that creates it
+- [List an order's requests](/en/api-reference/fiscal-documents-query) — when all you have is the `orderCode`
+- [Fiscal print data](/en/api-reference/fiscal-print) — what the till reads to reprint

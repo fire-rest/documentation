@@ -1,5 +1,5 @@
 ---
-title: "Integrar la fiscalización"
+title: "Integrar un punto de venta"
 description: "Cómo se reparte el trabajo entre tu canal, Fire, el proveedor fiscal y el ente tributario — y qué tiene que hacer tu punto de venta en cada paso."
 ---
 
@@ -18,8 +18,8 @@ del diseño, así que vale empezar por ahí.
     responde qué se puede imprimir.
   </Card>
   <Card title="El proveedor fiscal" icon="stamp">
-    Traduce a los códigos del ente, asigna serie y secuencial, y envía el documento a la
-    autoridad.
+    Traduce a los códigos del ente, numera con el vocabulario de su país, y envía el
+    documento a la autoridad.
   </Card>
   <Card title="El ente tributario" icon="landmark">
     Autoriza o rechaza. Su veredicto llega **después** de que el cliente se fue con su
@@ -45,7 +45,7 @@ sequenceDiagram
 
     POS->>Fire: 1. POST /fiscal/numbering
     Fire->>Prov: 2. pide la numeración
-    Prov-->>Fire: serie + secuencial + clave
+    Prov-->>Fire: document + countryData (vocabulario del pais)
     Fire-->>POS: 3. document + graphic + printing
     POS->>POS: 4. imprime el comprobante
     POS->>Fire: 5. inyecta la orden (mismo orderCode)
@@ -98,11 +98,76 @@ Si ya consumís eventos de orden, **no tenés que consultar nada**: los datos fi
 por el mismo camino que el resto de la venta. La consulta directa queda para soporte y para
 cuando perdés la respuesta síncrona.
 
-<Note>
-  La compensación de la orden y el enriquecimiento de estos eventos están **en
-  implementación**. Hoy la numeración se obtiene y se guarda; consultarla por `orderCode` o
-  por `fiscalRequestId` ya funciona.
-</Note>
+### El campo que hay que leer: `data.fiscalRepresentation`
+
+La numeración llega en ese bloque, en **todos** los eventos de la orden — los cinco de las dos
+tablas de arriba.
+
+**La clave viaja siempre.** Llega en `null` cuando no se intentó numerar —agregadores, países
+sin representación fiscal, o comercios con la numeración desactivada— y con el bloque cuando
+sí. Ramificá por valor, nunca por presencia de la clave:
+
+```js
+if (data.fiscalRepresentation) {
+  // se intentó numerar — numberingStatus dice cómo salió
+  print(data.fiscalRepresentation.documentNumber)
+}
+```
+
+Que traiga bloque significa **que se intentó numerar, no que se numeró**. Una venta cobrada
+que quedó **sin comprobante fiscal** llega con los identificadores en `null` y el motivo en
+`failure` — ese caso hay que contemplarlo, porque antes era invisible.
+
+Y que traiga bloque **tampoco** significa que el comprobante esté autorizado: eso lo dice
+`lastKnown.fiscal.status`, que es el único de los dos que se actualiza.
+
+#### Qué trae el bloque
+
+Tres capas, y conviene no mezclarlas:
+
+| Capa | Qué hay | Cómo se lee |
+|---|---|---|
+| **Canónica** | `documentType`, `documentNumber`, `issuedAt`, `authorizationMode`, `numberingStatus`, `environment` | Significan lo mismo en todo país. Es contra esto que programás |
+| **Del país** | `countryData` | El vocabulario del ente que numeró: `claveAcceso` en Ecuador, `numeroControl` en Venezuela. **Recorrelo, no lo indexes** |
+| **Del proveedor** | `providerCode`, `providerIdentity`, `providerMetadata` | Diagnóstico. Ver abajo |
+
+<Warning>
+  **El número que va impreso es `documentNumber`. No lo compongas vos.**
+
+  Llega ya armado por el proveedor, que es quien conoce la regla de su país —en Ecuador, el
+  art. 18 del Reglamento de Comprobantes de Venta: quince dígitos en tres tramos—. En el bloque
+  del país viaja el mismo valor con el nombre que usa el ente (`numeroComprobante` en Ecuador).
+
+  Armarlo a mano juntando `establecimiento`, `puntoEmision` y `secuencial` parece equivalente y
+  no lo es: el Reglamento permite omitir los ceros a la izquierda del secuencial, así que
+  `001-020-123` puede ser tan legal como `001-020-000000123`. Si lo componés vos, imprimís un
+  número con **tu** convención, no con la del comprobante que se emitió.
+</Warning>
+
+Los tres campos del proveedor **no son lo mismo**, y por eso viajan separados:
+
+- **`providerCode`** es **nuestro** identificador de adaptador (`hio`). Dice con qué
+  integración se numeró.
+- **`providerIdentity`** es del proveedor y **tiene forma**: `name`, `version` y `reference`.
+  Esa `reference` es la que le citás a él cuando hay que escalar un caso — no es tu
+  `Idempotency-Key`.
+- **`providerMetadata`** es una **bolsa opaca**: sin forma garantizada, las claves las pone el
+  proveedor y pueden cambiar sin aviso. Sirve para pegar en un ticket de soporte.
+
+<Warning>
+  **No ramifiques por las claves de `providerMetadata`.** Programar contra ellas ata tu
+  integración al proveedor que numera hoy, y cambian sin versionar el contrato. Si un dato es
+  lo bastante importante como para decidir con él, va a estar en la capa canónica o en
+  `countryData`.
+</Warning>
+
+Además, el bloque lleva **el documento vigente de la orden**, no el primero: si hubo una
+anulación, arriba está la nota de crédito, `compensates` apunta a la factura que anula, y la
+factura entera queda en `history`. Cada entrada de `history` tiene **exactamente las mismas
+claves** que el bloque de arriba, así que se leen igual.
+
+La referencia completa del bloque, campo por campo, está en
+[`order.opened`](/es/events/order-opened#data-fiscalrepresentation).
 
 ## Las tres reglas que hay que entender
 
@@ -113,19 +178,29 @@ cuando perdés la respuesta síncrona.
     - `requestStatus` — ¿conseguí números para imprimir?
     - `documentStatus` — ¿el ente lo autorizó?
 
-    Al numerar, el segundo es **siempre** `PENDING`. Eso no es un problema: en la mayoría de
-    los países se entrega el comprobante antes de que la autoridad lo vea. Si tu integración
-    colapsa los dos en un solo campo, en algún momento le vas a decir a un cliente que su
-    factura está autorizada cuando solo tiene número.
+    Cuando hay documento, el segundo es **siempre** `PENDING`. Eso no es un problema: en la
+    mayoría de los países se entrega el comprobante antes de que la autoridad lo vea. Si tu
+    integración colapsa los dos en un solo campo, en algún momento le vas a decir a un
+    cliente que su factura está autorizada cuando solo tiene número.
+
+    Cuando no hay documento del cual esperar veredicto —una tienda que no numera— viaja en
+    `null`. `PENDING` significa "hay documento y el ente no contestó todavía", así que
+    devolverlo ahí describiría una espera que nunca va a terminar.
   </Accordion>
 
   <Accordion title="La venta nunca se bloquea" icon="shield-check">
     Si el proveedor no responde a tiempo, Fire **no** devuelve un error: devuelve `202` con
-    `printing.mode: "PROVISIONAL_RECEIPT"`. Imprimís un ticket no fiscal, inyectás la orden
-    igual y Fire completa la numeración por su cuenta.
+    `printing.mode: "PROVISIONAL_RECEIPT"`. Imprimís un ticket no fiscal e inyectás la orden
+    igual.
 
-    **No reintentes la llamada en bucle ni retengas la venta.** El dinero ya se cobró; el
-    comprobante se resuelve después.
+    **No retengas la venta ni reintentes en bucle mientras el cliente espera.** El dinero ya
+    se cobró; el comprobante se resuelve después.
+
+    <Warning>
+      **Nadie la completa solo.** Para conseguir el comprobante hay que volver a llamar con
+      el **mismo `orderCode`** — Fire retoma la solicitud y le vuelve a preguntar al
+      proveedor. Un `202` que nadie reintenta se queda así para siempre.
+    </Warning>
   </Accordion>
 
   <Accordion title="Fire decide qué se imprime, no vos" icon="print">
@@ -178,6 +253,16 @@ Con qué instrumento se materializa la anulación lo decide el país: en Ecuador
 crédito con su propio secuencial; en Brasil, un evento de cancelamento que no genera
 documento nuevo.
 
+**Y a partir de ahí la orden lleva la nota de crédito arriba.** Los eventos siguientes traen
+`documentType: "CREDIT_NOTE"` en `fiscalRepresentation`, con `compensates` apuntando a la
+factura anulada y la factura entera en `history`.
+
+<Warning>
+  **Si tu conciliación asume que `documentNumber` es siempre el de la venta, se rompe acá.** El
+  número de arriba pasa a ser el de la nota. Lo que el cliente se llevó impreso no se pierde
+  —está en `history`— pero hay que ir a buscarlo ahí.
+</Warning>
+
 ## Si perdés la respuesta
 
 Pasa: la red se cae justo después de que Fire numeró. El comprobante existe y vos no lo
@@ -197,10 +282,20 @@ numeración y en la inyección: es lo único que te queda en la mano.
 <Check>Guardás la `Idempotency-Key` junto con la orden y la reusás en los reintentos.</Check>
 <Check>Cada dispositivo declara su `device.externalId` — dos cajas de la misma tienda no lo comparten.</Check>
 <Check>Ramificás por `printing.mode` y no por el código HTTP.</Check>
-<Check>No asumís que `countryIdentifiers.accessKey` siempre viene: en Venezuela no existe.</Check>
+<Check>Imprimís `documentNumber` tal como llega, sin recomponerlo desde `establecimiento`, `puntoEmision` y `secuencial`.</Check>
+<Check>Recorrés `countryData` en vez de indexar claves fijas: las pone el país que numeró, y en Venezuela no hay `claveAcceso`.</Check>
 <Check>Recorrés las claves de `graphic` en vez de buscar campos fijos.</Check>
-<Check>Ante `202` imprimís provisional e inyectás igual, sin reintentar en bucle.</Check>
+<Check>No ramificás por las claves de `providerMetadata`: es una bolsa opaca del proveedor y cambia sin aviso.</Check>
+<Check>Tu conciliación contempla que, tras una anulación, el documento de arriba es la nota de crédito y la factura está en `history`.</Check>
+<Check>Ante `202` imprimís provisional e inyectás igual, sin reintentar en bucle en la caja.</Check>
+<Check>Tenés cómo reintentar un `202` después, con el mismo `orderCode`: nadie lo completa solo.</Check>
 
-<Card title="Referencia del endpoint" icon="code" href="/es/api-reference/fiscal-documents">
-  Campos, respuestas y ejemplos por país.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Referencia del endpoint" icon="code" href="/es/api-reference/fiscal-documents">
+    Campos, respuestas y ejemplos por país.
+  </Card>
+  <Card title="¿Sos un proveedor fiscal?" icon="plug" href="/es/fiscal-providers/overview">
+    Esta guía es para quien **consume** la numeración. Si vas a **proveerla**, el contrato
+    que tenés que implementar es otro.
+  </Card>
+</CardGroup>

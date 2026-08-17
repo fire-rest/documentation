@@ -77,7 +77,6 @@ Mesmo snapshot V4 que [`order.cancelled`](/pt/events/order-cancelled) — inclui
       "cancellationSource": "backoffice",
       "metadata": {
         "fiscal": {
-          "serie": null,
           "numero": "1000013",
           "pdfUrl":   "https://api.fiscal-provider.example/nfce/<docId>/pdf",
           "xmlUrl":   "https://api.fiscal-provider.example/nfce/<docId>/xml",
@@ -197,3 +196,123 @@ async function onFiscalCancelled(data) {
     O evento anterior que estabeleceu o documento fiscal sendo cancelado aqui.
   </Card>
 </CardGroup>
+
+## `data.fiscalRepresentation`
+
+<Note>
+  Em `order.reversed` este bloco é especialmente relevante: são os números do
+  comprovante **que está sendo anulado**. A anulação não os altera — o que muda é
+  `lastKnown.fiscal.status`, que passa a `cancelled`.
+</Note>
+
+
+A **numeração fiscal** que o ponto de venda obteve *antes* de injetar o pedido:
+cobra, pede os identificadores, imprime o comprovante e só então injeta. Por isso
+viaja no pedido e não em um evento fiscal separado — quando o pedido nasce, isso
+já aconteceu.
+
+<Warning>
+  **A presença deste bloco NÃO significa que o comprovante esteja autorizado.**
+  São os números impressos no caixa; o veredito do órgão está em
+  `lastKnown.fiscal.status`. Um ticket que diga "autorizado" só porque o bloco
+  está presente declara algo que pode não ter acontecido.
+</Warning>
+
+**A chave viaja sempre.** Chega em `null` quando não se tentou numerar
+— agregadores, países sem representação fiscal, ou comércios com a numeração
+desativada — e traz o bloco quando houve tentativa.
+
+Trazer o bloco significa **que se tentou numerar, não que foi numerado**:
+`numberingStatus` diz como a tentativa terminou, e `failure` por quê quando não
+terminou bem.
+
+Ramifique pelo valor, não pela presença da chave:
+
+```js
+if (data.fiscalRepresentation) {
+  // houve tentativa de numeração — veja numberingStatus para saber como saiu
+}
+```
+
+| Campo | O que é |
+|---|---|
+| `numberingStatus` | Como terminou o **ato de numerar**: `GENERATED`, `PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `UNAVAILABLE`. **Não é o veredito do órgão** — esse está em `lastKnown.fiscal.status`. |
+| `documentNumber` | Número visível do comprovante, composto conforme o país (`005-004-000000042`). É apresentação e **quem o monta é o Fire**, não o órgão: para conciliar use `countryData`. |
+| `issuedAt` | Quando foi **numerado**. Não é a data de autorização. |
+| `authorizationMode` | `ONLINE`, `OFFLINE` ou `BATCH`. Conceito do provedor, não universal. |
+| `providerCode` | Identificador do adaptador que numerou. |
+| `countryData` | Os identificadores do órgão, no vocabulário do **país que numerou** — e só os desse país. Equador: `numeroComprobante` (o número visível do comprovante, já montado pelo provedor), `claveAcceso`, `establecimiento`, `puntoEmision`, `secuencial`, `ambiente`. Venezuela: `numeroControl`, `numeroFactura`, `serie`. **Percorra-o; não o indexe às cegas** — uma chave nova não é uma mudança que quebra. É o mesmo bloco que o endpoint de numeração devolve e que o callback do órgão traz. A referência por país, com as chaves de cada regime, está em [`countryData` por país](/pt/api-reference/fiscal-documents#countrydata-por-país). |
+| `graphic` | O artefato imprimível que o provedor devolveu (QR e afins), tal como veio. `null` se não devolveu nenhum. |
+| `failure` | Por que **não** há comprovante. `null` quando a numeração deu certo. |
+| `providerIdentity` | **Quem numerou, do lado do provedor**: `{ "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" }`. Diferente da bolsa abaixo, **tem forma**: os três campos estão no contrato e sempre chegam, com `null` quando não se aplicam. `reference` é **a referência de suporte do provedor** — o identificador que se cita a ele para encontrar a operação nos registros dele; não é a `Idempotency-Key` que o canal enviou. Não leva `providerCode`: esse é nosso e viaja acima. |
+| `providerMetadata` | **A bolsa de diagnóstico do provedor**, tal como ele a devolveu: no Equador com a HIO chega `{ "deviceUid": "4B8E…", "externalStoreCode": "K000" }`. É **opaca** — as chaves são do provedor e podem mudar sem aviso, então não programe contra elas; serve para colar num ticket, não para ramificar. **É exatamente o mesmo campo que o endpoint de numeração devolve**, com o mesmo nome e o mesmo conteúdo: os três campos do provedor se leem igual nos dois extremos. |
+| `environment` | Em qual ambiente o **Fire** numerou: `SANDBOX` ou `PRODUCTION`. É nosso, não do órgão — o do órgão viaja dentro de `countryData` com o código do país. |
+| `compensates` | Qual documento este anula. Presente **apenas** quando `documentType` é `CREDIT_NOTE`; `null` nos demais. Traz `documentNumber`, `issuedAt` e `reason` (o código canônico — o texto impresso é redigido por empresa e resolvido na resposta do endpoint de numeração). |
+| `history` | Os documentos **anteriores** do pedido, do mais antigo ao mais novo. Vazio enquanto houve apenas um; quando um cancelamento numera, a nota de venda desce para cá e a nota de crédito fica no topo. Cada entrada tem **a mesma forma** do bloco acima, então se leem igual. Somente documentos: uma tentativa de numeração que falhou não entra. |
+
+```json
+"fiscalRepresentation": {
+  "numberingStatus": "GENERATED",
+  "documentNumber": "005-004-000000042",
+  "countryData": {
+    "numeroComprobante": "005-004-000000042",
+    "claveAcceso": "1208202601000000000000110050040000000421234567810",
+    "establecimiento": "005",
+    "puntoEmision": "004",
+    "secuencial": "000000042",
+    "ambiente": "2"
+  },
+  "authorizationMode": "ONLINE",
+  "issuedAt": "2026-08-13T08:11:29.744Z",
+  "providerCode": "hio",
+  "graphic": { "qr": "1208202601000000000000110050040000000421234567810" },
+  "failure": null,
+  "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
+  "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K004" },
+  "environment": "PRODUCTION",
+  "compensates": null,
+  "history": []
+}
+```
+
+**O veredicto do órgão não o altera.** O que o cliente levou impresso não muda
+porque o órgão depois autorize ou rejeite — para isso existe `lastKnown.fiscal`,
+que é o que de fato se move.
+
+**O que o substitui é um documento novo.** O bloco carrega o documento fiscal
+**vigente** do pedido. Enquanto houve apenas um, era sempre a nota de venda;
+quando um cancelamento produz uma nota de crédito, é ela que fica no topo —
+`documentType` diz qual é — e a nota de venda **desce para `history`**, inteira e
+com seus próprios identificadores do órgão. Não se perde: se move. `compensates`
+aponta para ela pelo número, então a relação fica explícita.
+
+### Quando a numeração falha
+
+Uma venda pode ser cobrada e ficar **sem comprovante fiscal**. Esse caso também
+viaja, e precisa ser tratado: os identificadores vêm `null` e o motivo em
+`failure`.
+
+```json
+"fiscalRepresentation": {
+  "numberingStatus": "FAILED_FINAL",
+  "documentNumber": null,
+  "issuedAt": null,
+  "providerCode": "hio",
+  "graphic": null,
+  "failure": { "code": "RUC_INVALIDO", "scope": "FUNCTIONAL", "message": "CNPJ não habilitado" }
+}
+```
+
+Ramifique por `failure.scope`:
+
+- **`TECHNICAL`** — imprima "em trâmite" e siga. Pode se resolver sozinho.
+- **`FUNCTIONAL`** — há um dado errado e repetir não resolve. Precisa correção.
+O que muda é `lastKnown.fiscal`.
+
+<Note>
+  **`lastKnown.fiscal.sourceEvent` agora informa a procedência real.** Antes era
+  deduzida do status, e um `processing` semeado na injeção era reportado como
+  `fiscal.callback` sem que nenhum callback tivesse ocorrido. Esse caso agora diz
+  `order.injected`. Se você ramifica por este campo, contemple o valor novo.
+</Note>
+

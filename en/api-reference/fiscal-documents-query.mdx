@@ -1,0 +1,132 @@
+---
+title: "List an order's fiscal requests"
+api: "GET /api/v1/external/fiscal/numbering"
+description: "Search numbering requests by order code, access key or status. An order can have more than one document."
+---
+
+Returns `items[]` with the **same contract** as
+[`POST /numbering`](/en/api-reference/fiscal-documents), one entry per request.
+
+It is an array and not a single object for a concrete reason: **an order can have
+two documents** — the invoice and the credit note that offsets it. If you assume
+there is only one, the day a sale gets voided you will read the wrong document.
+
+<Info>
+  **This is the one you use when you lost the response.** The `orderCode` is the
+  only thing you certainly hold: you chose it yourself before numbering. The
+  `fiscalRequestId` is something we returned to you, so if the network dropped you
+  do not have it.
+</Info>
+
+## Authentication
+
+| | |
+|---|---|
+| Header | `x-api-key: pk_live_…` |
+| Scope | `fiscal:write` |
+
+The tenant comes from the key. You only see requests from your own account.
+
+## Query parameters
+
+<ParamField query="orderCode" type="string">
+  The order code the sale was numbered with. This is the filter you will use 99% of
+  the time.
+</ParamField>
+
+<ParamField query="accessKey" type="string">
+  The authority's access key (`claveAcceso` in Ecuador). Useful for the reverse
+  path: you have the number printed on a ticket and want to know which order it
+  came from.
+</ParamField>
+
+<ParamField query="requestStatus" type="string">
+  Filter by how the numbering act ended. One of: `REQUESTED`, `GENERATED`,
+  `PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `UNAVAILABLE`.
+</ParamField>
+
+<ParamField query="documentStatus" type="string">
+  Filter by the authority's verdict. One of: `PENDING`, `AUTHORIZED`, `REJECTED`,
+  `CANCELLED`.
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Page, starting at 1.
+</ParamField>
+
+<ParamField query="limit" type="integer" default="20">
+  Results per page. Between 1 and 100.
+</ParamField>
+
+<Warning>
+  For reconciliation, **do not filter by `documentStatus`**. A sale whose numbering
+  failed never gets a verdict from the authority, so filtering by `AUTHORIZED`
+  leaves it out of the report — and that is precisely the one you need to look at.
+  Filter by `orderCode` and branch on `requestStatus` on your side.
+</Warning>
+
+## Response
+
+<ResponseExample>
+```json 200 — an invoice and its credit note
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "fiscalRequestId": "9afef543-56ce-4911-a92e-5908366fa980",
+        "orderCode": "EC-K004-42-1786579046934",
+        "countryCode": "EC",
+        "requestStatus": "GENERATED",
+        "documentStatus": "AUTHORIZED",
+        "document": {
+          "documentType": "SALE_INVOICE",
+          "documentNumber": "005-004-000000045"
+        },
+        "failure": null
+      },
+      {
+        "fiscalRequestId": "c1d9e0a2-77b4-4f10-9f3e-2b0c5d6a1e88",
+        "orderCode": "EC-K004-42-1786579046934",
+        "countryCode": "EC",
+        "requestStatus": "GENERATED",
+        "documentStatus": "AUTHORIZED",
+        "document": {
+          "documentType": "CREDIT_NOTE",
+          "documentNumber": "005-004-000000046",
+          "compensates": { "documentNumber": "005-004-000000045" }
+        },
+        "failure": null
+      }
+    ]
+  }
+}
+```
+
+```json 200 — the order was not numbered
+{
+  "success": true,
+  "data": { "items": [] }
+}
+```
+</ResponseExample>
+
+<Note>
+  An order that was **not numbered** returns `items: []`, not a `404`. That is not
+  an error: it is the correct answer to "which documents does this order have?"
+  when it has none.
+</Note>
+
+## Errors
+
+| Code | When |
+|---|---|
+| `400` | No usable filter, or a value outside the enum |
+| `401` | The API key is missing, unknown or revoked |
+| `403` | The key lacks the `fiscal:write` scope |
+
+## Related
+
+- [Request fiscal numbering](/en/api-reference/fiscal-documents) — the `POST` that creates it
+- [Get a fiscal request](/en/api-reference/fiscal-document-get) — when you have the `fiscalRequestId`
+- [Fiscal integration guide](/en/guides/fiscal-integration) — the full end-to-end flow

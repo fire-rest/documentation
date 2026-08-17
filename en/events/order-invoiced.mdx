@@ -5,7 +5,9 @@ description: "The fiscal authority has authorized the document (electronic invoi
 
 <Tabs>
   <Tab title="v1.2 · current">
-    You are reading the **current (v1.2)** contract for `order.invoiced`. **v1.2 adds** `data.fiscalRepresentation`: the fiscal numbering the point of sale obtained before injecting the order. It is present when numbering **was attempted** — `numberingStatus` tells you how it ended — and **omitted** when no attempt was made. Its presence does **not** mean the document is authorized. Additive only — nothing you already read changed.
+    You are reading the **current (v1.2)** contract for `order.invoiced`. **v1.2 adds** `data.fiscalRepresentation`: the fiscal numbering the point of sale obtained before injecting the order. It **always** travels: `null` when numbering was not attempted, and populated when it was — `numberingStatus` tells you how it ended. Carrying content does **not** mean the document is authorized. Additive only — nothing you already read changed.
+
+    The block carries the order's **current** fiscal document: the fields that mean the same in every country at the top, the authority identifiers inside `countryData` in that country's own vocabulary, and the previous documents in `history`. When a cancellation numbers, the credit note moves to the top and the invoice moves down into history — with `compensates` pointing at it.
   </Tab>
   <Tab title="v1.1 · previous">
     **v1.1 added** `data.policy.deferredPayment` (can this order be worked before payment?) and `data.lastKnown` (advisory kitchen/fiscal state), plus the new [`order.opened`](/en/events/order-opened) event. Still valid: v1.2 only adds one block.
@@ -78,7 +80,6 @@ The order's `status` remains `"COMPLETED"` and `paymentStatus` remains `"SUCCEED
       "docSubtype": "nfce",
       "chaveAcesso": "41201008187168000160558050010000131609769080",
       "numero": "1000013",
-      "serie": null,
       "protocolo": "141200000956123",
       "providerDocId": "69fa97fe427d1240856e1282",
       "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
@@ -231,49 +232,73 @@ time the order is born, this already happened.
   block is present states something that may never have happened.
 </Warning>
 
-**The block being present means numbering was attempted, not that it succeeded.**
+**The key always travels.** It arrives as `null` when numbering was not
+attempted — aggregators, countries without fiscal representation, or merchants
+with numbering turned off — and carries the block when it was.
+
+Carrying the block means **numbering was attempted, not that it succeeded**:
 `numberingStatus` tells you how the attempt ended, and `failure` why, when it did
 not end well.
 
-**It is omitted** — the key is absent, not `null` — only when no attempt was
-made: aggregators, countries without fiscal representation, or merchants with
-numbering turned off. Branch on the key's presence to know whether there was an
-attempt, and on `numberingStatus` to know how it went.
+Branch on the value, not on the key's presence:
+
+```js
+if (data.fiscalRepresentation) {
+  // numbering was attempted — read numberingStatus to see how it went
+}
+```
 
 | Field | What it is |
 |---|---|
 | `numberingStatus` | How the **numbering act** ended: `GENERATED`, `PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `UNAVAILABLE`. **Not the authority's verdict** — that lives in `lastKnown.fiscal.status`. |
-| `documentNumber` | Visible receipt number, composed per country (`005-004-000000042`). Presentation only: reconcile with `serie` + `sequential`. |
-| `sequential` | Sequential assigned by the authority. |
-| `serie` | Document series. `null` where the country does not use one. |
+| `documentNumber` | The receipt's visible number, composed per country (`005-004-000000042`). It is presentation and **Fire builds it**, not the authority: reconcile with `countryData`. |
 | `issuedAt` | When it was **numbered**. Not the authorization date. |
 | `authorizationMode` | `ONLINE`, `OFFLINE` or `BATCH`. A provider concept, not universal. |
 | `providerCode` | Identifier of the adapter that numbered. |
-| `claveAcceso` | Authority access key. Absent where the country does not issue one. |
-| `numeroControl` | Control number. Replaces the access key where it applies. |
+| `countryData` | The authority identifiers, in the vocabulary of the **country that numbered** — and only that country's. Ecuador: `numeroComprobante` (the human-readable document number, already assembled by the provider), `claveAcceso`, `establecimiento`, `puntoEmision`, `secuencial`, `ambiente`. Venezuela: `numeroControl`, `numeroFactura`, `serie`. **Iterate it; do not index blindly** — a new key here is not a breaking change. It is the same block the numbering endpoint returns and the authority callback carries. The per-country reference, with each regime's keys, is in [`countryData` by country](/en/api-reference/fiscal-documents#countrydata-by-country). |
 | `graphic` | The printable artifact the provider returned (QR and the like), verbatim. `null` if it returned none. |
 | `failure` | Why there is **no** receipt. `null` when numbering succeeded. |
-| `providerMetadata` | **Opaque.** Defined by the provider; do not program against its keys. |
+| `providerIdentity` | **Who numbered, on the provider's side**: `{ "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" }`. Unlike the bag below, **it has a shape**: all three fields are part of the contract and always come through, with `null` when they do not apply. `reference` is **the provider's own support reference** — the identifier you quote back to them so they can find the operation in their records; it is not the `Idempotency-Key` the channel sent. It does not carry `providerCode`: that one is ours and travels at the top. |
+| `providerMetadata` | **The provider's diagnostic bag**, exactly as it returned it: in Ecuador with HIO you get `{ "deviceUid": "4B8E…", "externalStoreCode": "K000" }`. It is **opaque** — the provider owns the keys and may change them without notice, so do not program against them; it is for pasting into a ticket, not for branching. **It is exactly the same field the numbering endpoint returns**, same name and same content: all three provider fields read the same at both ends. |
+| `environment` | Which environment **Fire** numbered in: `SANDBOX` or `PRODUCTION`. It is ours, not the authority's — the authority's travels inside `countryData` with the country's own code. |
+| `compensates` | Which document this one voids. Present **only** when `documentType` is `CREDIT_NOTE`. It is a **pointer**, not a copy: look its `documentNumber` up in `history` for the whole document. `reason` is the canonical code — the printed wording is authored per company and resolved in the numbering endpoint's response. |
+| `history` | The order's **previous** documents, oldest first. Empty while there was only one; when a cancellation numbers, the invoice moves down here and the credit note sits on top. Every entry has **the same shape** as the block above, so they read alike. Documents only: a failed attempt does not appear. |
 
 ```json
 "fiscalRepresentation": {
   "numberingStatus": "GENERATED",
-  "serie": "005004",
-  "sequential": "000000042",
   "documentNumber": "005-004-000000042",
-  "claveAcceso": "1208202601000000000000110050040000000421234567810",
+  "countryData": {
+    "numeroComprobante": "005-004-000000042",
+    "claveAcceso": "1208202601000000000000110050040000000421234567810",
+    "establecimiento": "005",
+    "puntoEmision": "004",
+    "secuencial": "000000042",
+    "ambiente": "2"
+  },
   "authorizationMode": "ONLINE",
   "issuedAt": "2026-08-13T08:11:29.744Z",
   "providerCode": "hio",
   "graphic": { "qr": "1208202601000000000000110050040000000421234567810" },
   "failure": null,
-  "providerMetadata": { "externalDeviceId": "1", "externalStoreCode": "K004" }
+  "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
+  "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K004" },
+  "environment": "PRODUCTION",
+  "compensates": null,
+  "history": []
 }
 ```
 
-**It never changes.** The same block travels identically across every event of the
-order: what the customer took home printed is not altered because the authority
-later authorizes or rejects. What does change is `lastKnown.fiscal`.
+**The authority's verdict does not alter it.** What the customer took home
+printed does not change because the authority later authorizes or rejects — that
+is what `lastKnown.fiscal` is for, and that is what does move.
+
+**What does replace it is a new document.** The block carries the order's
+**current** fiscal document. While there was only one, it was always the invoice;
+when a cancellation produces a credit note, the note is what sits on top —
+`documentType` says which one — and the invoice **moves down into `history`**,
+whole and with its own authority identifiers. It is not lost: it moves.
+`compensates` points at it by number, so the relationship stays explicit.
 
 ### When numbering fails
 
@@ -285,7 +310,6 @@ in `failure`.
 "fiscalRepresentation": {
   "numberingStatus": "FAILED_FINAL",
   "documentNumber": null,
-  "sequential": null,
   "issuedAt": null,
   "providerCode": "hio",
   "graphic": null,

@@ -29,19 +29,63 @@ description: Recent documentation and API reference updates.
   <a href="https://buttondown.com/fire-docs" target="_blank" rel="noopener" style={{display: 'inline-block', marginTop: '0.875rem', padding: '0.5rem 1.25rem', borderRadius: '0.5rem', background: '#E6293D', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none'}}>Subscribe</a>
 </div>
 
+## 15 August 2026 — The fiscal block: country identifiers, voiding and provider
+
+`fiscalRepresentation` drops its fixed per-country fields and now carries the order's
+**current** document, with the previous ones in `history`.
+
+- **Breaking** — `sequential`, `serie` and `claveAcceso` are no longer fields of the block.
+  The authority identifiers now live in **`countryData`**, in the vocabulary of the country
+  that numbered: `claveAcceso`, `establecimiento`, `puntoEmision`, `secuencial` and `ambiente`
+  in Ecuador; `numeroControl`, `numeroFactura` and `serie` in Venezuela. **Iterate the keys, do
+  not index them**: a channel reading `countryData.claveAcceso` outright works in Ecuador and
+  breaks with the first country added. The fields that mean the same everywhere
+  —`documentNumber`, `issuedAt`, `authorizationMode`, `numberingStatus`— did not move.
+- **`history`** and **`compensates`** — when a cancellation numbers, the credit note becomes
+  the top document, `compensates` points at the invoice it voids, and the whole invoice moves
+  down into `history`. Every `history` entry has **the same keys** as the block above, so they
+  read the same.
+- **`environment`** — which environment Fire numbered in: `SANDBOX` or `PRODUCTION`. It is
+  ours, not the authority's; the authority's still travels inside `countryData` with its own
+  code.
+- **`providerCode`, `providerIdentity` and `providerMetadata`** — these used to be a single
+  object mixing three things. `providerCode` is our adapter identifier; `providerIdentity` is
+  the provider's block (`name`, `version`, `reference`) and **has a shape**; `providerMetadata`
+  is an **opaque** bag and you should not program against its keys. The numbering endpoint's
+  response now returns exactly the same three fields, under the same names.
+
+<Note>
+  If your reconciliation assumes `documentNumber` is always the sale's, revisit it: after a
+  cancellation the number on top is the credit note's. What the customer walked away with is
+  not lost — it is in `history` — but you have to go there for it.
+</Note>
+
+Documented on [`order.opened`](/en/events/order-opened),
+[`order.completed`](/en/events/order-completed),
+[`order.cancelled`](/en/events/order-cancelled),
+[`order.invoiced`](/en/events/order-invoiced),
+[`order.reversed`](/en/events/order-reversed), in the
+[endpoint reference](/en/api-reference/fiscal-documents) and in the
+[Integrating fiscalization](/en/guides/fiscal-integration) guide.
+
+Updated in **EN / ES / PT**.
+
 ## 13 August 2026 — Fiscal numbering now travels in every order event
 
 Orders numbered by the Fiscal Gateway before injection now carry those identifiers in
 every event of the order, so you no longer need a second call to print or reconcile.
 
 - **`data.fiscalRepresentation`** — series, sequential, document number, access key and
-  the QR (`graphic`), exactly as printed at the till. **Its presence means numbering was
-  attempted**, not that it succeeded: `numberingStatus` tells you how the attempt ended and
-  `failure` why, when it did not end well — a charged sale left **with no fiscal receipt**
-  arrives with `null` identifiers and the reason in `failure`. **Omitted** (key absent, not
-  `null`) only when no attempt was made: aggregators, countries without fiscal
-  representation, or numbering turned off. Its presence does **not** mean the document is
-  authorized — the authority's verdict stays in `lastKnown.fiscal.status`. It never changes,
+  the QR (`graphic`), exactly as printed at the till. **The key always travels**: it arrives
+  as `null` when numbering was not attempted — aggregators, countries without fiscal
+  representation, or numbering turned off — and carries the block when it was. Branch on the
+  value (`if (data.fiscalRepresentation)`), not on the key's presence.
+
+  Carrying the block means **numbering was attempted, not that it succeeded**:
+  `numberingStatus` tells you how the attempt ended and `failure` why, when it did not end
+  well — a charged sale left **with no fiscal receipt** arrives with `null` identifiers and
+  the reason in `failure`. Carrying the block does **not** mean the document is authorized:
+  the authority's verdict stays in `lastKnown.fiscal.status`. The block itself never changes,
   even after the authority authorizes or rejects.
 - **`data.lastKnown.fiscal.sourceEvent`** — now reports real provenance instead of
   deriving it from the status. A `processing` seeded at injection used to be reported as
