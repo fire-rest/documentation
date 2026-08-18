@@ -159,11 +159,11 @@ muda são os valores.
       "totals": [
         {
           "currencyCode": "USD",
-          "total": 10,
-          "subtotalWithoutTaxes": 8.7,
-          "taxValue": 1.3,
+          "total": "100000",
+          "subtotalWithoutTaxes": "87000",
+          "taxValue": "13000",
           "taxes": [
-            { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+            { "name": "IVA", "base": "87000", "rate": "0.15", "amount": "13000" }
           ]
         }
       ],
@@ -232,11 +232,11 @@ muda são os valores.
       "totals": [
         {
           "currencyCode": "COP",
-          "total": 50000,
-          "subtotalWithoutTaxes": 42016.81,
-          "taxValue": 7983.19,
+          "total": "500000000",
+          "subtotalWithoutTaxes": "420168100",
+          "taxValue": "79831900",
           "taxes": [
-            { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+            { "name": "IVA", "base": "420168100", "rate": "0.19", "amount": "79831900" }
           ]
         }
       ],
@@ -279,7 +279,7 @@ emissão do mesmo `orderCode` — que é a sua própria chave de idempotência, 
 | `device.platform` | não | `android`, `ios`, `web`… Informativo |
 | `device.metadata` | não | Chave-valor do aparelho (`ip`, …). Opaco |
 | `client` | não | **Quem comprou**, tal como o ponto de venda tem. Ver [3.5](#35-client-e-totals) |
-| `totals` | não | **O que foi cobrado**, com o detalhamento de impostos. Ver [3.5](#35-client-e-totals) |
+| `totals` | não | **O que foi cobrado**, com o detalhamento de impostos. Valores **inteiros em string, ×10.000** — a mesma escala do evento do pedido. As porcentagens NÃO são escaladas. Ver [3.5](#35-client-e-totals) |
 | `metadata` | não | Chave-valor **da venda**. Opaco |
 
 **Os campos vazios são omitidos.** Nunca enviamos `""`. Um campo ausente significa "não
@@ -439,11 +439,11 @@ data com hora e o documento do adquirente.
     "totals": [
       {
         "currencyCode": "USD",
-        "total": 10,
-        "subtotalWithoutTaxes": 8.7,
-        "taxValue": 1.3,
+        "total": "100000",
+        "subtotalWithoutTaxes": "87000",
+        "taxValue": "13000",
         "taxes": [
-          { "name": "IVA", "base": 8.7, "rate": "0.15", "amount": 1.3 }
+          { "name": "IVA", "base": "87000", "rate": "0.15", "amount": "13000" }
         ]
       }
     ]
@@ -460,11 +460,11 @@ data com hora e o documento do adquirente.
     "totals": [
       {
         "currencyCode": "COP",
-        "total": 50000,
-        "subtotalWithoutTaxes": 42016.81,
-        "taxValue": 7983.19,
+        "total": "500000000",
+        "subtotalWithoutTaxes": "420168100",
+        "taxValue": "79831900",
         "taxes": [
-          { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
+          { "name": "IVA", "base": "420168100", "rate": "0.19", "amount": "79831900" }
         ]
       }
     ]
@@ -578,47 +578,32 @@ dados que não servem a nenhum órgão.
 </Tabs>
 
 <Warning>
-  **Os valores chegam como números JSON, não como texto**, e com as casas decimais que o valor
-  tiver — não com as que o seu regime exige. Na Colômbia são inteiros, porque o peso não usa
-  centavos; no Equador vêm com até duas casas.
+  **Os valores trafegam na escala do spec: inteiro, em string, ×10.000.** Um total de
+  50.000 COP chega como `"500000000"`; um de 8,70 USD, como `"87000"`.
 
-  E o JSON **não conserva os zeros à direita**: um valor de `8.70` chega como `8.7`, e um de
-  `50000.00` como `50000`.
+  Não é uma peculiaridade deste endpoint: **é como o FIRE armazena e publica todo valor**,
+  então é a MESMA escala que você verá nos eventos do pedido. Um único formato nas duas
+  superfícies, e nenhuma conversão que dependa de por onde você leu o dado.
 
-  Por isso, **se o seu identificador é um hash sobre uma string, a formatação é sua.** O CUFE é
-  calculado sobre `"50000.00"`, e essa string não existe na requisição: você a monta a partir do
-  número. O FIRE não a formata porque não conhece a regra do seu regime, e escolher um formato
-  errado deste lado seria pior do que não escolher nenhum.
+  Antes este request levava decimais (`"total": 50000`) enquanto o evento levava
+  `"500000000"`. Quem confundia a superfície declarava **dez mil vezes o valor**, num documento
+  bem formado que o órgão aceitava do mesmo jeito. Essa classe de erro deixou de existir.
 
-  O que garantimos é o **valor**: é exatamente o que foi cobrado e impresso.
+  **Para voltar ao valor real, divida por 10.000.** E como a escala são 4 decimais fixos, a
+  conversão para a string que seu regime exige é exata: você move o ponto quatro casas a partir
+  da direita e corta nos decimais da sua moeda. Nada de floats.
 
-  **E isso importa especialmente porque você vai consumir os eventos do pedido.** Não é opcional: a
-  numeração lhe dá os identificadores, mas **a venda que você emite ao órgão sai do evento** — e de
-  lá você volta com o callback. Sem esse circuito, ninguém sabe se o documento foi emitido.
+  Isso importa **se o seu identificador é um hash sobre uma string**: o CUFE é calculado sobre
+  `"50000.00"`, e essa string você monta. O FIRE não a formata porque não conhece a regra do seu
+  regime — mas partir de um inteiro exato é mais seguro que partir de um decimal JSON, onde
+  `8.70` chega como `8.7` e os zeros à direita se perdem.
 
-  No evento, o mesmo valor trafega em **outra escala**: inteiro em string, **×10.000**, porque é
-  assim que o FIRE o armazena.
-
-  Um exemplo com a Colômbia — **cada país trafega na sua moeda e com os seus impostos, mas a regra
-  da escala é a mesma**. Uma venda de **50.000 COP** com IVA de **7.983,19 COP**:
+  Uma venda de **50.000 COP** com IVA de **7.983,19 COP** — cada país trafega na sua moeda e com
+  seus impostos, mas a regra da escala é a mesma:
 
   <CodeGroup>
 
-  ```json NESTA requisição — valores reais
-  "totals": [
-    {
-      "currencyCode": "COP",
-      "total": 50000,
-      "subtotalWithoutTaxes": 42016.81,
-      "taxValue": 7983.19,
-      "taxes": [
-        { "name": "IVA", "base": 42016.81, "rate": "0.19", "amount": 7983.19 }
-      ]
-    }
-  ]
-  ```
-
-  ```json No evento do pedido — inteiros ×10.000
+  ```json No request e no evento — a mesma escala
   "totals": [
     {
       "currencyCode": "COP",
@@ -632,14 +617,21 @@ dados que não servem a nenhum órgão.
   ]
   ```
 
+  ```text Como se le
+  "500000000"  / 10.000 ->  50000.00  COP   <- total
+  "420168100"  / 10.000 ->  42016.81  COP   <- base tributavel
+   "79831900"  / 10.000 ->   7983.19  COP   <- IVA declarado
+  ```
+
   </CodeGroup>
 
-  **Divida por 10.000 antes de declarar qualquer valor que tenha tirado do evento**, e use os desta
-  requisição para o hash. Os dois caminhos têm de terminar no mesmo número: o que está impresso no
-  comprovante.
+  **Atenção: só os valores são escalados.** `rate`, `taxesPercentage` e `discountPercentage` são
+  proporções, não dinheiro, e trafegam como estão — `"0.19"` continua `"0.19"`.
 
-  Se você tirar o valor do evento sem dividir, declara **500.000.000 COP** por uma venda de **50.000
-  COP** — dez mil vezes o montante. O documento fica bem formado e o órgão o aceita.
+  **E isso importa especialmente porque você vai consumir os eventos do pedido.** Não é
+  opcional: a numeração te dá os identificadores, mas **a venda que você emite ao órgão sai do
+  evento** — e de lá você volta com o callback. Sem esse circuito, ninguém sabe se o documento
+  foi emitido.
 
   Ver [O que chega ao integrador](/pt/fiscal-providers/in-events).
 </Warning>
