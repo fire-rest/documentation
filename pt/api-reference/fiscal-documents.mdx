@@ -714,10 +714,24 @@ da resposta não muda, porque o bloco é aberto.
       Uma legenda que interpola um dado que falta **não viaja**: meia legenda com um marcador cru
       impresso é pior do que não imprimi-la.
     </ResponseField>
+
+    <Warning>
+      **Sem comprovante não viajam `countryLines` nem `legends`.** São atributos do
+      comprovante, não da empresa: o fisco os exige *na* nota. Quando a numeração não produz
+      documento —`PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`— os dois chegam como `[]`.
+
+      A **identidade** chega completa (`legalName`, `tradeName`, `govIdType`, `govIdNumber`,
+      `headquartersAddress`): o ticket provisório precisa de cabeçalho com quem vendeu.
+
+      Sem essa regra, um provisório imprimia "verifique os dados da sua nota, alterações só
+      são aceitas no mesmo dia da emissão" sobre um papel que **não é uma nota**, e declarava
+      um "GRAN CONTRIBUYENTE" num documento que não declara nada.
+    </Warning>
   </Expandable>
 
   <Note>
-    **`store`, `company` e `document.compensates` vêm em toda resposta deste endpoint**, inclusive
+    **`store`, `company` e `document.compensates` vêm em toda resposta deste endpoint**,
+    incluindo `NOT_APPLICABLE` e o `400` de loja que não pode emitir, inclusive
     na da retentativa idempotente — o canal precisa do cabeçalho tanto na primeira vez quanto
     quando repete por uma queda de rede.
 
@@ -767,6 +781,11 @@ da resposta não muda, porque o bloco é aberto.
     </ResponseField>
     <ResponseField name="message" type="string">
       Texto acionável. Diz qual loja, qual ponto de emissão ou qual dado falta.
+
+      **Quando o provedor manda um motivo, é o dele, literal** — por exemplo
+      `"clave de API inválida"`. Só se ele não mandar nenhum usamos um texto próprio conforme o
+      `code`. É um texto **para ler, não para ramificar**: vem do provedor e pode mudar sem
+      aviso. Para decidir, use `code` e `scope`.
     </ResponseField>
   </Expandable>
 
@@ -984,13 +1003,21 @@ da resposta não muda, porque o bloco é aberto.
   </Accordion>
 
   <Accordion title="FAILED_FINAL — não há, e tentar de novo não adianta" icon="circle-xmark">
-    Há um dado que não é aceito. Leia `failure.message`, que traz o motivo real.
+    Tentar de novo com o mesmo corpo vai dar no mesmo. Leia `failure.message`, que traz o
+    motivo real, e **`failure.scope`, que diz de quem é o problema**:
 
-    Imprima o ticket provisório, injete o pedido e escale com o `fiscalRequestId`. **A venda ficou
-    cobrada sem comprovante fiscal** — isso também viaja nos eventos do pedido, para que você possa
-    compensar.
+    - `FUNCTIONAL` — há um dado que o fisco não aceita. Corrige-se na venda ou na configuração
+      da loja.
+    - `TECHNICAL` — a integração com o provedor está quebrada. A venda está certa; o que falha
+      é a conexão com quem numera. Ninguém no caixa consegue resolver.
 
-    ```json
+    Nos dois casos: imprima o ticket provisório, injete o pedido e escale com o
+    `fiscalRequestId`. **A venda ficou cobrada sem comprovante fiscal** — isso também viaja nos
+    eventos do pedido, para que você possa compensar.
+
+    <CodeGroup>
+
+    ```json FUNCTIONAL — um dado não é aceito
     {
       "requestStatus": "FAILED_FINAL",
       "document": null,
@@ -1005,6 +1032,51 @@ da resposta não muda, porque o bloco é aberto.
       }
     }
     ```
+
+    ```json TECHNICAL — o provedor rejeitou as credenciais
+    {
+      "requestStatus": "FAILED_FINAL",
+      "document": null,
+      "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "FISCAL_REJECTED" },
+      "graphic": null,
+      "retryable": false,
+      "environment": "SANDBOX",
+      "failure": {
+        "code": "PROVIDER_AUTH_FAILED",
+        "scope": "TECHNICAL",
+        "message": "clave de API inválida"
+      },
+      "company": {
+        "legalName": "INT FOOD SERVICES CORP S.A.",
+        "tradeName": "KFC",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001",
+        "headquartersAddress": "PICHINCHA / QUITO / COREA 126 Y AV. AMAZONAS",
+        "countryLines": [],
+        "legends": []
+      },
+      "timestamps": {
+        "requestedAt": "2026-08-18T21:36:58.702Z",
+        "respondedAt": "2026-08-18T21:36:59.617Z",
+        "providerLatencyMs": 742
+      }
+    }
+    ```
+
+    </CodeGroup>
+
+    <Warning>
+      **`PROVIDER_AUTH_FAILED` não é uma queda do provedor.** Ele respondeu, e rápido: 742 ms
+      no exemplo. O que ele rejeitou foi a nossa credencial —errada, revogada ou rotacionada do
+      lado dele—, então é configuração e não algo transitório: por isso `retryable` é `false` e
+      o estado é `FAILED_FINAL`, e não `PENDING`.
+
+      Se em vez disso você vir `PROVIDER_TIMEOUT` com `requestStatus: "PENDING"`, aí sim o
+      provedor não respondeu a tempo — e aí vale tentar de novo.
+
+      Repare também no bloco `company` do exemplo: a identidade chega para o cabeçalho, mas
+      `countryLines` e `legends` vêm vazios porque **não há comprovante declarando nada**.
+    </Warning>
   </Accordion>
 
   <Accordion title="NOT_APPLICABLE — esta loja não numera" icon="ban">
@@ -1024,9 +1096,32 @@ da resposta não muda, porque o bloco é aberto.
       "failure": null,
       "documentStatus": null,
       "environment": null,
-      "idempotencyKey": null
+      "idempotencyKey": null,
+      "store": {
+        "code": "K000",
+        "name": "Laboratorio Ecuador",
+        "address": "PICHINCHA / QUITO / AV. AMAZONAS Y AV COREA",
+        "city": "Quito",
+        "phone": "023920070",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001"
+      },
+      "company": {
+        "legalName": "INT FOOD SERVICES CORP S.A.",
+        "tradeName": "KFC",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001",
+        "countryLines": [],
+        "legends": []
+      }
     }
     ```
+
+    <Note>
+      **`store` e `company` vêm aqui também.** Nada foi numerado, então chega a identidade do
+      emissor e não o aparato fiscal (`countryLines` e `legends` vazios). É o mesmo bloco de
+      qualquer outra resposta: não há uma forma diferente para aprender neste caso.
+    </Note>
   </Accordion>
 
   <Accordion title="4xx — o problema está na requisição">
@@ -1034,6 +1129,23 @@ da resposta não muda, porque o bloco é aberto.
 
     Se você receber `404` com uma mensagem de loja não encontrada, verifique se a sua API key é a do
     vendor dono daquela loja — a mensagem inclui contra qual vendor foi buscado.
+
+    **O `400` de loja que não pode emitir traz a identidade do emissor em `data`.** É o caso de
+    uma loja sem CNPJ/RUC ou não habilitada: a venda já aconteceu e você ainda precisa imprimir
+    um provisório, então o cabeçalho viaja junto com o erro.
+
+    ```json
+    {
+      "success": false,
+      "error": "VALIDATION_ERROR",
+      "message": "La tienda no tiene identificador tributario del emisor configurado (settings.fiscal.govIdNumber)",
+      "data": {
+        "storeCode": "K000",
+        "store": { "code": "K000", "name": "Laboratorio Ecuador", "address": "…" },
+        "company": { "legalName": "INT FOOD SERVICES CORP S.A.", "countryLines": [], "legends": [] }
+      }
+    }
+    ```
   </Accordion>
 </AccordionGroup>
 
@@ -1525,6 +1637,18 @@ Quando o órgão autoriza, `documentStatus` passa a `AUTHORIZED`.
     "graphic": null,
     "printing": { "printable": false, "mode": "NONE", "reason": "NUMBERING_DISABLED" },
     "failure": null,
+    "store": {
+      "code": "K000",
+      "name": "Laboratorio Ecuador",
+      "govIdType": "RUC",
+      "govIdNumber": "1791415132001"
+    },
+    "company": {
+      "legalName": "INT FOOD SERVICES CORP S.A.",
+      "tradeName": "KFC",
+      "countryLines": [],
+      "legends": []
+    },
     "timestamps": {
       "requestedAt": "2026-08-14T01:01:14.7Z",
       "respondedAt": "2026-08-14T01:01:14.7Z",

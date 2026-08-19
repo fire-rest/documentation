@@ -718,12 +718,28 @@ forma de la respuesta no cambia, porque el bloque es abierto.
       Una leyenda que interpola un dato que falta **no viaja**: media leyenda con un
       marcador crudo impreso es peor que no imprimirla.
     </ResponseField>
+
+    <Warning>
+      **Sin comprobante no viajan `countryLines` ni `legends`.** Son atributos del
+      comprobante, no de la empresa: el ente los exige *en* la factura. Cuando la numeración
+      no produce documento —`PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`— los dos llegan
+      como `[]`.
+
+      La **identidad** sí llega completa (`legalName`, `tradeName`, `govIdType`,
+      `govIdNumber`, `headquartersAddress`): el ticket provisional necesita encabezado con
+      quién vendió.
+
+      Sin esta regla, un provisional imprimía "verifique los datos de su factura, únicamente
+      se aceptarán cambios el mismo día de emisión" sobre un papel que **no es una factura**,
+      y declaraba un "GRAN CONTRIBUYENTE" en un documento que no declara nada.
+    </Warning>
   </Expandable>
 
   <Note>
     **`store`, `company` y `document.compensates` vienen en toda respuesta de este endpoint**,
-    incluida la del reintento idempotente — el canal necesita el encabezado tanto la primera
-    vez como cuando repite por un corte de red.
+    incluida la del reintento idempotente, la de `NOT_APPLICABLE` y la del `400` de tienda que
+    no puede emitir — el canal necesita el encabezado tanto la primera vez como cuando repite
+    por un corte de red, y sobre todo cuando tiene que imprimir un provisional.
 
     Las **consultas** (`GET` por `fiscalRequestId` u `orderCode`) los devuelven en `null`: se
     resuelven al emitir y no se guardan con la solicitud. Si tu integración los necesita para
@@ -772,6 +788,11 @@ forma de la respuesta no cambia, porque el bloque es abierto.
     </ResponseField>
     <ResponseField name="message" type="string">
       Texto accionable. Dice qué tienda, qué punto de emisión o qué dato falta.
+
+      **Cuando el proveedor manda un motivo, es el suyo, literal** — por ejemplo
+      `"clave de API inválida"`. Sólo si no manda ninguno usamos un texto propio según el
+      `code`. Es un texto **para leer, no para ramificar**: viene del proveedor y puede
+      cambiar sin aviso. Para decidir, usá `code` y `scope`.
     </ResponseField>
   </Expandable>
 
@@ -987,13 +1008,21 @@ forma de la respuesta no cambia, porque el bloque es abierto.
   </Accordion>
 
   <Accordion title="FAILED_FINAL — no hay, y reintentar no sirve" icon="circle-xmark">
-    Hay un dato que no se acepta. Leé `failure.message`, que trae el motivo real.
+    Reintentar con el mismo cuerpo va a dar lo mismo. Leé `failure.message`, que trae el
+    motivo real, y **`failure.scope`, que dice a quién le toca arreglarlo**:
 
-    Imprimí el ticket provisional, inyectá la orden y escalá con el `fiscalRequestId`.
-    **La venta quedó cobrada sin comprobante fiscal** — eso también viaja en los eventos de la
-    orden, para que puedas compensarlo.
+    - `FUNCTIONAL` — hay un dato que el ente no acepta. Se corrige en la venta o en la
+      configuración de la tienda.
+    - `TECHNICAL` — la integración con el proveedor está rota. La venta está bien; lo que
+      falla es la conexión con quien numera. Nadie en la caja puede resolverlo.
 
-    ```json
+    En los dos casos: imprimí el ticket provisional, inyectá la orden y escalá con el
+    `fiscalRequestId`. **La venta quedó cobrada sin comprobante fiscal** — eso también viaja
+    en los eventos de la orden, para que puedas compensarlo.
+
+    <CodeGroup>
+
+    ```json FUNCTIONAL — un dato no se acepta
     {
       "requestStatus": "FAILED_FINAL",
       "document": null,
@@ -1008,6 +1037,52 @@ forma de la respuesta no cambia, porque el bloque es abierto.
       }
     }
     ```
+
+    ```json TECHNICAL — el proveedor rechazó las credenciales
+    {
+      "requestStatus": "FAILED_FINAL",
+      "document": null,
+      "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "FISCAL_REJECTED" },
+      "graphic": null,
+      "retryable": false,
+      "environment": "SANDBOX",
+      "failure": {
+        "code": "PROVIDER_AUTH_FAILED",
+        "scope": "TECHNICAL",
+        "message": "clave de API inválida"
+      },
+      "company": {
+        "legalName": "INT FOOD SERVICES CORP S.A.",
+        "tradeName": "KFC",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001",
+        "headquartersAddress": "PICHINCHA / QUITO / COREA 126 Y AV. AMAZONAS",
+        "countryLines": [],
+        "legends": []
+      },
+      "timestamps": {
+        "requestedAt": "2026-08-18T21:36:58.702Z",
+        "respondedAt": "2026-08-18T21:36:59.617Z",
+        "providerLatencyMs": 742
+      }
+    }
+    ```
+
+    </CodeGroup>
+
+    <Warning>
+      **`PROVIDER_AUTH_FAILED` no es una caída del proveedor.** Contestó, y rápido: en el
+      ejemplo, 742 ms. Lo que rechazó es nuestra credencial —equivocada, revocada o rotada
+      del otro lado—, así que es configuración y no algo transitorio: por eso `retryable`
+      es `false` y el estado es `FAILED_FINAL` y no `PENDING`.
+
+      Si en vez de esto ves `PROVIDER_TIMEOUT` con `requestStatus: "PENDING"`, ahí sí el
+      proveedor no contestó a tiempo — y ahí sí conviene reintentar.
+
+      Fijate también en el bloque `company` del ejemplo: llega la identidad para el
+      encabezado, pero `countryLines` y `legends` vienen vacíos porque **no hay comprobante
+      que declare nada**.
+    </Warning>
   </Accordion>
 
   <Accordion title="NOT_APPLICABLE — esta tienda no numera" icon="ban">
@@ -1026,9 +1101,32 @@ forma de la respuesta no cambia, porque el bloque es abierto.
       "graphic": null,
       "failure": null,
       "documentStatus": null,
-      "idempotencyKey": null
+      "idempotencyKey": null,
+      "store": {
+        "code": "K000",
+        "name": "Laboratorio Ecuador",
+        "address": "PICHINCHA / QUITO / AV. AMAZONAS Y AV COREA",
+        "city": "Quito",
+        "phone": "023920070",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001"
+      },
+      "company": {
+        "legalName": "INT FOOD SERVICES CORP S.A.",
+        "tradeName": "KFC",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001",
+        "countryLines": [],
+        "legends": []
+      }
     }
     ```
+
+    <Note>
+      **`store` y `company` vienen igual acá.** No se numeró nada, así que llega la identidad
+      del emisor y no el aparato fiscal (`countryLines` y `legends` vacíos). Es el mismo bloque
+      que en cualquier otra respuesta: no hay una forma distinta que aprender para este caso.
+    </Note>
   </Accordion>
 
   <Accordion title="4xx — el problema está en la petición">
@@ -1036,6 +1134,23 @@ forma de la respuesta no cambia, porque el bloque es abierto.
 
     Si recibís `404` con un mensaje de tienda no encontrada, revisá que tu API key sea la del
     vendor dueño de esa tienda — el mensaje incluye contra qué vendor se buscó.
+
+    **El `400` de tienda que no puede emitir trae la identidad del emisor en `data`.** Es el
+    caso de una tienda sin RUC o sin habilitar: la venta ya ocurrió y tenés que imprimir un
+    provisional igual, así que el encabezado viaja con el error.
+
+    ```json
+    {
+      "success": false,
+      "error": "VALIDATION_ERROR",
+      "message": "La tienda no tiene identificador tributario del emisor configurado (settings.fiscal.govIdNumber)",
+      "data": {
+        "storeCode": "K000",
+        "store": { "code": "K000", "name": "Laboratorio Ecuador", "address": "…" },
+        "company": { "legalName": "INT FOOD SERVICES CORP S.A.", "countryLines": [], "legends": [] }
+      }
+    }
+    ```
   </Accordion>
 </AccordionGroup>
 
@@ -1544,6 +1659,18 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "graphic": null,
     "printing": { "printable": false, "mode": "NONE", "reason": "NUMBERING_DISABLED" },
     "failure": null,
+    "store": {
+      "code": "K000",
+      "name": "Laboratorio Ecuador",
+      "govIdType": "RUC",
+      "govIdNumber": "1791415132001"
+    },
+    "company": {
+      "legalName": "INT FOOD SERVICES CORP S.A.",
+      "tradeName": "KFC",
+      "countryLines": [],
+      "legends": []
+    },
     "timestamps": {
       "requestedAt": "2026-08-14T01:01:14.7Z",
       "respondedAt": "2026-08-14T01:01:14.7Z",
