@@ -724,10 +724,26 @@ only that: the response's shape does not change, because the block is open.
       A legend interpolating a value that is missing **does not travel**: half a legend with a raw
       placeholder printed on it is worse than not printing it.
     </ResponseField>
+
+    <Warning>
+      **With no document, `countryLines` and `legends` do not travel.** They are attributes of
+      the fiscal document, not of the company: the tax authority requires them *on* the
+      invoice. When numbering produces no document —`PENDING`, `FAILED_RETRYABLE`,
+      `FAILED_FINAL`— both arrive as `[]`.
+
+      **Identity does arrive in full** (`legalName`, `tradeName`, `govIdType`, `govIdNumber`,
+      `headquartersAddress`): the provisional receipt still needs a header saying who sold.
+
+      Without this rule, a provisional receipt printed "please check the details of your
+      invoice, changes are only accepted on the day of issue" on a slip that **is not an
+      invoice**, and declared a "GRAN CONTRIBUYENTE" status on a document that declares
+      nothing.
+    </Warning>
   </Expandable>
 
   <Note>
     **`store`, `company` and `document.compensates` come in every response of this endpoint**,
+    including `NOT_APPLICABLE` and the `400` for a store that cannot issue,
     including the idempotent retry — the channel needs the header both the first time and when it
     repeats after a network drop.
 
@@ -778,6 +794,11 @@ only that: the response's shape does not change, because the block is open.
     </ResponseField>
     <ResponseField name="message" type="string">
       Actionable text. It says which store, which point of emission or which value is missing.
+
+      **When the provider sends a reason, this is theirs, verbatim** — for example
+      `"clave de API inválida"`. Only when it sends none do we use our own text based on the
+      `code`. It is text **to read, not to branch on**: it comes from the provider and can
+      change without notice. To decide, use `code` and `scope`.
     </ResponseField>
   </Expandable>
 
@@ -996,13 +1017,21 @@ only that: the response's shape does not change, because the block is open.
   </Accordion>
 
   <Accordion title="FAILED_FINAL — there is none, and retrying will not help" icon="circle-xmark">
-    Some value is not accepted. Read `failure.message`, which carries the real reason.
+    Retrying with the same body will give you the same thing. Read `failure.message`, which
+    carries the real reason, and **`failure.scope`, which says whose problem it is**:
 
-    Print the provisional ticket, inject the order and escalate with the `fiscalRequestId`.
-    **The sale was charged without a fiscal receipt** — that also travels in the order's events, so
-    you can compensate for it.
+    - `FUNCTIONAL` — some value the tax authority does not accept. It is fixed in the sale or
+      in the store's configuration.
+    - `TECHNICAL` — the integration with the provider is broken. The sale is fine; what fails
+      is the connection to whoever assigns the numbers. Nobody at the register can fix it.
 
-    ```json
+    Either way: print the provisional ticket, inject the order and escalate with the
+    `fiscalRequestId`. **The sale was charged without a fiscal receipt** — that also travels in
+    the order's events, so you can compensate for it.
+
+    <CodeGroup>
+
+    ```json FUNCTIONAL — a value is not accepted
     {
       "requestStatus": "FAILED_FINAL",
       "document": null,
@@ -1017,6 +1046,52 @@ only that: the response's shape does not change, because the block is open.
       }
     }
     ```
+
+    ```json TECHNICAL — the provider rejected our credentials
+    {
+      "requestStatus": "FAILED_FINAL",
+      "document": null,
+      "printing": { "printable": false, "mode": "PROVISIONAL_RECEIPT", "reason": "FISCAL_REJECTED" },
+      "graphic": null,
+      "retryable": false,
+      "environment": "SANDBOX",
+      "failure": {
+        "code": "PROVIDER_AUTH_FAILED",
+        "scope": "TECHNICAL",
+        "message": "clave de API inválida"
+      },
+      "company": {
+        "legalName": "INT FOOD SERVICES CORP S.A.",
+        "tradeName": "KFC",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001",
+        "headquartersAddress": "PICHINCHA / QUITO / COREA 126 Y AV. AMAZONAS",
+        "countryLines": [],
+        "legends": []
+      },
+      "timestamps": {
+        "requestedAt": "2026-08-18T21:36:58.702Z",
+        "respondedAt": "2026-08-18T21:36:59.617Z",
+        "providerLatencyMs": 742
+      }
+    }
+    ```
+
+    </CodeGroup>
+
+    <Warning>
+      **`PROVIDER_AUTH_FAILED` is not a provider outage.** It answered, and fast: 742 ms in the
+      example. What it rejected is our credential —wrong, revoked or rotated on their side— so
+      it is configuration, not something transient: that is why `retryable` is `false` and the
+      status is `FAILED_FINAL` rather than `PENDING`.
+
+      If you see `PROVIDER_TIMEOUT` with `requestStatus: "PENDING"` instead, then the provider
+      really did not answer in time — and there retrying is worth it.
+
+      Note the `company` block in the example too: identity arrives for the header, but
+      `countryLines` and `legends` come back empty because **there is no document declaring
+      anything**.
+    </Warning>
   </Accordion>
 
   <Accordion title="NOT_APPLICABLE — this store does not number" icon="ban">
@@ -1036,9 +1111,32 @@ only that: the response's shape does not change, because the block is open.
       "failure": null,
       "documentStatus": null,
       "environment": null,
-      "idempotencyKey": null
+      "idempotencyKey": null,
+      "store": {
+        "code": "K000",
+        "name": "Laboratorio Ecuador",
+        "address": "PICHINCHA / QUITO / AV. AMAZONAS Y AV COREA",
+        "city": "Quito",
+        "phone": "023920070",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001"
+      },
+      "company": {
+        "legalName": "INT FOOD SERVICES CORP S.A.",
+        "tradeName": "KFC",
+        "govIdType": "RUC",
+        "govIdNumber": "1791415132001",
+        "countryLines": [],
+        "legends": []
+      }
     }
     ```
+
+    <Note>
+      **`store` and `company` come here too.** Nothing was numbered, so you get the issuer's
+      identity and not the fiscal apparel (`countryLines` and `legends` empty). It is the same
+      block as in any other response: there is no separate shape to learn for this case.
+    </Note>
   </Accordion>
 
   <Accordion title="4xx — the problem is in the request">
@@ -1046,6 +1144,23 @@ only that: the response's shape does not change, because the block is open.
 
     If you get a `404` with a store-not-found message, check that your API key belongs to the
     vendor that owns that store — the message includes which vendor it searched against.
+
+    **The `400` for a store that cannot issue carries the issuer's identity in `data`.** That is
+    the case of a store with no tax id or not enabled: the sale already happened and you still
+    have to print a provisional receipt, so the header travels with the error.
+
+    ```json
+    {
+      "success": false,
+      "error": "VALIDATION_ERROR",
+      "message": "La tienda no tiene identificador tributario del emisor configurado (settings.fiscal.govIdNumber)",
+      "data": {
+        "storeCode": "K000",
+        "store": { "code": "K000", "name": "Laboratorio Ecuador", "address": "…" },
+        "company": { "legalName": "INT FOOD SERVICES CORP S.A.", "countryLines": [], "legends": [] }
+      }
+    }
+    ```
   </Accordion>
 </AccordionGroup>
 
@@ -1540,6 +1655,18 @@ When the authority approves, `documentStatus` becomes `AUTHORIZED`.
     "graphic": null,
     "printing": { "printable": false, "mode": "NONE", "reason": "NUMBERING_DISABLED" },
     "failure": null,
+    "store": {
+      "code": "K000",
+      "name": "Laboratorio Ecuador",
+      "govIdType": "RUC",
+      "govIdNumber": "1791415132001"
+    },
+    "company": {
+      "legalName": "INT FOOD SERVICES CORP S.A.",
+      "tradeName": "KFC",
+      "countryLines": [],
+      "legends": []
+    },
     "timestamps": {
       "requestedAt": "2026-08-14T01:01:14.7Z",
       "respondedAt": "2026-08-14T01:01:14.7Z",
