@@ -200,3 +200,37 @@ Si el procesador de pago guardado soporta reembolsos (por ejemplo, Deuna), Fire 
 - Para reembolsos con Deuna, la orden debe incluir `metadata.order_token`; si no existe, Fire devuelve `400`.
 - Después de guardar la orden actualizada, Fire devuelve precios transformados para consumo externo.
 - Fire notifica la cancelación downstream después de guardar la orden.
+
+## Comportamiento posterior a la cancelación
+
+<Warning>
+  Un `200` significa que **la orden** quedó cancelada. **No** significa que el documento fiscal ya esté anulado: esa parte es asíncrona y puede seguir en curso, o fallar, después de que respondimos.
+</Warning>
+
+### La anulación fiscal es asíncrona
+
+Cuando la orden tenía un documento fiscal emitido, Fire solicita su anulación al proveedor y deja el documento en `cancelling`. El estado final llega **por webhook del proveedor**, no en la respuesta de este endpoint.
+
+| Estado del documento | Qué significa |
+|---|---|
+| `cancelling` | Anulación solicitada, esperando confirmación del proveedor. Estado **transitorio**. |
+| `cancelled` | Anulado y confirmado. Circuito completo. |
+| `rejected` | El fisco rechazó la anulación. El documento sigue vigente. |
+
+Si el webhook del proveedor nunca llega, el documento **queda en `cancelling` indefinidamente**: no hay reintento automático que lo destrabe. Para un integrador que necesita certeza fiscal, esperar el `200` de este endpoint no alcanza — hay que consultar el estado del documento después.
+
+### Los montos no se ponen en cero
+
+La orden cancelada **conserva sus totales y sus métodos de pago con los importes originales**. `order_lines`, `totals` y `payment_methods` vuelven con los mismos valores que antes de cancelar; lo que cambia es `status` y `payment_status`.
+
+Esto es deliberado: la orden es el registro de lo que pasó, no de lo que quedó vigente. Si conciliás montos contra órdenes canceladas, vas a encontrar que **cuadran perfecto** — porque se cobró exactamente lo que se vendió antes de anular. La conciliación correcta para una orden cancelada no es "¿coinciden los montos?" sino "¿se revirtió cada eslabón?".
+
+### La anulación es total, nunca parcial
+
+No existe la anulación por líneas ni por importe: se cancela la orden entera o no se cancela. Por eso el request no lleva montos ni lista de ítems. Si necesitás revertir solo una parte, la operación es cancelar y volver a inyectar.
+
+### Qué verificar del lado del cliente
+
+- **No asumas que el documento fiscal quedó anulado** por recibir `200`. Consultá su estado si necesitás certeza.
+- **`payment_status` distingue dos desenlaces distintos**: `REFUNDED` (el procesador devolvió la plata) y `CANCELED` (se anuló el cobro sin devolución). No son equivalentes para una conciliación.
+- **El evento downstream sale después de guardar la orden**, no después de que se confirme la anulación fiscal. Llega antes de que el circuito esté cerrado.

@@ -200,3 +200,37 @@ Se o processador de pagamento salvo suporta reembolsos (por exemplo, Deuna), o F
 - Para reembolsos com Deuna, o pedido deve incluir `metadata.order_token`; se não existir, o Fire retorna `400`.
 - Depois de salvar o pedido atualizado, o Fire devolve preços transformados para consumo externo.
 - O Fire notifica o cancelamento downstream depois de salvar o pedido.
+
+## Comportamento após o cancelamento
+
+<Warning>
+  Um `200` significa que **o pedido** foi cancelado. **Não** significa que o documento fiscal já está cancelado: essa parte é assíncrona e pode continuar em andamento — ou falhar — depois da nossa resposta.
+</Warning>
+
+### O cancelamento fiscal é assíncrono
+
+Quando o pedido tinha um documento fiscal emitido, o Fire solicita o cancelamento ao provedor e deixa o documento em `cancelling`. O estado final chega **por webhook do provedor**, não na resposta deste endpoint.
+
+| Status do documento | O que significa |
+|---|---|
+| `cancelling` | Cancelamento solicitado, aguardando confirmação do provedor. Estado **transitório**. |
+| `cancelled` | Cancelado e confirmado. Circuito completo. |
+| `rejected` | O fisco recusou o cancelamento. O documento continua válido. |
+
+Se o webhook do provedor nunca chegar, o documento **fica em `cancelling` indefinidamente** — não há retentativa automática que o destrave. Se você precisa de certeza fiscal, esperar o `200` deste endpoint não basta: consulte o status do documento depois.
+
+### Os valores não são zerados
+
+Um pedido cancelado **mantém seus totais e seus métodos de pagamento com os valores originais**. `order_lines`, `totals` e `payment_methods` voltam com os mesmos valores de antes do cancelamento; o que muda é `status` e `payment_status`.
+
+Isso é proposital: o pedido registra o que aconteceu, não o que continua válido. Se você concilia valores contra pedidos cancelados, vai encontrar que **batem perfeitamente** — porque foi cobrado exatamente o que foi vendido, antes do cancelamento. A conciliação correta para um pedido cancelado não é "os valores batem?" e sim "cada elo foi revertido?".
+
+### O cancelamento é total, nunca parcial
+
+Não existe cancelamento por linha nem por valor: cancela-se o pedido inteiro ou nada. Por isso o request não leva valores nem lista de itens. Para reverter só uma parte, cancele e injete um novo pedido.
+
+### O que verificar do lado do cliente
+
+- **Não presuma que o documento fiscal foi cancelado** por ter recebido `200`. Consulte o status se precisar de certeza.
+- **`payment_status` distingue dois desfechos diferentes**: `REFUNDED` (o processador devolveu o dinheiro) e `CANCELED` (a cobrança foi cancelada sem devolução). Não são equivalentes para conciliação.
+- **O evento downstream é emitido depois de salvar o pedido**, não depois de confirmar o cancelamento fiscal. Ele chega antes de o circuito estar fechado.

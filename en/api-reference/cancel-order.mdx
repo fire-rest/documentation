@@ -200,3 +200,37 @@ If the stored payment processor supports refunds (for example, Deuna), Fire atte
 - For Deuna refunds, the order must include `metadata.order_token`; otherwise Fire returns `400`.
 - After saving the updated order, Fire returns prices transformed for external consumption.
 - Fire notifies the cancellation downstream after the order is saved.
+
+## Post-cancellation behavior
+
+<Warning>
+  A `200` means **the order** was cancelled. It does **not** mean the fiscal document is already voided: that part is asynchronous and may still be in flight — or fail — after we responded.
+</Warning>
+
+### Fiscal voiding is asynchronous
+
+When the order had a fiscal document issued, Fire requests its cancellation from the provider and leaves the document in `cancelling`. The final state arrives **via a provider webhook**, not in this endpoint's response.
+
+| Document status | What it means |
+|---|---|
+| `cancelling` | Void requested, awaiting provider confirmation. **Transient** state. |
+| `cancelled` | Voided and confirmed. Chain complete. |
+| `rejected` | The tax authority refused the void. The document is still valid. |
+
+If the provider webhook never arrives, the document **stays in `cancelling` indefinitely** — no automatic retry unblocks it. If you need fiscal certainty, waiting for this endpoint's `200` is not enough; check the document status afterwards.
+
+### Amounts are not zeroed
+
+A cancelled order **keeps its totals and its payment methods with the original amounts**. `order_lines`, `totals` and `payment_methods` come back with the same values they had before the cancellation; what changes is `status` and `payment_status`.
+
+This is deliberate: the order records what happened, not what remains in force. If you reconcile amounts against cancelled orders you will find they **match perfectly** — because exactly what was sold was charged, before the void. The right reconciliation for a cancelled order is not "do the amounts match?" but "was every link reversed?".
+
+### Cancellation is all-or-nothing
+
+There is no per-line or partial-amount void: the whole order is cancelled or nothing is. That is why the request carries no amounts and no item list. To reverse only part of an order, cancel it and inject a new one.
+
+### What to verify on the client side
+
+- **Do not assume the fiscal document is voided** because you got a `200`. Check its status if you need certainty.
+- **`payment_status` distinguishes two different outcomes**: `REFUNDED` (the processor returned the money) and `CANCELED` (the charge was voided without a refund). They are not equivalent for reconciliation.
+- **The downstream event fires after the order is saved**, not after the fiscal void is confirmed. It arrives before the chain is closed.
