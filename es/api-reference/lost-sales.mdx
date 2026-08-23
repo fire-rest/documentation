@@ -1,0 +1,155 @@
+---
+title: "Registrar venta perdida"
+api: "POST https://api.fire.rest/api/v1/fire/external/orders/lost-sales"
+description: "Avisa que cobraste una venta en la caja y nunca llegó a ser orden en Fire."
+authMethod: "bearer"
+---
+
+Una venta perdida es dinero que se movió en el mostrador y **no quedó registrado como venta**. La
+caja cobró, algo impidió que la orden se creara, y devolviste el cobro ahí mismo.
+
+<Warning>
+  **Sin esta llamada, esa venta no existe en ningún lado.** No hay orden, no hay evento y —según la
+  causa— tampoco queda registro en el dominio que falló. El cierre de caja no lo puede explicar y
+  nadie se entera de que una tienda dejó de vender.
+</Warning>
+
+<Note>
+  **No es una anulación.** Una anulación tiene orden, nota de crédito y evento `order.reversed`.
+  Acá la venta **nunca llegó a existir**.
+</Note>
+
+<Note>
+  **No sos vos quien decide reportar.** Fire lo decide y te lo dice en
+  `policy.numberingFailure.action` de [Emitir comprobante](/es/api-reference/fiscal-documents):
+  `REFUND` significa devolver el cobro y reportar acá; `CONTINUE`, seguir normal y no reportar
+  nada. La regla la carga la cuenta por vendor, así que **puede ser distinta entre dos tiendas
+  del mismo cliente** — por eso se pregunta en cada venta y no se cachea.
+</Note>
+
+## El cuerpo es el de la inyección
+
+No armes un payload nuevo. **Mandá exactamente el mismo JSON que le ibas a mandar a
+[Crear orden](/es/api-reference/orders)**, y agregale dos claves al mismo nivel: `reason` y
+`detail`.
+
+No es comodidad: adentro corre el mismo mapeo de la inyección, así que la venta perdida queda
+guardada con la misma forma que una vendida — mismas líneas, mismos totales, mismos medios de pago.
+Eso es lo que después permite cuadrar la caja del día sumando las dos.
+
+<ParamField body="reason" type="string" required>
+  Por qué la venta no llegó a ser orden.
+
+  | valor | cuándo |
+  | --- | --- |
+  | `FISCAL_NUMBERING_FAILED` | Pediste la numeración con [Emitir comprobante](/es/api-reference/fiscal-documents) y falló |
+
+  **No lo deduzcas**: te lo devolvemos en `policy.numberingFailure.lostSaleReason` de la respuesta
+  de numeración. Copialo. El día que agreguemos una causa, no tenés que tocar nada.
+
+  Es un enum cerrado y **no hay endpoint para consultarlo**: la lista de arriba es el catálogo
+  completo, y el valor que te toca ya viene en la respuesta que te trajo hasta acá. Mientras sea
+  de este tamaño, una llamada extra para descubrirlo no te compra nada. Si crece, pasa a ser un
+  endpoint y lo vas a ver anunciado acá — el campo no cambia.
+
+  Cualquier otro valor vuelve `400`.
+</ParamField>
+
+<ParamField body="detail" type="object">
+  Lo propio de la causa. Para `FISCAL_NUMBERING_FAILED` copiá de la respuesta de numeración:
+
+  | de la respuesta del prekey | a `detail` |
+  | --- | --- |
+  | `failure.code` | `detail.code` |
+  | `failure.message` | `detail.message` |
+  | `fiscalRequestId` | `detail.fiscalRequestId` |
+  | `failure` (entero) | `detail.failure` |
+  | `policy.numberingFailure` (entero) | `detail.policy` |
+
+  Es opcional a propósito: el peor caso —un error de configuración, que corta antes de crear la
+  solicitud fiscal— no tiene nada de esto, y exigirlo dejaría fuera justo al caso más difícil de
+  detectar.
+</ParamField>
+
+<ParamField body="orderId" type="string" required>
+  Del payload de inyección. Junto con el vendor es la llave que hace seguro reintentar.
+</ParamField>
+
+<ParamField body="store.code" type="string" required>
+  Del payload de inyección. Sin tienda no se puede cuadrar la caja ni saber quién dejó de vender.
+</ParamField>
+
+Todo lo demás del payload —`client`, `order.products`, `payments`, `createdAt`, `orderCode`…—
+viaja tal cual y lo interpretamos con el mismo mapeo de siempre.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `orders:write`. La key **debe ser vendor-scoped** — las keys sin
+  `vendorId` se rechazan con `403`.
+</ParamField>
+
+## Reintentar es seguro
+
+Es **idempotente por `orderId` + vendor**, la misma llave con la que Fire identifica una orden. Si
+tu caja se queda sin red justo acá —un momento malo, con el cliente enfrente— acumulá y reenviá.
+
+| respuesta | qué pasó |
+| --- | --- |
+| `201` | Se registró ahora |
+| `200` | Ya estaba registrada. Tu reintento llegó bien y no se duplicó nada |
+
+No lleva header `Idempotency-Key`: no existen dos pérdidas distintas de la misma venta.
+
+## Ejemplo
+
+```json Request
+{
+  "reason": "FISCAL_NUMBERING_FAILED",
+  "detail": {
+    "code": "FISCAL_BUSINESS_RULE",
+    "message": "identidad fiscal no configurada: EC / la tienda K000 no tiene el punto de emisión \"8cd0b157\"",
+    "fiscalRequestId": "fr_01HZ8N4K2P",
+    "failure": { "code": "FISCAL_BUSINESS_RULE", "scope": "FUNCTIONAL" },
+    "policy": {
+      "action": "REFUND",
+      "lostSaleReason": "FISCAL_NUMBERING_FAILED",
+      "configVersion": "fnv1a:d096701f",
+      "resolvedFrom": { "retryable": "false", "operation": "INVOICE" }
+    }
+  },
+
+  "orderId": "EC-K000-POS-1-1787239618530373",
+  "orderCode": "EC-K000-POS-1-1787239618530373",
+  "createdAt": "2026-08-21T14:32:09.881Z",
+  "accountId": 51,
+  "account": "KFC Kioscos EC",
+  "selectedShippingMethod": "pickup",
+  "client": { "uid": "c-1", "name": "Consumidor", "lastName": "Final" },
+  "store": { "id": 1, "code": "K000", "vendorId": "51.1.10" },
+  "order": { "products": [ "…tus líneas, tal cual…" ] },
+  "payments": { "totals": [ "…" ], "paymentMethods": [ "…" ] }
+}
+```
+
+```json 201
+{
+  "success": true,
+  "data": { "id": "3f2a8c11-9d54-4b7e-8f11-2c9b0e7a4d63", "alreadyRecorded": false }
+}
+```
+
+## Errores
+
+| código | cuándo |
+| --- | --- |
+| `400` | Falta `reason`, `orderId` o `store.code` — o `reason` trae un valor que no está en la tabla |
+| `401` | API key ausente o inválida |
+| `403` | La key no tiene scope `orders:write`, o no es vendor-scoped |
+| `404` | La tienda no existe bajo el vendor de tu key |
+
+<Note>
+  **Un campo de más no se rechaza**, y el día de negocio cerrado tampoco: el dinero ya se movió, y
+  ese mismo día cerrado puede ser la causa de la próxima pérdida. Preferimos guardar de más a
+  perder el rastro de una venta.
+</Note>
