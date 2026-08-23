@@ -45,13 +45,34 @@ numeración y te devuelve los datos listos para imprimir.
 </Steps>
 
 <Warning>
-  **La venta nunca se bloquea por la fiscalización.** Si el proveedor no responde a tiempo,
-  este endpoint devuelve `202` con un estado explícito: imprimís un ticket provisional e
-  inyectás la orden igual.
+  **Fire nunca te frena por su cuenta.** Falle lo que falle, este endpoint contesta con una
+  decisión explícita en `policy.numberingFailure.action` — no con un error que te deje sin
+  saber qué hacer.
 
-  Lo que no debés hacer es reintentar en bucle ni retener la venta mientras el cliente espera.
-  Para completarla después, **volvé a llamar con el mismo `orderCode`**: nadie la completa
-  solo.
+  Pero la decisión **no siempre es seguir**: la cuenta puede configurar que sin comprobante no
+  se vende. Ramificá por `action`, nunca por el código HTTP:
+
+  - **`CONTINUE`** (el default) — imprimís según `printing.mode` e inyectás la orden igual.
+    Si quedó sin numerar, **volvé a llamar con el mismo `orderCode`**: nadie la completa sola,
+    y un `202` que nadie reintenta se queda así para siempre.
+  - **`REFUND`** — devolvés el cobro y **no inyectás la orden**. No hay nada que completar
+    después: reintentar la numeración de una venta que devolviste generaría un comprobante
+    para algo que no ocurrió.
+
+  En los dos casos: no retengas la venta ni reintentes en bucle con el cliente esperando.
+
+  **Cuántas veces reintentar, en el camino `CONTINUE`: dos.** Mientras `retryable` venga en
+  `true`, volvé a llamar con el mismo `orderCode` hasta dos veces más. Si al segundo reintento
+  sigue sin numerar, tratalo como definitivo: la venta ya está inyectada con ticket provisional
+  y lo que falta se resuelve por soporte, no en el mostrador.
+
+  Con `REFUND` no hay reintento: cero. La venta se devolvió, y numerarla después generaría un
+  comprobante de algo que no ocurrió.
+
+  **El tope lo aplicás vos.** Fire numera cada intento y lo guarda para soporte, pero no corta
+  por su cuenta: si llamás una cuarta vez, le vuelve a preguntar al proveedor igual. Y la
+  respuesta no va a cambiar por insistir — `action` no depende de `retryable`, así que lo que
+  diga el tercer intento ya lo decía el primero.
 </Warning>
 
 ## Headers
@@ -361,7 +382,7 @@ que el proveedor de ese país necesite.
   |---|---|---|
   | `GENERATED` | Hay números. Imprimí el comprobante fiscal | `201` |
   | `PENDING` | **No se sabe.** El proveedor no contestó — pudo haber numerado | `202` |
-  | `FAILED_RETRYABLE` | El proveedor dijo "no ahora". Podés reintentar | `202` |
+  | `FAILED_RETRYABLE` | El proveedor dijo "no ahora". Podés reintentar (hasta 2 veces) | `202` |
   | `FAILED_FINAL` | El proveedor dijo "no" definitivo. Reintentar no sirve | `200` |
   | `NOT_APPLICABLE` | Esta tienda no tiene numeración fiscal. **No es un error** | `200` |
 
@@ -384,115 +405,185 @@ que el proveedor de ese país necesite.
 </ResponseField>
 
 <ResponseField name="documentStatus" type="string">
-  Estado del **documento ante el ente**: ¿lo autorizó?
+Estado del **documento ante el ente**: ¿lo autorizó?
 
-  `PENDING` · `AUTHORIZED` · `REJECTED` · `CANCELLED`
+`PENDING` · `AUTHORIZED` · `REJECTED` · `CANCELLED`
 
-  <Note>
-    En esta respuesta es **siempre** `PENDING`: hay números, no hay veredicto. Solo lo mueve
-    el resultado del proveedor, que llega después. Colapsar los dos estados en uno es el
-    error que hace que un POS crea que una venta está autorizada cuando solo está numerada.
-  </Note>
+<Note>
+  En esta respuesta es **siempre** `PENDING`: hay números, no hay veredicto. Solo lo mueve
+  el resultado del proveedor, que llega después. Colapsar los dos estados en uno es el
+  error que hace que un POS crea que una venta está autorizada cuando solo está numerada.
+</Note>
 </ResponseField>
 
 <ResponseField name="environment" type="string">
-  En qué ambiente numeró **Fire**: `SANDBOX` o `PRODUCTION`.
+En qué ambiente numeró **Fire**: `SANDBOX` o `PRODUCTION`.
 
-  Es nuestro, no del ente. Sale de la configuración fiscal de la cuenta —que es por vendor y
-  por país, así que la misma cuenta puede tener Ecuador en producción y Colombia en
-  sandbox— y queda congelado en la solicitud: si mañana se cambia la configuración, este
-  valor sigue diciendo con qué numeró **esta** venta.
+Es nuestro, no del ente. Sale de la configuración fiscal de la cuenta —que es por vendor y
+por país, así que la misma cuenta puede tener Ecuador en producción y Colombia en
+sandbox— y queda congelado en la solicitud: si mañana se cambia la configuración, este
+valor sigue diciendo con qué numeró **esta** venta.
 
-  <Warning>
-    **No lo confundas con el ambiente del ente**, que viaja dentro de `countryData` con el
-    vocabulario del país (`ambiente: "PRUEBAS" | "PRODUCCION"` en Ecuador). Son dos hechos
-    distintos: uno dice contra qué configuración emitió Fire, el otro qué declaró el
-    organismo. Normalmente coinciden — y cuando no, eso es exactamente lo que hay que poder
-    ver, por eso no se deduce uno del otro.
-  </Warning>
+<Warning>
+  **No lo confundas con el ambiente del ente**, que viaja dentro de `countryData` con el
+  vocabulario del país (`ambiente: "PRUEBAS" | "PRODUCCION"` en Ecuador). Son dos hechos
+  distintos: uno dice contra qué configuración emitió Fire, el otro qué declaró el
+  organismo. Normalmente coinciden — y cuando no, eso es exactamente lo que hay que poder
+  ver, por eso no se deduce uno del otro.
+</Warning>
 
-  `null` cuando `requestStatus` es `NOT_APPLICABLE`: no se numeró, así que no hubo ambiente
-  en el que numerar.
+`null` cuando `requestStatus` es `NOT_APPLICABLE`: no se numeró, así que no hubo ambiente
+en el que numerar.
 </ResponseField>
 
 <ResponseField name="document" type="object">
-  Lo que necesitás para imprimir, **sin saber de países**. `null` si no se numeró.
+Lo que necesitás para imprimir, **sin saber de países**. `null` si no se numeró.
 
-  <Expandable title="document">
-    <ResponseField name="documentType" type="string">
-      `SALE_INVOICE` o `CREDIT_NOTE`. Vocabulario de Fire: dice qué operación es, no con qué
-      instrumento la materializa el país.
-    </ResponseField>
-    <ResponseField name="documentLabel" type="string">
-      **Cómo se titula en el comprobante**: `FACTURA`, `NOTA DE CREDITO`. Lo traduce Fire —
-      el instrumento fiscal lo define el régimen, y no queremos que cada canal lleve su mapa.
-    </ResponseField>
-    <ResponseField name="documentNumber" type="string">
-      Número visible, **tal como lo arma el proveedor** según la convención de su país
-      (`001-020-000000123`). Es para **imprimir**: para buscar o conciliar usá los
-      identificadores de `countryData`.
+<Expandable title="document">
+  <ResponseField name="documentType" type="string">
+    `SALE_INVOICE` o `CREDIT_NOTE`. Vocabulario de Fire: dice qué operación es, no con qué
+    instrumento la materializa el país.
+  </ResponseField>
+  <ResponseField name="documentLabel" type="string">
+    **Cómo se titula en el comprobante**: `FACTURA`, `NOTA DE CREDITO`. Lo traduce Fire —
+    el instrumento fiscal lo define el régimen, y no queremos que cada canal lleve su mapa.
+  </ResponseField>
+  <ResponseField name="documentNumber" type="string">
+    Número visible, **tal como lo arma el proveedor** según la convención de su país
+    (`001-020-000000123`). Es para **imprimir**: para buscar o conciliar usá los
+    identificadores de `countryData`.
 
-      En Ecuador es el eco de `countryData.numeroComprobante`. Fire no lo recompone ni le
-      cambia el formato — la regla es del régimen, no nuestra.
-    </ResponseField>
-    <ResponseField name="authorizationMode" type="string">
-      `ONLINE` · `OFFLINE` · `BATCH`. Vocabulario de Fire.
-    </ResponseField>
-    <ResponseField name="authorizationLabel" type="string">
-      **Cómo se imprime**: `EMISION NORMAL`, `EMISION POR CONTINGENCIA`. Misma razón que
-      `documentLabel`.
-    </ResponseField>
-    <ResponseField name="issuedAt" type="string">Fecha de emisión.</ResponseField>
-    <ResponseField name="compensates" type="object">
-      **Qué documento anula este.** Solo en notas de crédito; `null` en una factura.
+    En Ecuador es el eco de `countryData.numeroComprobante`. Fire no lo recompone ni le
+    cambia el formato — la regla es del régimen, no nuestra.
+  </ResponseField>
+  <ResponseField name="authorizationMode" type="string">
+    `ONLINE` · `OFFLINE` · `BATCH`. Vocabulario de Fire.
+  </ResponseField>
+  <ResponseField name="authorizationLabel" type="string">
+    **Cómo se imprime**: `EMISION NORMAL`, `EMISION POR CONTINGENCIA`. Misma razón que
+    `documentLabel`.
+  </ResponseField>
+  <ResponseField name="issuedAt" type="string">Fecha de emisión.</ResponseField>
+  <ResponseField name="compensates" type="object">
+    **Qué documento anula este.** Solo en notas de crédito; `null` en una factura.
 
-      ```json
-      {
-        "documentNumber": "005-004-000000068",
-        "issuedAt": "2026-08-14T18:31:57.649Z",
-        "reason": "ORDER_CANCELLATION",
-        "reasonLabel": "Anulación de pedido"
-      }
-      ```
+    ```json
+    {
+      "documentNumber": "005-004-000000068",
+      "issuedAt": "2026-08-14T18:31:57.649Z",
+      "reason": "ORDER_CANCELLATION",
+      "reasonLabel": "Anulación de pedido"
+    }
+    ```
 
-      <Expandable title="compensates">
-        <ResponseField name="documentNumber" type="string">
-          Número visible del documento original. En Ecuador se imprime como
-          `N. FACTURA MODIFICADA`.
-        </ResponseField>
-        <ResponseField name="issuedAt" type="string">
-          Cuándo se emitió el original. Se imprime como `FECHA EMISION FAC.` — es distinta de
-          la fecha de la nota de crédito, que está un nivel arriba.
-        </ResponseField>
-        <ResponseField name="reason" type="string">
-          Por qué se anula. Vocabulario de Fire. Hoy solo existe `ORDER_CANCELLATION`: la
-          anulación del pedido completo.
-        </ResponseField>
-        <ResponseField name="reasonLabel" type="string">
-          Cómo se imprime el motivo. **Lo redacta cada empresa** en su configuración: el ente
-          exige que la nota de crédito lleve un motivo, pero no dicta el texto.
-        </ResponseField>
-      </Expandable>
+    <Expandable title="compensates">
+      <ResponseField name="documentNumber" type="string">
+        Número visible del documento original. En Ecuador se imprime como
+        `N. FACTURA MODIFICADA`.
+      </ResponseField>
+      <ResponseField name="issuedAt" type="string">
+        Cuándo se emitió el original. Se imprime como `FECHA EMISION FAC.` — es distinta de
+        la fecha de la nota de crédito, que está un nivel arriba.
+      </ResponseField>
+      <ResponseField name="reason" type="string">
+        Por qué se anula. Vocabulario de Fire. Hoy solo existe `ORDER_CANCELLATION`: la
+        anulación del pedido completo.
+      </ResponseField>
+      <ResponseField name="reasonLabel" type="string">
+        Cómo se imprime el motivo. **Lo redacta cada empresa** en su configuración: el ente
+        exige que la nota de crédito lleve un motivo, pero no dicta el texto.
+      </ResponseField>
+    </Expandable>
 
-      Es un bloque **universal**: toda anulación, en cualquier país, referencia el documento
-      que modifica. Lo que cambia por país es cómo se rotula al imprimirlo, no el concepto —
-      por eso vive acá y no en `countryData`.
-    </ResponseField>
-  </Expandable>
+    Es un bloque **universal**: toda anulación, en cualquier país, referencia el documento
+    que modifica. Lo que cambia por país es cómo se rotula al imprimirlo, no el concepto —
+    por eso vive acá y no en `countryData`.
+  </ResponseField>
+</Expandable>
 
-  <Note>
-    **`sequential` y `serie` ya no están acá.** Son piezas con forma de país —en Ecuador la
-    serie son seis dígitos que se parten al medio— y viven en `countryData` con el nombre que
-    les da su ente. En `document` quedó solo lo que significa lo mismo en todos lados.
-  </Note>
+<Note>
+  **`sequential` y `serie` ya no están acá.** Son piezas con forma de país —en Ecuador la
+  serie son seis dígitos que se parten al medio— y viven en `countryData` con el nombre que
+  les da su ente. En `document` quedó solo lo que significa lo mismo en todos lados.
+</Note>
 </ResponseField>
 
 <ResponseField name="countryData" type="object">
-  **Los identificadores del país, en el vocabulario de su ente y listos para imprimir.**
+**Los identificadores del país, en el vocabulario de su ente y listos para imprimir.**
 
-  <CodeGroup>
+<CodeGroup>
 
-  ```json Ecuador (EC) — SRI
+```json Ecuador (EC) — SRI
+{
+  "numeroComprobante": "001-020-000000123",
+  "claveAcceso": "1208202601179141513200110010200000001231234567813",
+  "establecimiento": "001",
+  "puntoEmision": "020",
+  "secuencial": "000000123",
+  "ambiente": "PRODUCCION"
+}
+```
+
+```json Colombia (CO) — DIAN
+{
+  "numeroComprobante": "SETP990000001",
+  "cufe": "9c4f1e… (96)",
+  "prefijo": "SETP",
+  "numeroDian": "990000001",
+  "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
+  "ambiente": "PRODUCCION"
+}
+```
+
+</CodeGroup>
+
+<Note>
+  **El bloque cambia entero según el país, y los rótulos también.** En Colombia
+  `documentLabel` es `FACTURA ELECTRONICA DE VENTA` y `authorizationLabel` es
+  `VALIDACION PREVIA` — son los nombres de la DIAN, no una variante del texto ecuatoriano.
+
+  `ambiente` llega traducido en los dos países, y ahí está lo importante: la DIAN codifica
+  `1` como producción y el SRI como pruebas. Fire lo resuelve para que ningún canal tenga
+  que llevar esa tabla.
+</Note>
+
+Es un **mapa abierto**: las claves las define el régimen de cada país, no este contrato. Un
+país nuevo entra sin que cambie la forma de la respuesta.
+
+<Note>
+  **Los valores vienen traducidos, no en código del ente.** El proveedor manda
+  `ambiente: "2"` —así lo define el SRI— y acá llega `"PRODUCCION"`, que es lo que dice el
+  ticket. Traducirlo del lado del canal significaría que cada integrador lleva su copia de
+  la tabla del ente, y el primero que la copie mal imprime "PRUEBAS" en una factura de
+  producción.
+</Note>
+
+<Warning>
+  **No busques campos fijos: recorré las claves que vengan.** Ecuador trae `claveAcceso`,
+  Colombia `cufe`, Brasil `chaveAcesso`. Un canal que lea
+  `countryData.claveAcceso` a secas funciona en Ecuador y se rompe en el segundo país.
+</Warning>
+</ResponseField>
+
+### `countryData` por país
+
+Hoy el gateway numera en **Ecuador** y **Colombia**. Cada país que entra suma su pestaña acá — y solo eso: la
+forma de la respuesta no cambia, porque el bloque es abierto.
+
+<Tabs>
+<Tab title="Ecuador (EC) · disponible">
+  Comprobantes del **SRI**.
+
+  | Clave | Tipo | Siempre | Notas |
+  |---|---|---|---|
+  | `numeroComprobante` | string | ✓ | El número **visible**, ya armado: `estab-ptoEmi-secuencial` |
+  | `claveAcceso` | string | ✓ | 49 dígitos. Es también lo que se codifica en el QR |
+  | `establecimiento` | string | ✓ | 3 dígitos. Lo resuelve el proveedor desde `store.code` |
+  | `puntoEmision` | string | ✓ | 3 dígitos. Lo resuelve el proveedor desde `device.uid` |
+  | `secuencial` | string | ✓ | 9 dígitos. La factura y la nota de crédito llevan **secuencias distintas** |
+  | `ambiente` | string | ✓ | `PRUEBAS` o `PRODUCCION` — **ya traducido**; el SRI lo define como `"1"` / `"2"` |
+
+  ```json
   {
     "numeroComprobante": "001-020-000000123",
     "claveAcceso": "1208202601179141513200110010200000001231234567813",
@@ -503,10 +594,41 @@ que el proveedor de ese país necesite.
   }
   ```
 
-  ```json Colombia (CO) — DIAN
+  <Note>
+    **El número lo arma el proveedor, no Fire.** El formato es del régimen —quince dígitos en
+    tres tramos, art. 18 del Reglamento de Comprobantes de Venta— y lo conoce quien está
+    certificado ante el SRI. Si el régimen cambia la convención, cambia allá y no hace falta
+    que Fire despliegue.
+
+    `document.documentNumber` es un **eco** de este mismo valor, para que no tengas que
+    entrar al bloque del país solo para imprimir. Es el mismo hecho, no dos.
+  </Note>
+
+  <Warning>
+    **Las tres piezas sueltas no son un sustituto.** El Reglamento permite omitir los ceros a
+    la izquierda del secuencial, así que `001-020-123` puede ser tan legal como
+    `001-020-000000123`. Componer el número vos mismo a partir de `establecimiento`,
+    `puntoEmision` y `secuencial` es adoptar una convención que no te corresponde: imprimí
+    `numeroComprobante` tal como llega.
+  </Warning>
+</Tab>
+
+<Tab title="Colombia (CO) · disponible">
+  Comprobantes de la **DIAN**.
+
+  | Clave | Tipo | Siempre | Notas |
+  |---|---|---|---|
+  | `numeroComprobante` | string | ✓ | El número **visible**, ya armado: `prefijo + consecutivo` |
+  | `cufe` | string | ✓ | 96 caracteres hexadecimales (SHA-384). Es el identificador del documento ante la DIAN |
+  | `prefijo` | string | ✓ | Prefijo del rango de numeración autorizado por resolución |
+  | `numeroDian` | string | ✓ | El consecutivo **solo**, sin el prefijo |
+  | `qrCode` | string | ✓ | URL del catálogo de la DIAN. Es lo que se imprime como QR |
+  | `ambiente` | string | ✓ | `PRUEBAS` o `PRODUCCION` — **ya traducido**; la DIAN lo define como `"1"` / `"2"` |
+
+  ```json
   {
     "numeroComprobante": "SETP990000001",
-    "cufe": "9c4f1e… (96)",
+    "cufe": "9c4f1e… (96 caracteres hexadecimales)",
     "prefijo": "SETP",
     "numeroDian": "990000001",
     "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
@@ -514,264 +636,368 @@ que el proveedor de ese país necesite.
   }
   ```
 
-  </CodeGroup>
+  <Warning>
+    **`ambiente` llega traducido, y menos mal.** La DIAN usa `1` para producción y `2` para
+    pruebas — **al revés que el SRI**. Fire lo resuelve acá para que ningún canal tenga que
+    llevar su propia copia de la tabla: el primero que la copie del lado equivocado imprime
+    "PRUEBAS" en una factura real.
+  </Warning>
 
   <Note>
-    **El bloque cambia entero según el país, y los rótulos también.** En Colombia
-    `documentLabel` es `FACTURA ELECTRONICA DE VENTA` y `authorizationLabel` es
-    `VALIDACION PREVIA` — son los nombres de la DIAN, no una variante del texto ecuatoriano.
+    **`numeroComprobante` y `numeroDian` no son lo mismo.** El primero es el número visible
+    completo, tal como va impreso; el segundo es solo el consecutivo. Los dos llegan
+    resueltos por el proveedor — Fire no concatena nada, igual que en Ecuador.
 
-    `ambiente` llega traducido en los dos países, y ahí está lo importante: la DIAN codifica
-    `1` como producción y el SRI como pruebas. Fire lo resuelve para que ningún canal tenga
-    que llevar esa tabla.
-  </Note>
-
-  Es un **mapa abierto**: las claves las define el régimen de cada país, no este contrato. Un
-  país nuevo entra sin que cambie la forma de la respuesta.
-
-  <Note>
-    **Los valores vienen traducidos, no en código del ente.** El proveedor manda
-    `ambiente: "2"` —así lo define el SRI— y acá llega `"PRODUCCION"`, que es lo que dice el
-    ticket. Traducirlo del lado del canal significaría que cada integrador lleva su copia de
-    la tabla del ente, y el primero que la copie mal imprime "PRUEBAS" en una factura de
-    producción.
+    `document.documentNumber` es un **eco** de `numeroComprobante`, para imprimir sin entrar
+    al bloque del país.
   </Note>
 
   <Warning>
-    **No busques campos fijos: recorré las claves que vengan.** Ecuador trae `claveAcceso`,
-    Colombia `cufe`, Brasil `chaveAcesso`. Un canal que lea
-    `countryData.claveAcceso` a secas funciona en Ecuador y se rompe en el segundo país.
+    **No hay `graphic` en Colombia.** El QR es la URL del catálogo de la DIAN y vive en
+    `countryData.qrCode`. Un canal que espere `graphic.qr` como en Ecuador no encuentra nada.
   </Warning>
-</ResponseField>
 
-### `countryData` por país
+  <Note>
+    **Solo CUFE, no CUDE.** Emitimos factura electrónica de venta, que lleva CUFE. El
+    "documento equivalente P.O.S." lleva CUDE y hoy no se emite.
+  </Note>
+</Tab>
 
-Hoy el gateway numera en **Ecuador** y **Colombia**. Cada país que entra suma su pestaña acá — y solo eso: la
-forma de la respuesta no cambia, porque el bloque es abierto.
+<Tab title="Otros países · cuando entren">
+  Un país entra con su adaptador, y con él llegan sus claves y su pestaña. La forma de la
+  respuesta **no cambia**: `countryData` sigue siendo el mismo mapa abierto.
 
-<Tabs>
-  <Tab title="Ecuador (EC) · disponible">
-    Comprobantes del **SRI**.
+  Lo que sí cambia es el vocabulario, y por eso no conviene indexar claves fijas: Ecuador
+  habla de `claveAcceso` y Colombia de `cufe`, para el mismo hecho. Brasil dirá
+  `chaveAcesso`. Son ejemplos de cómo nombra cada régimen, no un contrato ya disponible.
 
-    | Clave | Tipo | Siempre | Notas |
-    |---|---|---|---|
-    | `numeroComprobante` | string | ✓ | El número **visible**, ya armado: `estab-ptoEmi-secuencial` |
-    | `claveAcceso` | string | ✓ | 49 dígitos. Es también lo que se codifica en el QR |
-    | `establecimiento` | string | ✓ | 3 dígitos. Lo resuelve el proveedor desde `store.code` |
-    | `puntoEmision` | string | ✓ | 3 dígitos. Lo resuelve el proveedor desde `device.uid` |
-    | `secuencial` | string | ✓ | 9 dígitos. La factura y la nota de crédito llevan **secuencias distintas** |
-    | `ambiente` | string | ✓ | `PRUEBAS` o `PRODUCCION` — **ya traducido**; el SRI lo define como `"1"` / `"2"` |
-
-    ```json
-    {
-      "numeroComprobante": "001-020-000000123",
-      "claveAcceso": "1208202601179141513200110010200000001231234567813",
-      "establecimiento": "001",
-      "puntoEmision": "020",
-      "secuencial": "000000123",
-      "ambiente": "PRODUCCION"
-    }
-    ```
-
-    <Note>
-      **El número lo arma el proveedor, no Fire.** El formato es del régimen —quince dígitos en
-      tres tramos, art. 18 del Reglamento de Comprobantes de Venta— y lo conoce quien está
-      certificado ante el SRI. Si el régimen cambia la convención, cambia allá y no hace falta
-      que Fire despliegue.
-
-      `document.documentNumber` es un **eco** de este mismo valor, para que no tengas que
-      entrar al bloque del país solo para imprimir. Es el mismo hecho, no dos.
-    </Note>
-
-    <Warning>
-      **Las tres piezas sueltas no son un sustituto.** El Reglamento permite omitir los ceros a
-      la izquierda del secuencial, así que `001-020-123` puede ser tan legal como
-      `001-020-000000123`. Componer el número vos mismo a partir de `establecimiento`,
-      `puntoEmision` y `secuencial` es adoptar una convención que no te corresponde: imprimí
-      `numeroComprobante` tal como llega.
-    </Warning>
-  </Tab>
-
-  <Tab title="Colombia (CO) · disponible">
-    Comprobantes de la **DIAN**.
-
-    | Clave | Tipo | Siempre | Notas |
-    |---|---|---|---|
-    | `numeroComprobante` | string | ✓ | El número **visible**, ya armado: `prefijo + consecutivo` |
-    | `cufe` | string | ✓ | 96 caracteres hexadecimales (SHA-384). Es el identificador del documento ante la DIAN |
-    | `prefijo` | string | ✓ | Prefijo del rango de numeración autorizado por resolución |
-    | `numeroDian` | string | ✓ | El consecutivo **solo**, sin el prefijo |
-    | `qrCode` | string | ✓ | URL del catálogo de la DIAN. Es lo que se imprime como QR |
-    | `ambiente` | string | ✓ | `PRUEBAS` o `PRODUCCION` — **ya traducido**; la DIAN lo define como `"1"` / `"2"` |
-
-    ```json
-    {
-      "numeroComprobante": "SETP990000001",
-      "cufe": "9c4f1e… (96 caracteres hexadecimales)",
-      "prefijo": "SETP",
-      "numeroDian": "990000001",
-      "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=9c4f1e…",
-      "ambiente": "PRODUCCION"
-    }
-    ```
-
-    <Warning>
-      **`ambiente` llega traducido, y menos mal.** La DIAN usa `1` para producción y `2` para
-      pruebas — **al revés que el SRI**. Fire lo resuelve acá para que ningún canal tenga que
-      llevar su propia copia de la tabla: el primero que la copie del lado equivocado imprime
-      "PRUEBAS" en una factura real.
-    </Warning>
-
-    <Note>
-      **`numeroComprobante` y `numeroDian` no son lo mismo.** El primero es el número visible
-      completo, tal como va impreso; el segundo es solo el consecutivo. Los dos llegan
-      resueltos por el proveedor — Fire no concatena nada, igual que en Ecuador.
-
-      `document.documentNumber` es un **eco** de `numeroComprobante`, para imprimir sin entrar
-      al bloque del país.
-    </Note>
-
-    <Warning>
-      **No hay `graphic` en Colombia.** El QR es la URL del catálogo de la DIAN y vive en
-      `countryData.qrCode`. Un canal que espere `graphic.qr` como en Ecuador no encuentra nada.
-    </Warning>
-
-    <Note>
-      **Solo CUFE, no CUDE.** Emitimos factura electrónica de venta, que lleva CUFE. El
-      "documento equivalente P.O.S." lleva CUDE y hoy no se emite.
-    </Note>
-  </Tab>
-
-  <Tab title="Otros países · cuando entren">
-    Un país entra con su adaptador, y con él llegan sus claves y su pestaña. La forma de la
-    respuesta **no cambia**: `countryData` sigue siendo el mismo mapa abierto.
-
-    Lo que sí cambia es el vocabulario, y por eso no conviene indexar claves fijas: Ecuador
-    habla de `claveAcceso` y Colombia de `cufe`, para el mismo hecho. Brasil dirá
-    `chaveAcesso`. Son ejemplos de cómo nombra cada régimen, no un contrato ya disponible.
-
-    <Warning>
-      **Si tu integración opera en más de un país, recorré las claves.** Un canal que lea
-      `countryData.claveAcceso` directo funciona en Ecuador y ya se rompe en Colombia.
-    </Warning>
-  </Tab>
+  <Warning>
+    **Si tu integración opera en más de un país, recorré las claves.** Un canal que lea
+    `countryData.claveAcceso` directo funciona en Ecuador y ya se rompe en Colombia.
+  </Warning>
+</Tab>
 </Tabs>
 
 <ResponseField name="store" type="object">
-  La **sucursal** que emite, para el encabezado del comprobante.
+La **sucursal** que emite, para el encabezado del comprobante.
 
-  <Expandable title="store">
-    <ResponseField name="code" type="string">Código de tienda del negocio.</ResponseField>
-    <ResponseField name="name" type="string">Nombre de la tienda.</ResponseField>
-    <ResponseField name="address" type="string">
-      Domicilio de la sucursal. **No es el de la matriz** — el comprobante ecuatoriano imprime
-      los dos, y son distintos.
-    </ResponseField>
-    <ResponseField name="city" type="string">Ciudad.</ResponseField>
-    <ResponseField name="phone" type="string">Teléfono.</ResponseField>
-    <ResponseField name="govIdType" type="string">Tipo de identificación fiscal de la sucursal.</ResponseField>
-    <ResponseField name="govIdNumber" type="string">Identificación fiscal de la sucursal.</ResponseField>
-    <ResponseField name="secondaryGovIdType" type="string">Identificación secundaria, si aplica.</ResponseField>
-    <ResponseField name="secondaryGovIdNumber" type="string">Valor de la anterior.</ResponseField>
-  </Expandable>
+<Expandable title="store">
+  <ResponseField name="code" type="string">Código de tienda del negocio.</ResponseField>
+  <ResponseField name="name" type="string">Nombre de la tienda.</ResponseField>
+  <ResponseField name="address" type="string">
+    Domicilio de la sucursal. **No es el de la matriz** — el comprobante ecuatoriano imprime
+    los dos, y son distintos.
+  </ResponseField>
+  <ResponseField name="city" type="string">Ciudad.</ResponseField>
+  <ResponseField name="phone" type="string">Teléfono.</ResponseField>
+  <ResponseField name="govIdType" type="string">Tipo de identificación fiscal de la sucursal.</ResponseField>
+  <ResponseField name="govIdNumber" type="string">Identificación fiscal de la sucursal.</ResponseField>
+  <ResponseField name="secondaryGovIdType" type="string">Identificación secundaria, si aplica.</ResponseField>
+  <ResponseField name="secondaryGovIdNumber" type="string">Valor de la anterior.</ResponseField>
+</Expandable>
 </ResponseField>
 
 <ResponseField name="company" type="object">
-  La **persona jurídica** que emite: el encabezado y el pie del comprobante, ya resueltos.
+La **persona jurídica** que emite: el encabezado y el pie del comprobante, ya resueltos.
 
-  <Expandable title="company">
-    <ResponseField name="legalName" type="string">Razón social.</ResponseField>
-    <ResponseField name="tradeName" type="string">Nombre comercial.</ResponseField>
-    <ResponseField name="govIdType" type="string">Tipo de identificación (`RUC`, `CNPJ`…).</ResponseField>
-    <ResponseField name="govIdNumber" type="string">Identificación de la empresa.</ResponseField>
-    <ResponseField name="headquartersAddress" type="string">
-      Domicilio de la **matriz**, distinto del de la sucursal.
-    </ResponseField>
-    <ResponseField name="countryLines" type="array">
-      Lo que el régimen exige en el encabezado, **ya rotulado y ordenado**:
+<Expandable title="company">
+  <ResponseField name="legalName" type="string">Razón social.</ResponseField>
+  <ResponseField name="tradeName" type="string">Nombre comercial.</ResponseField>
+  <ResponseField name="govIdType" type="string">Tipo de identificación (`RUC`, `CNPJ`…).</ResponseField>
+  <ResponseField name="govIdNumber" type="string">Identificación de la empresa.</ResponseField>
+  <ResponseField name="headquartersAddress" type="string">
+    Domicilio de la **matriz**, distinto del de la sucursal.
+  </ResponseField>
+  <ResponseField name="countryLines" type="array">
+    Lo que el régimen exige en el encabezado, **ya rotulado y ordenado**:
 
-      ```json
-      [
-        { "key": "granContribuyente", "label": "GRAN CONTRIBUYENTE", "value": "NAC-GCFOIOC21-00000900-E" },
-        { "key": "contribuyenteEspecial", "label": "CONTRIBUYENTE ESPECIAL", "value": "155" },
-        { "key": "obligadoContabilidad", "label": "Obligado a llevar contabilidad", "value": "SI" }
-      ]
-      ```
+    ```json
+    [
+      { "key": "granContribuyente", "label": "GRAN CONTRIBUYENTE", "value": "NAC-GCFOIOC21-00000900-E" },
+      { "key": "contribuyenteEspecial", "label": "CONTRIBUYENTE ESPECIAL", "value": "155" },
+      { "key": "obligadoContabilidad", "label": "Obligado a llevar contabilidad", "value": "SI" }
+    ]
+    ```
 
-      Viene con `label` porque el comprobante lo imprime literal. Si el rótulo lo pusiera cada
-      canal, dos cajas de la misma marca imprimirían distinto. **Iterá la lista y dibujá**: no
-      necesitás saber qué significa "gran contribuyente", solo dónde ponerlo.
-    </ResponseField>
-    <ResponseField name="legends" type="array">
-      Los textos del pie, **en orden y ya interpolados**:
+    Viene con `label` porque el comprobante lo imprime literal. Si el rótulo lo pusiera cada
+    canal, dos cajas de la misma marca imprimirían distinto. **Iterá la lista y dibujá**: no
+    necesitás saber qué significa "gran contribuyente", solo dónde ponerlo.
+  </ResponseField>
+  <ResponseField name="legends" type="array">
+    Los textos del pie, **en orden y ya interpolados**:
 
-      ```json
-      [
-        { "key": "avisoCambios", "text": "Estimado cliente: Por favor verifique los datos…" },
-        { "key": "facturaElectronica", "text": "…con la Clave de Acceso: 1408…7811" }
-      ]
-      ```
+    ```json
+    [
+      { "key": "avisoCambios", "text": "Estimado cliente: Por favor verifique los datos…" },
+      { "key": "facturaElectronica", "text": "…con la Clave de Acceso: 1408…7811" }
+    ]
+    ```
 
-      La `key` es estable y la elige quien los carga: si preferís tus propios textos, indexá
-      por ella e ignorá el nuestro.
+    La `key` es estable y la elige quien los carga: si preferís tus propios textos, indexá
+    por ella e ignorá el nuestro.
 
-      Una leyenda que interpola un dato que falta **no viaja**: media leyenda con un
-      marcador crudo impreso es peor que no imprimirla.
-    </ResponseField>
+    Una leyenda que interpola un dato que falta **no viaja**: media leyenda con un
+    marcador crudo impreso es peor que no imprimirla.
+  </ResponseField>
 
-    <Warning>
-      **Sin comprobante no viajan `countryLines` ni `legends`.** Son atributos del
-      comprobante, no de la empresa: el ente los exige *en* la factura. Cuando la numeración
-      no produce documento —`PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`— los dos llegan
-      como `[]`.
+  <Warning>
+    **Sin comprobante no viajan `countryLines` ni `legends`.** Son atributos del
+    comprobante, no de la empresa: el ente los exige *en* la factura. Cuando la numeración
+    no produce documento —`PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`— los dos llegan
+    como `[]`.
 
-      La **identidad** sí llega completa (`legalName`, `tradeName`, `govIdType`,
-      `govIdNumber`, `headquartersAddress`): el ticket provisional necesita encabezado con
-      quién vendió.
+    La **identidad** sí llega completa (`legalName`, `tradeName`, `govIdType`,
+    `govIdNumber`, `headquartersAddress`): el ticket provisional necesita encabezado con
+    quién vendió.
 
-      Sin esta regla, un provisional imprimía "verifique los datos de su factura, únicamente
-      se aceptarán cambios el mismo día de emisión" sobre un papel que **no es una factura**,
-      y declaraba un "GRAN CONTRIBUYENTE" en un documento que no declara nada.
-    </Warning>
-  </Expandable>
+    Sin esta regla, un provisional imprimía "verifique los datos de su factura, únicamente
+    se aceptarán cambios el mismo día de emisión" sobre un papel que **no es una factura**,
+    y declaraba un "GRAN CONTRIBUYENTE" en un documento que no declara nada.
+  </Warning>
+</Expandable>
 
-  <Note>
-    **`store`, `company` y `document.compensates` vienen en toda respuesta de este endpoint**,
-    incluida la del reintento idempotente, la de `NOT_APPLICABLE` y la del `400` de tienda que
-    no puede emitir — el canal necesita el encabezado tanto la primera vez como cuando repite
-    por un corte de red, y sobre todo cuando tiene que imprimir un provisional.
+<Note>
+  **`store`, `company` y `document.compensates` vienen en toda respuesta de este endpoint**,
+  incluida la del reintento idempotente, la de `NOT_APPLICABLE` y la del `400` de tienda que
+  no puede emitir — el canal necesita el encabezado tanto la primera vez como cuando repite
+  por un corte de red, y sobre todo cuando tiene que imprimir un provisional.
 
-    Las **consultas** (`GET` por `fiscalRequestId` u `orderCode`) los devuelven en `null`: se
-    resuelven al emitir y no se guardan con la solicitud. Si tu integración los necesita para
-    reimprimir, usá [los datos de impresión](/es/api-reference/fiscal-print).
-  </Note>
+  Las **consultas** (`GET` por `fiscalRequestId` u `orderCode`) los devuelven en `null`: se
+  resuelven al emitir y no se guardan con la solicitud. Si tu integración los necesita para
+  reimprimir, usá [los datos de impresión](/es/api-reference/fiscal-print).
+</Note>
 </ResponseField>
 
 <ResponseField name="graphic" type="object">
-  Llave → **string exacto a codificar**, listo para renderizar. Por ejemplo
-  `{ "qr": "1208202601…811" }`.
+Llave → **string exacto a codificar**, listo para renderizar. Por ejemplo
+`{ "qr": "1208202601…811" }`.
 
-  Es un mapa abierto porque el comprobante de cada país no lleva siempre lo mismo, y un país
-  puede necesitar más de un elemento. **Recorré las claves que vengan**, no busques campos
-  fijos.
+Es un mapa abierto porque el comprobante de cada país no lleva siempre lo mismo, y un país
+puede necesitar más de un elemento. **Recorré las claves que vengan**, no busques campos
+fijos.
 
-  Fire no genera imágenes: el tamaño y la resolución dependen de tu impresora, y eso solo lo
-  sabe quien imprime.
+Fire no genera imágenes: el tamaño y la resolución dependen de tu impresora, y eso solo lo
+sabe quien imprime.
 </ResponseField>
 
 <ResponseField name="printing" type="object">
-  Qué podés imprimir. **Es una regla legal del país, no una derivación de si hay documento**:
-  por eso la resuelve Fire y no cada canal.
-  <Expandable title="printing">
-    <ResponseField name="printable" type="boolean">Si podés entregar el comprobante fiscal.</ResponseField>
-    <ResponseField name="mode" type="string">
-      `FISCAL_DOCUMENT` · `PROVISIONAL_RECEIPT` · `NONE`
-    </ResponseField>
-    <ResponseField name="reason" type="string">
-      `ISSUED_OFFLINE` · `AWAITING_FISCAL_NUMBERING` · `FISCAL_REJECTED` · `null`
-    </ResponseField>
-  </Expandable>
+Qué podés imprimir. **Es una regla legal del país, no una derivación de si hay documento**:
+por eso la resuelve Fire y no cada canal.
+<Expandable title="printing">
+  <ResponseField name="printable" type="boolean">Si podés entregar el comprobante fiscal.</ResponseField>
+  <ResponseField name="mode" type="string">
+    **Qué papel sale de la impresora.** Tres valores, cerrados.
+
+    | valor | qué imprimís | cuándo |
+    | --- | --- | --- |
+    | `FISCAL_DOCUMENT` | El comprobante fiscal, con sus números | Hay numeración (`GENERATED`) y el país deja entregarlo |
+    | `PROVISIONAL_RECEIPT` | Un ticket **no fiscal** | No hay numeración todavía, o el ente rechazó |
+    | `NONE` | Nada | Esta tienda no tiene representación fiscal (`NOT_APPLICABLE`) |
+  </ResponseField>
+  <ResponseField name="reason" type="string">
+    **Por qué ese modo**, para que puedas explicárselo al cajero. `null` cuando `mode` es
+    `FISCAL_DOCUMENT` — no hace falta justificar el caso normal.
+
+    | valor | qué pasó |
+    | --- | --- |
+    | `ISSUED_OFFLINE` | El país permite emitir sin conexión y regularizar después |
+    | `AWAITING_FISCAL_NUMBERING` | Todavía no hay números: se pidieron y no llegaron |
+    | `FISCAL_REJECTED` | El ente o el proveedor dijeron que no |
+    | `NUMBERING_DISABLED` | Este vendor no numera — no es un error |
+  </ResponseField>
+</Expandable>
 </ResponseField>
+
+<ResponseField name="policy" type="object">
+**Qué hacer con la venta si no se pudo numerar.** Lo decide la cuenta, no vos: se configura
+por vendor en el backoffice y Fire te devuelve la decisión ya tomada, igual que `printing`.
+
+Viaja **siempre**, también cuando la numeración salió bien. Ramificá por valor, nunca por
+presencia de la clave.
+
+<Note>
+  **Qué decide esta política, y qué no.**
+
+  Decide **una sola cosa**: si la caja le devuelve el dinero al cliente cuando la venta se
+  cobró y no se pudo numerar. Nada más.
+
+  No decide qué imprimís —eso es `printing`, y es una regla legal del país, no una preferencia
+  de nadie—. No bloquea ventas: cuando pedís la numeración el cliente **ya pagó**, así que no
+  hay venta que bloquear. Y no depende de `retryable`: un fallo que se arregla solo sigue
+  siendo un fallo, y si la cuenta configuró devolver, se devuelve.
+
+  **La configura la cuenta**, por país y por vendor, en el backoffice. Vos no la deducís ni la
+  negociás: Fire te la devuelve resuelta, igual que `printing`. Si no está configurada, si trae
+  un valor que no reconocemos, o si no la pudimos leer, se aplica `CONTINUE` — el default
+  apunta para ese lado a propósito, porque una configuración mal escrita **no puede** disparar
+  devoluciones de dinero.
+
+  **Dos casos la ignoran por completo**, sin importar cómo esté configurada: cuando no hubo
+  fallo (`GENERATED` o `NOT_APPLICABLE`), y cuando lo que falló era una anulación
+  (`operation: "CANCEL"`) — ahí la orden existe y su dinero no se devolvió, así que no hay nada
+  que devolver.
+
+  Los otros dos campos son el **recibo** de la decisión: `configVersion` dice con qué
+  configuración se decidió y `resolvedFrom` con qué contexto. Sirven para reconstruir una
+  devolución de hace tres semanas aunque hoy la cuenta esté configurada distinto.
+</Note>
+
+<Expandable title="policy.numberingFailure">
+  <ResponseField name="action" type="string">
+    **Lo único que tenés que leer.** Enum cerrado de dos valores, y no van a crecer sin aviso.
+
+    | valor | qué hacés | qué NO hacés |
+    | --- | --- | --- |
+    | `CONTINUE` | Imprimís según `printing.mode` e inyectás la orden | No devolvés plata |
+    | `REFUND` | Devolvés el cobro y [reportás la venta perdida](/es/api-reference/lost-sales) | **No inyectás la orden** |
+
+    `CONTINUE` es el default: es lo que sale sin configurar, con la configuración rota, y en
+    todo caso donde no hubo fallo.
+
+    `CONTINUE` → seguí como siempre: imprimí según `printing.mode` e inyectá la orden.
+
+    `REFUND` → devolvé el cobro en el mostrador y **no inyectes la orden**. Después reportala
+    con [Registrar venta perdida](/es/api-reference/lost-sales).
+
+    No existe un valor para "bloqueá la venta": cuando pedís la numeración el cliente **ya
+    pagó**. No hay venta que bloquear — lo único que se puede decidir es si le devolvés la
+    plata.
+  </ResponseField>
+  <ResponseField name="lostSaleReason" type="string">
+    Con qué `reason` reportar esa venta. Copialo tal cual — así no tenés que conocer nuestro
+    catálogo, y el día que agreguemos una causa no tocás código.
+
+    **Es un enum cerrado, y hoy tiene un solo valor:**
+
+    | valor | qué pasó |
+    | --- | --- |
+    | `FISCAL_NUMBERING_FAILED` | La venta se cobró y no se pudo numerar |
+
+    Este campo **es** el `reason` de
+    [Registrar venta perdida](/es/api-reference/lost-sales): lo pasás sin transformarlo. No hay
+    endpoint para consultar el catálogo, y a propósito — mientras sea un enum de este tamaño,
+    pedirte una llamada de más para descubrir un valor que ya te estamos mandando en esta
+    respuesta sería trabajo sin beneficio. Si algún día crece lo suficiente como para que
+    valga la pena, el catálogo pasa a ser un endpoint y este campo no cambia.
+
+    Por eso mismo: **ramificá por el valor sólo si tenés que hacer algo distinto según la
+    causa.** Para reportar, copiá. Un canal que hoy hardcodea `FISCAL_NUMBERING_FAILED` en vez
+    de leerlo de acá funciona igual —hay un solo valor— y se rompe en silencio el día que
+    haya dos.
+
+    `null` cuando esa venta **no puede terminar sin orden**: la numeración salió bien, o lo
+    que falló era una anulación —ahí la orden existe y su dinero no se devolvió—.
+  </ResponseField>
+  <ResponseField name="configVersion" type="string">
+    Huella de la configuración con la que se decidió, tipo `fnv1a:d096701f`. Sirve para lo
+    mismo que el hash de un deploy: agarrás una devolución de hace tres semanas y sabés con
+    qué configuración se decidió, aunque hoy sea otra.
+
+    **`null` significa que la cuenta no configuró nada** y se aplicó el default.
+  </ResponseField>
+  <ResponseField name="resolvedAt" type="string">Cuándo se resolvió.</ResponseField>
+  <ResponseField name="resolvedFrom" type="object">
+    El contexto **evaluado**: `requestStatus`, `operation`, `retryable`, y —si hubo respuesta
+    del proveedor— `failureCode` y `failureScope`.
+
+    Es un recibo forense, no la regla. **Ninguno de estos campos decide nada**: la decisión
+    sale de lo que configuró la cuenta. Están para poder reconstruir por qué se decidió eso
+    aunque después cambien la configuración.
+  </ResponseField>
+</Expandable>
+</ResponseField>
+
+<Note>
+**Dónde se configura y qué pasa si no está.** La política se carga por cuenta, país y vendor.
+Si el vendor no la tiene, si trae un valor que no reconocemos, o si no pudimos leerla, se
+aplica **`CONTINUE`** — y ese default apunta a propósito para ese lado: una configuración mal
+escrita **no puede** disparar devoluciones. Lo vas a ver como `configVersion: null`.
+</Note>
+
+<Warning>
+**Las anulaciones nunca piden devolver.** Si lo que falló era un `operation: "CANCEL"`, la
+respuesta trae `CONTINUE` sin importar la configuración: no hay cobro que devolver, porque la
+venta ya había ocurrido y sigue vigente. Lo que falta es el documento de la anulación.
+
+**`PENDING` sí obedece la configuración.** Que el proveedor no haya contestado no es una
+excepción: para la caja, no tener número es no tener comprobante. Lo distinguís de un rechazo **sólo** por
+`resolvedFrom.requestStatus`. Un `PENDING` trae `failureCode` igual que los demás —un timeout
+llega como `PROVIDER_TIMEOUT` / `TECHNICAL`—, así que no lo busques en la ausencia del código.
+
+Tiene una consecuencia que conviene tener presente: el proveedor **pudo haber numerado igual**
+y no habernos podido avisar. Si ese documento aparece después, va a existir un comprobante de
+una venta que devolviste, y hay que anularlo.
+</Warning>
+
+### Qué hacer cuando llega `REFUND`
+
+Tres pasos, en este orden. El tercero es el que se olvida.
+
+<Steps>
+<Step title="Devolvé el cobro en el mostrador">
+  El cliente ya pagó. Esa devolución la hacés vos con tu medio de pago — Fire no mueve
+  dinero ni sabe si lo devolviste.
+</Step>
+<Step title="No inyectes la orden">
+  No la mandes a [Crear orden](/es/api-reference/orders). Esa venta no ocurrió: inyectarla
+  dejaría una orden cobrada sin comprobante fiscal, que es peor que no tenerla.
+</Step>
+<Step title="Reportala con Registrar venta perdida">
+  `POST /orders/lost-sales`, copiando `policy.numberingFailure.lostSaleReason` en `reason`.
+  Es el único paso que nos avisa a nosotros.
+</Step>
+</Steps>
+
+<Warning>
+**Si no hacés el paso 3, esa venta no existe en ningún lado.**
+
+No hay orden —no la inyectaste— y no hay evento. Del lado nuestro sólo queda la solicitud
+fiscal que falló, que dice que no se pudo numerar pero **no dice que hubo plata de por
+medio ni que la devolviste**. Nadie se entera de que esa tienda dejó de vender, y el cierre
+de caja no lo puede explicar.
+
+El reporte es la única traza. Reintentar es seguro —es idempotente por `orderId` + vendor—,
+así que si te quedaste sin red justo ahí, acumulá y reenviá.
+</Warning>
+
+### Cuando lo que falla es una anulación
+
+Anular son **dos llamadas, en este orden**: primero pedís acá la numeración de la nota de
+crédito (`operation: "CANCEL"`), y recién después llamás a
+[Cancelar orden](/es/api-reference/cancel-order).
+
+Si la numeración de la nota falla, este endpoint responde **igual que siempre**: nunca un
+`4xx`. `PENDING` y `FAILED_RETRYABLE` vuelven `202`; `FAILED_FINAL` vuelve `200`. El cuerpo
+trae el `failure` con el motivo y el `fiscalRequestId` para escalar.
+
+Y **`policy.numberingFailure.action` siempre viene `CONTINUE`, con `lostSaleReason: null`**,
+sin importar cómo esté configurada la cuenta. No es una excepción caprichosa: acá no hay cobro
+que devolver. La venta ya ocurrió, está en `orders` y sigue vigente — lo que falta es el papel
+de la anulación, no la plata.
+
+<Warning>
+  **Pero la orden no se cancela.** El cancel valida que exista la nota de crédito, y sin ella
+  responde `409 FISCAL_CREDIT_NOTE_MISSING`.
+
+  Esa es la diferencia grande con una venta: en la venta el fallo te deja seguir con un ticket
+  provisional; en la anulación te deja **frenado**, con la orden todavía vigente.
+
+  Qué hacer: si `retryable` viene en `true`, volvé a llamar acá con el mismo `orderCode` —Fire
+  retoma la solicitud—. Si es `FAILED_FINAL`, leé `failure.scope` y escalá con el
+  `fiscalRequestId`: no hay nada que la caja pueda hacer, y **nadie lo reintenta por vos**.
+</Warning>
+
+<Warning>
+  **Un `FAILED_FINAL` en la nota de crédito no se arregla esperando.** Esa solicitud queda
+  guardada como definitiva, y volver a llamar con el mismo `orderCode` —aunque el proveedor
+  ya esté sano— te devuelve la misma respuesta sin volver a preguntarle. No es un reintento
+  que falla: es la respuesta archivada.
+
+  La consecuencia es que **esa orden no se puede cancelar más** por este camino: sigue
+  vigente en Fire, con su factura, y [Cancelar orden](/es/api-reference/cancel-order)
+  responde `409 FISCAL_CREDIT_NOTE_MISSING` para siempre. Escalar acá no es "avisá y
+  reintentá más tarde" — es avisá, porque esto ya no se destraba solo.
+</Warning>
 
 <ResponseField name="failure" type="object">
   Por qué no hay documento. `null` cuando sí lo hay.
@@ -886,6 +1112,15 @@ forma de la respuesta no cambia, porque el bloque es abierto.
 </Note>
 
 ## Qué hacer con cada respuesta
+
+<Note>
+  **Lo que sigue describe el camino `CONTINUE`**, que es el default y el de la mayoría de las
+  cuentas. Si `policy.numberingFailure.action` dice `REFUND`, la instrucción se invierte: no
+  inyectás la orden y no reintentás la numeración — devolvés el cobro y
+  [reportás la venta perdida](/es/api-reference/lost-sales).
+
+  Lo demás de cada estado —qué significa y si el fallo se arregla solo— vale en los dos casos.
+</Note>
 
 <AccordionGroup>
   <Accordion title="GENERATED — hay comprobante" icon="circle-check">
@@ -1017,8 +1252,9 @@ forma de la respuesta no cambia, porque el bloque es abierto.
       falla es la conexión con quien numera. Nadie en la caja puede resolverlo.
 
     En los dos casos: imprimí el ticket provisional, inyectá la orden y escalá con el
-    `fiscalRequestId`. **La venta quedó cobrada sin comprobante fiscal** — eso también viaja
-    en los eventos de la orden, para que puedas compensarlo.
+    `fiscalRequestId`. Con `CONTINUE`, **la venta queda cobrada sin comprobante fiscal** — eso también viaja
+    en los eventos de la orden, para que puedas compensarlo. Con `REFUND` no hay orden ni
+    evento: la única traza es el reporte de venta perdida.
 
     <CodeGroup>
 
@@ -1448,6 +1684,15 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       ]
     },
     "graphic": { "qr": "1208202601000000000000110050040000000111234567811" },
+    "policy": {
+      "numberingFailure": {
+        "action": "CONTINUE",
+        "lostSaleReason": null,
+        "resolvedAt": "2026-08-21T21:59:56.203Z",
+        "configVersion": null,
+        "resolvedFrom": { "requestStatus": "GENERATED" }
+      }
+    },
     "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
     "failure": null,
     "timestamps": {
@@ -1512,6 +1757,15 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       "legends": []
     },
     "graphic": null,
+    "policy": {
+      "numberingFailure": {
+        "action": "CONTINUE",
+        "lostSaleReason": null,
+        "resolvedAt": "2026-08-21T21:59:56.203Z",
+        "configVersion": null,
+        "resolvedFrom": { "requestStatus": "GENERATED" }
+      }
+    },
     "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
     "failure": null,
     "timestamps": {
@@ -1562,6 +1816,15 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
       "secuencial": "000000002",
       "ambiente": "PRODUCCION"
     },
+    "policy": {
+      "numberingFailure": {
+        "action": "CONTINUE",
+        "lostSaleReason": null,
+        "resolvedAt": "2026-08-21T21:59:56.203Z",
+        "configVersion": null,
+        "resolvedFrom": { "requestStatus": "GENERATED" }
+      }
+    },
     "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
     "graphic": { "qr": "1408202604179141513200110050040000000021234567815" },
     "failure": null,
@@ -1587,6 +1850,22 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "document": null,
     "countryData": null,
     "graphic": null,
+    "policy": {
+      "numberingFailure": {
+        "action": "REFUND",
+        "lostSaleReason": "FISCAL_NUMBERING_FAILED",
+        "resolvedAt": "2026-08-21T21:59:56.203Z",
+        "configVersion": "fnv1a:d096701f",
+        "resolvedFrom": {
+          "retryable": "true",
+          "operation": "INVOICE",
+          "requestStatus": "PENDING",
+          "failureScope": "TECHNICAL",
+          "failureCode": "PROVIDER_UNREACHABLE",
+          "storeCode": "K004"
+        }
+      }
+    },
     "printing": {
       "printable": false,
       "mode": "PROVISIONAL_RECEIPT",
@@ -1619,6 +1898,22 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "document": null,
     "countryData": null,
     "graphic": null,
+    "policy": {
+      "numberingFailure": {
+        "action": "CONTINUE",
+        "lostSaleReason": "FISCAL_NUMBERING_FAILED",
+        "resolvedAt": "2026-08-21T21:59:56.203Z",
+        "configVersion": null,
+        "resolvedFrom": {
+          "retryable": "true",
+          "operation": "INVOICE",
+          "requestStatus": "FAILED_RETRYABLE",
+          "failureScope": "TECHNICAL",
+          "failureCode": "PROVIDER_UNAVAILABLE",
+          "storeCode": "K000"
+        }
+      }
+    },
     "printing": {
       "printable": false,
       "mode": "PROVISIONAL_RECEIPT",
@@ -1651,6 +1946,22 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "document": null,
     "countryData": null,
     "graphic": null,
+    "policy": {
+      "numberingFailure": {
+        "action": "REFUND",
+        "lostSaleReason": "FISCAL_NUMBERING_FAILED",
+        "resolvedAt": "2026-08-21T21:59:56.203Z",
+        "configVersion": "fnv1a:d096701f",
+        "resolvedFrom": {
+          "retryable": "false",
+          "operation": "INVOICE",
+          "requestStatus": "FAILED_FINAL",
+          "failureScope": "FUNCTIONAL",
+          "failureCode": "FISCAL_BUSINESS_RULE",
+          "storeCode": "UIO"
+        }
+      }
+    },
     "printing": {
       "printable": false,
       "mode": "PROVISIONAL_RECEIPT",
@@ -1684,6 +1995,15 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "document": null,
     "countryData": null,
     "graphic": null,
+    "policy": {
+      "numberingFailure": {
+        "action": "CONTINUE",
+        "lostSaleReason": null,
+        "resolvedAt": "2026-08-21T21:59:56.203Z",
+        "configVersion": null,
+        "resolvedFrom": { "requestStatus": "NOT_APPLICABLE" }
+      }
+    },
     "printing": { "printable": false, "mode": "NONE", "reason": "NUMBERING_DISABLED" },
     "failure": null,
     "store": {
