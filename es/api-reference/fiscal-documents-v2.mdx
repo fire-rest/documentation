@@ -1,6 +1,6 @@
 ---
-title: "Solicitar numeración fiscal"
-api: "POST /api/v1/external/fiscal/numbering"
+title: "Solicitar numeración fiscal (v2)"
+api: "POST https://app.fire.rest/api/v2/external/fiscal/numbering"
 description: "Obtiene los identificadores fiscales que el punto de venta necesita para imprimir el comprobante. Es síncrono: se llama después de cobrar y antes de inyectar la orden."
 authMethod: "key"
 ---
@@ -22,10 +22,27 @@ numeración y te devuelve los datos listos para imprimir.
 </Info>
 
 <Note>
-  Existe una [v2 de este endpoint](/es/api-reference/fiscal-documents-v2): idéntica a v1, más
-  la **política de cancelación** de la cuenta — un `CANCEL` que la política no permite no se
-  numera. v1 queda como está, sin fecha de baja.
+  **[v1](/es/api-reference/fiscal-documents) sigue viva, sin fecha de baja.** Si tu
+  integración ya la consume, no tenés que hacer nada: mismo contrato, mismo comportamiento.
+
+  v2 se diferencia en una sola cosa: un `CANCEL` se consulta primero contra la **política de
+  cancelación** de la cuenta — si la política no lo permite, no se numera nada. `INVOICE` se
+  comporta **idéntico** a v1, hasta en los códigos HTTP.
 </Note>
+
+## Migrar desde v1
+
+Lo que tu canal tiene que manejar antes de cambiar la URL:
+
+1. **Un `CANCEL` puede volver sin `document`.** Esa es toda la migración. Chequeá
+   `requestStatus === "BLOCKED_BY_POLICY"` (o simplemente `document === null` con
+   `printing.mode: "NONE"`, que ya manejás para `NOT_APPLICABLE`).
+2. **Mostrale a la persona el porqué.** `policy.cancellation.reason` en una línea,
+   `reasonDetail` como párrafo. Ramificá por `code`, nunca por el texto.
+3. **No reintentes.** `retryable: false` — la política va a contestar lo mismo.
+
+`INVOICE` no requiere ningún cambio: misma solicitud, mismas respuestas, mismos códigos de
+estado que v1.
 
 ## El flujo completo
 
@@ -381,8 +398,9 @@ que el proveedor de ese país necesite.
 <ResponseField name="requestStatus" type="string">
   Estado de **la numeración**: ¿conseguí números para imprimir?
 
-  Cinco valores posibles. Los cuatro primeros describen cómo terminó el intento; el
-  quinto dice que no hubo intento porque esta tienda no numera.
+  Seis valores posibles. Los cuatro primeros describen cómo terminó el intento; los dos
+  últimos dicen que no hubo intento — porque esta tienda no numera, o porque la política de
+  cancelación no permitió la anulación.
 
   | Valor | Qué pasó | HTTP |
   |---|---|---|
@@ -391,6 +409,7 @@ que el proveedor de ese país necesite.
   | `FAILED_RETRYABLE` | El proveedor dijo "no ahora". Podés reintentar (hasta 2 veces) | `202` |
   | `FAILED_FINAL` | El proveedor dijo "no" definitivo. Reintentar no sirve | `200` |
   | `NOT_APPLICABLE` | Esta tienda no tiene numeración fiscal. **No es un error** | `200` |
+  | `BLOCKED_BY_POLICY` | La política de cancelación no permite esta anulación. No se numeró nada | `200` |
 
   <Warning>
     **`PENDING` no significa "no hay comprobante": significa "no sabemos".** Se cortó la
@@ -403,10 +422,12 @@ que el proveedor de ese país necesite.
   </Warning>
 
   <Note>
-    `NOT_APPLICABLE` es el único que **no se guarda**: no crea solicitud fiscal
-    (`fiscalRequestId: null`) y no aparece en los eventos de la orden. Existe porque el POS
-    llama siempre a este endpoint —es como descubre si la tienda numera— y contestarle un
-    error haría que cada venta de una tienda sin gateway pareciera una falla.
+    `NOT_APPLICABLE` y `BLOCKED_BY_POLICY` **no se guardan**: ninguno crea solicitud fiscal
+    (`fiscalRequestId: null`) ni aparece en los eventos de la orden. El primero existe porque
+    el POS llama siempre a este endpoint —es como descubre si la tienda numera— y contestarle
+    un error haría que cada venta de una tienda sin gateway pareciera una falla. El segundo,
+    porque no se numeró nada: no hay documento que conciliar contra el ente, y una solicitud
+    guardada sin documento ensuciaría justo la tabla de la que sale la conciliación.
   </Note>
 </ResponseField>
 
@@ -913,9 +934,52 @@ presencia de la clave.
 </Expandable>
 
 <ResponseField name="cancellation" type="object | null">
-  **Siempre `null` en v1.** La clave viaja igual — ramificá por el contenido, nunca por
-  presencia de clave. Está reservada para el veredicto de la política de cancelación, que solo
-  [v2](/es/api-reference/fiscal-documents-v2) puebla.
+  Qué dijo la política de cancelación sobre ESTA anulación. En v1 es siempre `null`.
+
+  **`null` significa «no se preguntó», no «no se pudo evaluar»**: emitir no es anular, así que
+  en `INVOICE` no hay nada que consultar. La clave viaja siempre —mismo criterio que el resto
+  del bloque— para que tu canal ramifique por el contenido y nunca por presencia de clave.
+
+  <Expandable title="policy.cancellation">
+    <ResponseField name="canCancel" type="boolean">
+      El veredicto. `false` es lo único que bloquea: la solicitud volvió con
+      `BLOCKED_BY_POLICY` y sin documento.
+    </ResponseField>
+    <ResponseField name="outcome" type="string">
+      `ALLOW` o `DENY`. Redundante con `canCancel`, explícito a propósito.
+    </ResponseField>
+    <ResponseField name="code" type="string | null">
+      **El contrato estable para decidir en código.** Un motivo legible por máquina, como
+      `ORDER_NOT_CANCELLABLE` o `CANCELLATION_POLICY_DENIED` (el código que recibe toda
+      regla escrita por la cuenta cuando no trae uno propio). `null` cuando la anulación se
+      permite.
+    </ResponseField>
+    <ResponseField name="reason" type="string | null">
+      El nombre de la regla que decidió, **para mostrarle a una persona** — entra en una
+      línea. Es texto editable y traducible: nunca ramifiques por él, para eso está `code`.
+    </ResponseField>
+    <ResponseField name="reasonDetail" type="string | null">
+      La nota larga de esa regla — el párrafo. Viaja aparte de `reason` porque no siempre hay
+      lugar para las dos en una pantalla.
+    </ResponseField>
+    <ResponseField name="source" type="string">
+      Quién decidió: `baseline` (las reglas propias de Fire, que corren siempre primero),
+      `account` (una regla que configuró la cuenta) o `default` (ninguna regla objetó).
+    </ResponseField>
+    <ResponseField name="threshold" type="object | null">
+      Presente solo cuando la regla comparaba contra un umbral numérico: `field`, `threshold`
+      (el límite) y `actual` (el valor que tenía esta orden). Sin esto recibirías «se pasó del
+      límite» sin poder decir de cuánto era ni por cuánto se pasó.
+    </ResponseField>
+    <ResponseField name="resolvedAt" type="string">
+      Cuándo se resolvió el veredicto, ISO 8601.
+    </ResponseField>
+    <ResponseField name="resolvedFrom" type="object">
+      **El recibo**: el contexto que la política evaluó — estado de la orden, estado fiscal,
+      país, minutos transcurridos. Con esto se reconstruye la decisión aunque después cambie
+      la configuración de la cuenta.
+    </ResponseField>
+  </Expandable>
 </ResponseField>
 </ResponseField>
 
@@ -1104,6 +1168,7 @@ de la anulación, no la plata.
 | `200` | Reintento idempotente — ya existía (`reused: true`) | cualquiera |
 | `200` | Esta tienda no numera. **No es un error** | `NOT_APPLICABLE` |
 | `200` | Rechazo definitivo. Es la respuesta a tu pregunta, no una falla de la llamada | `FAILED_FINAL` |
+| `200` | La política de cancelación no permite esta anulación. No se numeró nada | `BLOCKED_BY_POLICY` |
 | `202` | No hay números **todavía**. Imprimí provisional e inyectá igual | `PENDING` · `FAILED_RETRYABLE` |
 | `400` | Cuerpo inválido o tienda sin configurar para emitir | — |
 | `401` · `403` | Credenciales o permiso | — |
@@ -1457,6 +1522,69 @@ La respuesta tiene **la misma forma** que la de una factura. Cambian tres cosas:
   Por eso `GET /numbering?orderCode=…` devuelve **dos** documentos para esa orden.
 </Warning>
 
+### La política puede decir que no
+
+En v1 un `CANCEL` siempre numera; acá Fire le pregunta primero a la **política de
+cancelación** de la cuenta, y si no lo permite, no se numera nada. Dos pasos, en este orden:
+
+<Steps>
+  <Step title="Fire encuentra el documento original">
+    Por la llave natural, igual que ya lo hacía v1. Si no hay documento que anular, no tiene
+    sentido seguir.
+  </Step>
+  <Step title="Fire le pregunta a la política de cancelación">
+    Busca la orden — la que tiene el contexto que la política evalúa: país, estado fiscal, si
+    el comprador se identificó, cuántos minutos pasaron desde la autorización — y corre las
+    reglas base de Fire más las reglas que configuró la cuenta.
+  </Step>
+  <Step title="Numera, o bloquea">
+    Si la política lo permite, todo sigue como siempre: nota de crédito, `201`,
+    `document.compensates` apuntando al documento anulado. Si niega, no se numera nada: `200`,
+    `requestStatus: "BLOCKED_BY_POLICY"`, `document: null` y el motivo en
+    `policy.cancellation`.
+  </Step>
+</Steps>
+
+<Note>
+  **La política falla hacia permitir.** Si Fire no la puede evaluar — no encuentra la orden,
+  no puede leer la configuración de la cuenta — numera igual. Una anulación legítima nunca se
+  frena porque Fire no pudo contestar su propia pregunta. Solo un `DENY` explícito bloquea.
+</Note>
+
+**Por qué un rechazo de política es un `200` y no un `4xx`.** En este endpoint el código HTTP
+describe qué pasó con la SOLICITUD, no con el documento — y esa decisión es anterior a la
+política: el rechazo definitivo del ente también sale con `200`, y un vendor sin
+representación fiscal también. Si el ente tributario diciendo «no» es un `200`, nuestra
+política diciendo «no» no puede ser un `409`: tu canal lo leería como un error de transporte y
+reintentaría algo que no va a cambiar por insistir.
+
+La respuesta bloqueada se calca a propósito de `NOT_APPLICABLE`, que tu canal ya maneja: mismo
+`document: null`, mismo `printing.mode: "NONE"` (con `reason: "CANCELLATION_NOT_ALLOWED"`).
+Si ramificás por `printing.mode` — que es lo que esta página ya te pide hacer — un `NONE` ya
+te protege de imprimir un comprobante inválido. Dos cosas a tener en cuenta:
+
+- **`retryable: false`.** Insistir no cambia la respuesta de la política. Lo que tiene que
+  cambiar es la configuración de la cuenta, o la orden — no la solicitud.
+- **`policy.numberingFailure.lostSaleReason` es `null`.** Una anulación bloqueada NO es una
+  venta perdida: la venta sigue vigente y su plata también. Reportarla pondría en el cierre de
+  caja un dinero que nunca se devolvió.
+
+<ParamField query="locale" type="string" default="es">
+  Idioma de `policy.cancellation.reason` y `reasonDetail`: `es`, `en` o `pt`.
+
+  Solo afecta a **las reglas propias de Fire**, que traen etiquetas en los tres idiomas. El
+  texto de una regla que configuró la cuenta vuelve tal cual la cuenta lo escribió, en el
+  idioma en que esté escrito.
+</ParamField>
+
+<Warning>
+  **`BLOCKED_BY_POLICY` no se persiste nunca.** No se numeró nada, así que no hay documento
+  que conciliar: no aparece en las consultas por
+  [`fiscalRequestId`](/es/api-reference/fiscal-document-get) ni por
+  [`orderCode`](/es/api-reference/fiscal-documents-query). Si necesitás el veredicto, está en
+  la respuesta de esta llamada — y solo ahí.
+</Warning>
+
 ### Si no hay nada que anular
 
 Si la venta nunca se numeró —porque la tienda no factura, o porque la numeración falló— la
@@ -1528,6 +1656,13 @@ operación diaria no deberías necesitarlos — los datos llegan por los eventos
   único que tenés en la mano.
 
 Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
+
+<Note>
+  Las dos consultas también existen bajo `/api/v2/…`, reexportadas de v1 sin cambios:
+  consultar no cambia con la política de cancelación. Un `CANCEL` que volvió
+  `BLOCKED_BY_POLICY` **nunca aparece acá** — no se numeró nada, así que no hay nada guardado
+  que devolver.
+</Note>
 
 <RequestExample>
 ```json Facturar
@@ -1795,7 +1930,7 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
 }
 ```
 
-```json 201 Anulada — siempre numera
+```json 201 Anulada — la política permitió
 {
   "success": true,
   "data": {
@@ -1838,7 +1973,23 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
         "configVersion": null,
         "resolvedFrom": { "requestStatus": "GENERATED" }
       },
-      "cancellation": null
+      "cancellation": {
+        "canCancel": true,
+        "outcome": "ALLOW",
+        "code": null,
+        "reason": null,
+        "reasonDetail": null,
+        "source": "default",
+        "threshold": null,
+        "resolvedAt": "2026-08-21T21:59:56.100Z",
+        "resolvedFrom": {
+          "orderStatus": "COMPLETED",
+          "fiscalStatus": "authorized",
+          "countryCode": "EC",
+          "isFinalConsumer": "false",
+          "minutesSinceAuthorization": "4"
+        }
+      }
     },
     "printing": { "printable": true, "mode": "FISCAL_DOCUMENT", "reason": null },
     "graphic": { "qr": "1408202604179141513200110050040000000021234567815" },
@@ -1852,6 +2003,82 @@ Cuando el ente autoriza, `documentStatus` pasa a `AUTHORIZED`.
     "providerCode": "hio",
     "providerIdentity": { "name": "hio.fiscalization", "version": "dev", "reference": null },
     "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K000" }
+  }
+}
+```
+
+```json 200 Bloqueada por política
+{
+  "success": true,
+  "data": {
+    "fiscalRequestId": null,
+    "orderCode": "EC-K004-42-1786579046934",
+    "idempotencyKey": null,
+    "reused": false,
+    "countryCode": "EC",
+    "requestStatus": "BLOCKED_BY_POLICY",
+    "documentStatus": null,
+    "retryable": false,
+    "environment": null,
+    "document": null,
+    "countryData": null,
+    "store": {
+      "code": "K004", "name": "Sucursal Amazonas",
+      "address": "AV. AMAZONAS N36-15", "city": "Quito", "phone": "022222222",
+      "govIdType": "RUC", "govIdNumber": "1791415132001",
+      "secondaryGovIdType": null, "secondaryGovIdNumber": null
+    },
+    "company": {
+      "legalName": "INT FOOD SERVICES CORP SA",
+      "tradeName": "KFC",
+      "govIdType": "RUC",
+      "govIdNumber": "1791415132001",
+      "headquartersAddress": "PICHINCHA / QUITO / INAQUITO / COREA 126 Y AV. AMAZONAS",
+      "countryLines": [],
+      "legends": []
+    },
+    "policy": {
+      "numberingFailure": {
+        "action": "CONTINUE",
+        "lostSaleReason": null,
+        "resolvedAt": "2026-08-21T22:03:11.412Z",
+        "configVersion": null,
+        "resolvedFrom": {}
+      },
+      "cancellation": {
+        "canCancel": false,
+        "outcome": "DENY",
+        "code": "CANCELLATION_POLICY_DENIED",
+        "reason": "Ventana de anulación superada",
+        "reasonDetail": "Esta cuenta solo permite anular dentro de los 30 minutos posteriores a la autorización del comprobante.",
+        "source": "account",
+        "threshold": {
+          "field": "minutesSinceAuthorization",
+          "threshold": 30,
+          "actual": 47
+        },
+        "resolvedAt": "2026-08-21T22:03:11.412Z",
+        "resolvedFrom": {
+          "orderStatus": "COMPLETED",
+          "fiscalStatus": "authorized",
+          "countryCode": "EC",
+          "isFinalConsumer": "false",
+          "minutesSinceAuthorization": "47"
+        }
+      }
+    },
+    "printing": { "printable": false, "mode": "NONE", "reason": "CANCELLATION_NOT_ALLOWED" },
+    "graphic": null,
+    "failure": null,
+    "timestamps": {
+      "requestedAt": "2026-08-21T22:03:11.412Z",
+      "respondedAt": "2026-08-21T22:03:11.412Z",
+      "providerLatencyMs": null
+    },
+    "correlationId": null,
+    "providerCode": null,
+    "providerIdentity": null,
+    "providerMetadata": null
   }
 }
 ```
