@@ -1,0 +1,251 @@
+---
+title: "Catálogo de tipos de documento"
+api: "GET /api/v1/external/fiscal/document-types"
+description: "Los tipos de documento de identificación que admite cada país — códigos, reglas de validación y qué estampar cuando el comprador no se identificó."
+---
+
+Devuelve el catálogo de **tipos de documento de identificación del comprador**
+para un país: qué tipos existen (`CEDULA`, `CPF`, `NIT`…), cómo se valida su
+número, y los valores por defecto cuando la venta no identificó al comprador.
+
+Este catálogo antes vivía en el API de un proveedor externo — y, para Brasil, en
+una lista hardcodeada dentro de la app cliente. Ahora FIRE lo sirve como la
+**fuente única**. Los valores de `code` que recibes aquí son exactamente lo que
+debes enviar de vuelta en `client.govIdType` al inyectar una orden: no hay mapeo
+de compatibilidad, así que un catálogo desactualizado de tu lado se manifiesta
+como un código que no cruza.
+
+## Autenticación
+
+| | |
+|---|---|
+| Header | `x-api-key: pk_live_…` |
+| Scope | `document-types:read` |
+
+<Info>
+  **Este scope no está atado a una cuenta.** El catálogo es un dato compartido y
+  global — no contiene información de ningún tenant — así que la key no necesita
+  pertenecer a ninguna cuenta ni vendor. Consecuencia práctica: todos los
+  integradores ven exactamente el mismo catálogo para un país dado, y puedes usar
+  una sola key para todos tus despliegues sin importar a qué cuentas sirvan.
+</Info>
+
+## Parámetros de query
+
+<ParamField query="countryCode" type="string" required>
+  Código de país ISO 3166-1 alfa-2 (`BR`, `EC`, `CO`…). No distingue mayúsculas —
+  se normaliza a mayúsculas. Si falta o está mal formado (no son exactamente dos
+  letras) devuelve `400`.
+</ParamField>
+
+No hay otros filtros. Los tipos inactivos nunca se devuelven, y la lista llega ya
+ordenada en el orden en que debe mostrarse.
+
+## Respuesta
+
+<ResponseField name="countryCode" type="string">
+  El país solicitado, normalizado a mayúsculas.
+</ResponseField>
+
+<ResponseField name="documentTypes" type="array">
+  Los tipos de documento del país, en orden de visualización.
+
+  <Expandable title="documentTypes[]">
+    <ResponseField name="code" type="string">
+      El código canónico — en mayúsculas y sin espacios (`CEDULA`, `CPF`, `NIT`,
+      `FINAL_CONSUMER`…). Es el valor a enviar de vuelta en `client.govIdType`.
+      Los códigos se repiten entre países con reglas de validación distintas:
+      `CEDULA` existe en Ecuador (10 dígitos) y en Colombia (6–10 dígitos).
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Etiqueta para mostrar en el selector (`PASAPORTE`, `NÃO IDENTIFICADO`…).
+      Muestra esto; envía `code`.
+    </ResponseField>
+    <ResponseField name="selectable" type="boolean">
+      Si se ofrece en el selector. `false` en los tipos que existen pero el
+      comprador no elige: `FINAL_CONSUMER` es el default cuando el cliente no
+      pide factura, y en Chile el selector de documento está deshabilitado por
+      completo.
+    </ResponseField>
+    <ResponseField name="isFinalConsumer" type="boolean">
+      Marca la fila que representa "comprador no identificado". Pregunta por este
+      flag, no por `code === "FINAL_CONSUMER"`.
+    </ResponseField>
+    <ResponseField name="validation" type="object">
+      Reglas para validar el número que tipea el comprador. Los cuatro campos
+      pueden ser `null` — una regla `null` significa que no hay restricción de
+      ese tipo.
+
+      <Expandable title="validation">
+        <ResponseField name="minLength" type="integer | null">
+          Longitud mínima, contada sobre los dígitos ya normalizados.
+        </ResponseField>
+        <ResponseField name="maxLength" type="integer | null">
+          Longitud máxima, mismo conteo.
+        </ResponseField>
+        <ResponseField name="pattern" type="string | null">
+          Regex de JavaScript, sin delimitadores (p. ej. `^\d+$`).
+        </ResponseField>
+        <ResponseField name="checksumValidator" type="string | null">
+          Nombre de un validador de dígito verificador a ejecutar de tu lado
+          cuando la longitud no alcanza (`isCPFValid`, `isCNPJValid`). Es una
+          **etiqueta**, no código: FIRE nombra el algoritmo, tu cliente lo
+          implementa.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="finalConsumer" type="object | null">
+  Qué estampar en el comprobante cuando el comprador no se identificó. Viaja
+  aparte de la lista porque responde otra pregunta: la lista es "qué puede elegir
+  el comprador", esto es "qué poner cuando no eligió nada".
+
+  `null` cuando el país no lo define — hoy Argentina (tiene el tipo pero no el
+  número declarado), Venezuela y Chile.
+
+  <Expandable title="finalConsumer">
+    <ResponseField name="govId" type="string | null">
+      El valor de documento a estampar. Es **texto**, no un número, a propósito:
+      en Brasil el valor es `NÃO IDENTIFICADO`, en Ecuador `9999999999999`, en
+      Colombia `222222222222`.
+    </ResponseField>
+    <ResponseField name="name" type="string | null">
+      El nombre de comprador a estampar (`CONSUMIDOR FINAL`). `null` en Brasil.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200 — Ecuador
+{
+  "success": true,
+  "data": {
+    "countryCode": "EC",
+    "documentTypes": [
+      {
+        "code": "FINAL_CONSUMER",
+        "name": "CONSUMIDOR FINAL",
+        "selectable": false,
+        "isFinalConsumer": true,
+        "validation": { "minLength": null, "maxLength": null, "pattern": null, "checksumValidator": null }
+      },
+      {
+        "code": "RUC",
+        "name": "RUC",
+        "selectable": true,
+        "isFinalConsumer": false,
+        "validation": { "minLength": 13, "maxLength": 13, "pattern": "^\\d+$", "checksumValidator": null }
+      },
+      {
+        "code": "CEDULA",
+        "name": "CEDULA",
+        "selectable": true,
+        "isFinalConsumer": false,
+        "validation": { "minLength": 10, "maxLength": 10, "pattern": "^\\d+$", "checksumValidator": null }
+      },
+      {
+        "code": "PASSPORT",
+        "name": "PASAPORTE",
+        "selectable": true,
+        "isFinalConsumer": false,
+        "validation": { "minLength": 1, "maxLength": 50, "pattern": null, "checksumValidator": null }
+      }
+    ],
+    "finalConsumer": { "govId": "9999999999999", "name": "CONSUMIDOR FINAL" }
+  }
+}
+```
+
+```json 200 — Brasil
+{
+  "success": true,
+  "data": {
+    "countryCode": "BR",
+    "documentTypes": [
+      {
+        "code": "FINAL_CONSUMER",
+        "name": "NÃO IDENTIFICADO",
+        "selectable": false,
+        "isFinalConsumer": true,
+        "validation": { "minLength": null, "maxLength": null, "pattern": null, "checksumValidator": null }
+      },
+      {
+        "code": "CPF",
+        "name": "CPF",
+        "selectable": true,
+        "isFinalConsumer": false,
+        "validation": { "minLength": null, "maxLength": 14, "pattern": null, "checksumValidator": "isCPFValid" }
+      },
+      {
+        "code": "CNPJ",
+        "name": "CNPJ",
+        "selectable": true,
+        "isFinalConsumer": false,
+        "validation": { "minLength": null, "maxLength": 18, "pattern": null, "checksumValidator": "isCNPJValid" }
+      }
+    ],
+    "finalConsumer": { "govId": "NÃO IDENTIFICADO", "name": null }
+  }
+}
+```
+
+```json 200 — Colombia
+{
+  "success": true,
+  "data": {
+    "countryCode": "CO",
+    "documentTypes": [
+      {
+        "code": "FINAL_CONSUMER",
+        "name": "CONSUMIDOR FINAL",
+        "selectable": false,
+        "isFinalConsumer": true,
+        "validation": { "minLength": null, "maxLength": null, "pattern": null, "checksumValidator": null }
+      },
+      {
+        "code": "NIT",
+        "name": "NIT",
+        "selectable": true,
+        "isFinalConsumer": false,
+        "validation": { "minLength": 6, "maxLength": 10, "pattern": "^\\d+$", "checksumValidator": null }
+      },
+      {
+        "code": "CEDULA",
+        "name": "CEDULA",
+        "selectable": true,
+        "isFinalConsumer": false,
+        "validation": { "minLength": 6, "maxLength": 10, "pattern": "^\\d+$", "checksumValidator": null }
+      }
+    ],
+    "finalConsumer": { "govId": "222222222222", "name": "CONSUMIDOR FINAL" }
+  }
+}
+```
+</ResponseExample>
+
+<Note>
+  Un país **sin catálogo configurado todavía** devuelve listas vacías y
+  `finalConsumer: null` — no un `404`. "Todavía no se configuró" es una respuesta
+  legítima, y tienes que poder distinguirla de una falla.
+</Note>
+
+<Tip>
+  El catálogo cambia poco. Cachéalo por país y refréscalo periódicamente — pero
+  refréscalo: enviar un código que ya no existe en el catálogo es exactamente la
+  deriva que este endpoint reemplaza.
+</Tip>
+
+## Errores
+
+| Código | Cuándo |
+|---|---|
+| `400` | Falta `countryCode` o no es un código de 2 letras |
+| `401` | La API key falta, es desconocida o fue revocada |
+| `403` | La key no tiene el scope `document-types:read` |
+
+## Relacionado
+
+- [Inyectar orden](/es/api-reference/orders) — donde `client.govIdType` lleva estos códigos
+- [Solicitar numeración fiscal](/es/api-reference/fiscal-documents) — el documento donde termina la identificación del comprador
