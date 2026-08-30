@@ -198,59 +198,6 @@ Se o processador de pagamento salvo suporta reembolsos (por exemplo, Deuna), o F
 ```
 </ResponseExample>
 
-## A ordem dos passos depende do gateway fiscal
-
-É a parte que mais se erra ao integrar, e a única em que a ordem importa.
-
-<Tabs>
-  <Tab title="Com numeração por gateway">
-    O comprovante é numerado pelo Fire, então **o cancelamento fiscal vem primeiro**:
-
-    <Steps>
-      <Step title="Anular o comprovante">
-        `POST /api/v2/external/fiscal/numbering` com `operation: "CANCEL"`. Devolve a nota de
-        crédito. Ver [Numeração fiscal v2](/pt/api-reference/fiscal-documents-v2).
-      </Step>
-      <Step title="Cancelar o pedido">
-        Só agora, este endpoint.
-      </Step>
-    </Steps>
-
-    É o mesmo padrão da emissão — primeiro o fato fiscal, depois o pedido —, e por isso é
-    fácil de lembrar: **anula-se do mesmo jeito que se emite**.
-
-    Se você inverter os passos, este endpoint responde `409` com
-    `FISCAL_REPRESENTATION_NOT_VOIDED`. Não é transitório: repetir não resolve.
-  </Tab>
-  <Tab title="Sem numeração por gateway">
-    Não há cancelamento fiscal prévio a pedir: **cancela-se direto**, com este endpoint e mais
-    nada.
-  </Tab>
-</Tabs>
-
-O Fire resolve sozinho qual dos dois casos se aplica, pela configuração daquela conta, país e
-vendor. **Você não precisa descobrir**: se a nota de crédito se aplica a você, o `409` avisa.
-
-<Tip>
-  Para saber antes de tentar, [Elegibilidade de
-  cancelamento](/pt/api-reference/cancellation-eligibility) devolve o mesmo `code` com um
-  `200` e sem efeitos.
-</Tip>
-
-## Códigos de recusa
-
-Todos saem com `409`. **Ramifique por `code`**, nunca pela mensagem: o texto é para uma pessoa
-ler e pode mudar ou ser traduzido sem aviso.
-
-| `code` | O que aconteceu | O que fazer |
-|---|---|---|
-| `CANCELLATION_IN_PROGRESS` | Já há um cancelamento em andamento. | Aguardar; não repetir em laço. |
-| `FISCAL_ALREADY_CANCELLED` | O documento fiscal já está anulado. | Nada: o efeito desejado já ocorreu. |
-| `ORDER_NOT_CANCELLABLE` | O pedido já está fechado ou cancelado. | Nada: é estado terminal. |
-| `FISCAL_REPRESENTATION_NOT_VOIDED` | Há nota fiscal e ainda não há nota de crédito. | Pedir primeiro o cancelamento fiscal, aguardar a resposta, e só então cancelar. |
-| `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | Não se cancela pela API: cabe um ajuste contábil. |
-| `CANCELLATION_POLICY_DENIED` | Uma regra configurada pela conta negou. | Ler `reason`: o motivo foi escrito pelo cliente, no idioma dele. |
-
 ## Regras de processamento
 
 - Quando enviado, `payment_method_uid` ajuda a resolver credenciais, mas o Fire avalia os métodos de pagamento salvos no pedido.
