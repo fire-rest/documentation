@@ -1,0 +1,236 @@
+---
+title: "Cancellation eligibility"
+api: "GET https://app.fire.rest/api/v1/external/orders/{orderId}/cancellation-eligibility"
+description: "Ask whether an order can be cancelled — without cancelling it. The preflight for the cancellation button."
+authMethod: "bearer"
+---
+
+Answers **whether an order can be cancelled, without cancelling anything**. The point of sale calls it to show or hide the cancel button, and to explain to the cashier why when it cannot.
+
+It runs the same policy service as the real cancellation, so the preflight and the outcome cannot disagree about the rules. The natural pair of this endpoint is [Cancel order](/en/api-reference/cancel-order): this one asks, that one executes.
+
+<Info>
+  `orderId` accepts any of the four ways an order can be named from outside: the **external order id** your channel generated when injecting it, the `order_id` that travelled in the injection payload, Fire's `order_code`, and Fire's internal UUID. Fire tries all of them within your key's vendor. If the id matches more than one order in that scope, Fire refuses with `409` instead of guessing: answering about the wrong order would be worse than not answering.
+</Info>
+
+<Warning>
+  **A `200` does not mean "yes".** The verdict travels in the body: this endpoint returns `200` even when the order cannot be cancelled, because "no" is the answer to the question, not an error. A non-`200` status is a real error — authentication, unknown order — never a policy denial.
+</Warning>
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `orders:read` scope. The key **must be vendor-scoped** — keys without an account binding are rejected with `403`. The tenant is derived from the key, never from the request.
+</ParamField>
+
+## Path parameters
+
+<ParamField path="orderId" type="string" required>
+  Order identifier. Accepts the external id, the payload's `order_id`, Fire's `order_code`, or Fire's internal UUID.
+</ParamField>
+
+## Query parameters
+
+<ParamField query="locale" type="string" default="es">
+  `es`, `en` or `pt`. Language of `reason`, `reasonDetail` and `outcomeLabel`. It only affects Fire's own rules, which carry their label in all three languages; the text of a rule configured by the account is theirs and comes back exactly as written, untranslated.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/external/orders/EXT-100234/cancellation-eligibility?locale=en
+x-api-key: <your_api_key>
+```
+</RequestExample>
+
+## Response
+
+The verdict comes wrapped in the standard envelope: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="canCancel" type="boolean">
+  The answer. Read the `pending` section below before treating `true` as a guarantee.
+</ResponseField>
+
+<ResponseField name="outcome" type="string">
+  Raw policy result: `ALLOW` or `DENY`. Today it is redundant with `canCancel` on purpose: it travels from day one so that if a third outcome ever appears, adding it does not break existing consumers.
+</ResponseField>
+
+<ResponseField name="outcomeLabel" type="string">
+  Display name of the outcome, in the requested language. It is the safety net when `reason` is `null`: without it, a denial by an unnamed rule would reach the cashier without a single word to show.
+</ResponseField>
+
+<ResponseField name="code" type="string | null">
+  The reason, **stable**. `null` when the order can be cancelled. This is the contract — decide in code with `code`, never by parsing `reason`. The possible codes are listed below.
+</ResponseField>
+
+<ResponseField name="reason" type="string | null">
+  The **name** of the rule that decided, for humans. Fits in one line on a POS screen. It is editable and translatable text — **not a contract**.
+</ResponseField>
+
+<ResponseField name="reasonDetail" type="string | null">
+  The **long note** of that same rule, or `null`. Separate from `reason` so the consumer decides how much space to give it: a POS paints one line, a detail screen can paint both. Also editable text, not a contract. Fire's own rules carry no note, so a denial by a Fire rule always comes with `reasonDetail: null` — that is expected, not a bug. The note only appears on rules configured by the account.
+</ResponseField>
+
+<ResponseField name="source" type="string">
+  Where the decision came from: `baseline` (a Fire rule), `account` (a rule configured by the account), or `default` (no rule matched — the order can be cancelled).
+</ResponseField>
+
+<ResponseField name="threshold" type="object | null">
+  Present only when the winning rule compared against a numeric threshold.
+
+  <Expandable title="threshold">
+    <ResponseField name="field" type="string">The catalog field the rule evaluated (e.g. `minutesSinceAuthorization`).</ResponseField>
+    <ResponseField name="threshold" type="number">The limit written in the rule.</ResponseField>
+    <ResponseField name="actual" type="number">What the order actually had.</ResponseField>
+  </Expandable>
+
+  With this you can tell the cashier "over the limit by 17 minutes" without learning any new codes.
+</ResponseField>
+
+<ResponseField name="resolvedFrom" type="object">
+  The evaluated context, as a map of field to value. It is the forensic receipt: it lets you reconstruct why this was decided even if the configuration changes afterwards.
+</ResponseField>
+
+<ResponseField name="pending" type="string[]">
+  Expensive checks that were **not** run: `CREDIT_NOTE` and/or `BUSINESS_DAY`. Empty when everything was checked.
+</ResponseField>
+
+### `pending` — why a `true` is not a guarantee
+
+The preflight runs only the cheap phase. Checking the credit note costs a call to the fiscal provider, and the business day a query — over a list of orders that would be one call per row. So the preflight skips them and declares them in `pending`. A `canCancel: true` with a non-empty `pending` **can still end in a rejection** when you actually cancel: the real cancellation does run those checks.
+
+### Denial codes
+
+The real cancellation returns the same `code` when it denies for the same reason.
+
+| Code | Source | What happened |
+|---|---|---|
+| `CANCELLATION_IN_PROGRESS` | Fire rule | A cancellation is already in flight. |
+| `FISCAL_ALREADY_CANCELLED` | Fire rule | The fiscal document is already voided. |
+| `ORDER_NOT_CANCELLABLE` | Fire rule | The order is `FORCE_CLOSED` or `CANCELLED`. |
+| `CANCELLATION_POLICY_DENIED` | account rule | A rule configured by the account denied it. The human-readable reason travels in `reason`. |
+
+<ResponseExample>
+```json 200 — allowed
+{
+  "success": true,
+  "data": {
+    "canCancel": true,
+    "outcome": "ALLOW",
+    "outcomeLabel": "Allow cancelling",
+    "code": null,
+    "reason": null,
+    "reasonDetail": null,
+    "source": "default",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "isFinalConsumer": "true",
+      "minutesSinceCreation": "12.4",
+      "minutesSinceAuthorization": "11.9"
+    },
+    "pending": ["CREDIT_NOTE", "BUSINESS_DAY"]
+  }
+}
+```
+
+```json 200 — denied by a Fire rule
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "Do not allow",
+    "code": "ORDER_NOT_CANCELLABLE",
+    "reason": "The order is no longer in a cancellable state",
+    "reasonDetail": null,
+    "source": "baseline",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "CANCELLED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "cancelled",
+      "minutesSinceCreation": "94.2"
+    },
+    "pending": []
+  }
+}
+```
+
+```json 200 — denied by an account rule
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "Do not allow",
+    "code": "CANCELLATION_POLICY_DENIED",
+    "reason": "Prazo de anulação da SEFAZ vencido",
+    "reasonDetail": "A NFC-e autorizada só pode ser anulada em até 30 minutos. Depois disso é preciso abrir um chamado fiscal.",
+    "source": "account",
+    "threshold": {
+      "field": "minutesSinceAuthorization",
+      "threshold": 30,
+      "actual": 47.3
+    },
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "isFinalConsumer": "false",
+      "govIdType": "CPF",
+      "minutesSinceCreation": "52.1",
+      "minutesSinceAuthorization": "47.3"
+    },
+    "pending": []
+  }
+}
+```
+
+```json 403 — key not vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "Vendor-scoped API key required (accountId binding missing)"
+}
+```
+
+```json 404 — order not found in your scope
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "InjectedOrder not found: EXT-100234"
+}
+```
+
+```json 409 — ambiguous external id
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "AMBIGUOUS_ORDER_REFERENCE",
+  "message": "External order id EXT-100234 matches 2 orders across vendors; cannot disambiguate"
+}
+```
+</ResponseExample>
+
+## What to build with each field
+
+- **Decide in code with `code`.** `reason` and `reasonDetail` are editable, translatable text — never parse them.
+- **Show `reason` on one line**; `reasonDetail` is the paragraph, for screens with more room. When `reason` is `null` on a denial, fall back to `outcomeLabel`.
+- **Use `threshold`** to render "over by N" messages generically, without knowing any rule in particular.
+- **Keep `resolvedFrom`** in your logs: it is the receipt that explains the verdict even after the account's rules change.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Cancel order" icon="ban" href="/en/api-reference/cancel-order">
+    The other half of the pair: this endpoint asks, that one executes.
+  </Card>
+  <Card title="Get order" icon="receipt" href="/en/api-reference/get-order">
+    Read the order the verdict refers to.
+  </Card>
+</CardGroup>

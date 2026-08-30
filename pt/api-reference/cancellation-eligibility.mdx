@@ -1,0 +1,236 @@
+---
+title: "Elegibilidade de cancelamento"
+api: "GET https://app.fire.rest/api/v1/external/orders/{orderId}/cancellation-eligibility"
+description: "Pergunta se um pedido pode ser cancelado — sem cancelá-lo. O preflight do botão de cancelar."
+authMethod: "bearer"
+---
+
+Responde **se um pedido pode ser cancelado, sem cancelar nada**. O ponto de venda consulta este endpoint para mostrar ou ocultar o botão de cancelar, e para explicar ao operador de caixa por que não é possível quando não é.
+
+Executa o mesmo serviço de políticas que o cancelamento real, então o preflight e o resultado não podem divergir sobre as regras. O par natural deste endpoint é [Cancelar pedido](/pt/api-reference/cancel-order): este pergunta, aquele executa.
+
+<Info>
+  `orderId` aceita qualquer uma das quatro formas de nomear um pedido de fora: o **id externo** que o seu canal gerou ao injetá-lo, o `order_id` que viajou no payload de injeção, o `order_code` do Fire e o UUID interno do Fire. O Fire tenta todas dentro do vendor da sua key. Se o id corresponder a mais de um pedido nesse escopo, recusa com `409` em vez de adivinhar: responder sobre o pedido errado seria pior do que não responder.
+</Info>
+
+<Warning>
+  **Um `200` não significa "sim".** O veredito viaja no corpo: este endpoint devolve `200` mesmo quando o pedido não pode ser cancelado, porque "não" é a resposta à pergunta, não um erro. Um status diferente de `200` é um erro de verdade — autenticação, pedido inexistente —, nunca uma recusa de política.
+</Warning>
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com o scope `orders:read`. A key **deve estar limitada a um vendor** — keys sem vínculo com uma conta são rejeitadas com `403`. O tenant é derivado da key, nunca da requisição.
+</ParamField>
+
+## Parâmetros de rota
+
+<ParamField path="orderId" type="string" required>
+  Identificador do pedido. Aceita o id externo, o `order_id` do payload, o `order_code` do Fire ou o UUID interno do Fire.
+</ParamField>
+
+## Parâmetros de consulta
+
+<ParamField query="locale" type="string" default="es">
+  `es`, `en` ou `pt`. Idioma de `reason`, `reasonDetail` e `outcomeLabel`. Afeta apenas as regras próprias do Fire, que trazem seu rótulo nos três idiomas; o texto de uma regra configurada pela conta é dela e volta exatamente como foi escrito, sem tradução.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/external/orders/EXT-100234/cancellation-eligibility?locale=pt
+x-api-key: <sua_api_key>
+```
+</RequestExample>
+
+## Resposta
+
+O veredito chega no envelope padrão: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="canCancel" type="boolean">
+  A resposta. Leia a seção de `pending` mais abaixo antes de tratar um `true` como garantia.
+</ResponseField>
+
+<ResponseField name="outcome" type="string">
+  Resultado bruto da política: `ALLOW` ou `DENY`. Hoje é redundante com `canCancel` de propósito: viaja desde o início para que, se um terceiro resultado aparecer um dia, adicioná-lo não quebre os consumidores existentes.
+</ResponseField>
+
+<ResponseField name="outcomeLabel" type="string">
+  Nome de exibição do resultado, no idioma pedido. É a rede de segurança quando `reason` vem `null`: sem ele, uma recusa por uma regra sem nome chegaria ao operador sem uma única palavra para mostrar.
+</ResponseField>
+
+<ResponseField name="code" type="string | null">
+  O motivo, **estável**. `null` quando o pedido pode ser cancelado. Este é o contrato — decida em código com `code`, nunca interpretando `reason`. Os códigos possíveis estão listados mais abaixo.
+</ResponseField>
+
+<ResponseField name="reason" type="string | null">
+  O **nome** da regra que decidiu, para humanos. Cabe em uma linha na tela do POS. É texto editável e traduzível — **não é contrato**.
+</ResponseField>
+
+<ResponseField name="reasonDetail" type="string | null">
+  A **nota longa** dessa mesma regra, ou `null`. Vem separada de `reason` para que o consumidor decida quanto espaço lhe dá: o POS pinta uma linha, uma tela de detalhe pode pintar as duas. Também é texto editável, não contrato. As regras próprias do Fire não levam nota, então uma recusa por uma regra do Fire traz sempre `reasonDetail: null` — é o esperado, não um bug. A nota só aparece em regras configuradas pela conta.
+</ResponseField>
+
+<ResponseField name="source" type="string">
+  De onde veio a decisão: `baseline` (uma regra do Fire), `account` (uma regra configurada pela conta) ou `default` (nenhuma regra correspondeu — o pedido pode ser cancelado).
+</ResponseField>
+
+<ResponseField name="threshold" type="object | null">
+  Presente apenas quando a regra vencedora comparava contra um limite numérico.
+
+  <Expandable title="threshold">
+    <ResponseField name="field" type="string">O campo do catálogo que a regra avaliou (p. ex. `minutesSinceAuthorization`).</ResponseField>
+    <ResponseField name="threshold" type="number">O limite escrito na regra.</ResponseField>
+    <ResponseField name="actual" type="number">O que o pedido realmente tinha.</ResponseField>
+  </Expandable>
+
+  Com isso você pode dizer ao operador "passou do limite em 17 minutos" sem aprender códigos novos.
+</ResponseField>
+
+<ResponseField name="resolvedFrom" type="object">
+  O contexto avaliado, como um mapa de campo para valor. É o recibo forense: permite reconstruir por que aquilo foi decidido mesmo que a configuração mude depois.
+</ResponseField>
+
+<ResponseField name="pending" type="string[]">
+  Verificações caras que **não** foram executadas: `CREDIT_NOTE` e/ou `BUSINESS_DAY`. Vazio quando tudo já foi verificado.
+</ResponseField>
+
+### `pending` — por que um `true` não é uma garantia
+
+O preflight executa apenas a fase barata. Verificar a nota de crédito custa uma chamada ao provedor fiscal, e o dia de negócio uma consulta — sobre uma lista de pedidos seria uma por linha. Por isso o preflight as pula e as declara em `pending`. Um `canCancel: true` com `pending` não vazio **ainda pode terminar em recusa** ao cancelar de verdade: o cancelamento real executa essas verificações.
+
+### Códigos de recusa
+
+O cancelamento real devolve o mesmo `code` quando nega pelo mesmo motivo.
+
+| Código | Origem | O que aconteceu |
+|---|---|---|
+| `CANCELLATION_IN_PROGRESS` | regra do Fire | Já há um cancelamento em andamento. |
+| `FISCAL_ALREADY_CANCELLED` | regra do Fire | O documento fiscal já está anulado. |
+| `ORDER_NOT_CANCELLABLE` | regra do Fire | O pedido está `FORCE_CLOSED` ou `CANCELLED`. |
+| `CANCELLATION_POLICY_DENIED` | regra da conta | Uma regra configurada pela conta negou. O motivo legível viaja em `reason`. |
+
+<ResponseExample>
+```json 200 — permitido
+{
+  "success": true,
+  "data": {
+    "canCancel": true,
+    "outcome": "ALLOW",
+    "outcomeLabel": "Permitir cancelar",
+    "code": null,
+    "reason": null,
+    "reasonDetail": null,
+    "source": "default",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "isFinalConsumer": "true",
+      "minutesSinceCreation": "12.4",
+      "minutesSinceAuthorization": "11.9"
+    },
+    "pending": ["CREDIT_NOTE", "BUSINESS_DAY"]
+  }
+}
+```
+
+```json 200 — negado por uma regra do Fire
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "Não permitir",
+    "code": "ORDER_NOT_CANCELLABLE",
+    "reason": "O pedido já não está num estado cancelável",
+    "reasonDetail": null,
+    "source": "baseline",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "CANCELLED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "cancelled",
+      "minutesSinceCreation": "94.2"
+    },
+    "pending": []
+  }
+}
+```
+
+```json 200 — negado por uma regra da conta
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "Não permitir",
+    "code": "CANCELLATION_POLICY_DENIED",
+    "reason": "Prazo de anulação da SEFAZ vencido",
+    "reasonDetail": "A NFC-e autorizada só pode ser anulada em até 30 minutos. Depois disso é preciso abrir um chamado fiscal.",
+    "source": "account",
+    "threshold": {
+      "field": "minutesSinceAuthorization",
+      "threshold": 30,
+      "actual": 47.3
+    },
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "isFinalConsumer": "false",
+      "govIdType": "CPF",
+      "minutesSinceCreation": "52.1",
+      "minutesSinceAuthorization": "47.3"
+    },
+    "pending": []
+  }
+}
+```
+
+```json 403 — key sem vendor
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "Vendor-scoped API key required (accountId binding missing)"
+}
+```
+
+```json 404 — pedido fora do seu escopo
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "InjectedOrder not found: EXT-100234"
+}
+```
+
+```json 409 — id externo ambíguo
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "AMBIGUOUS_ORDER_REFERENCE",
+  "message": "External order id EXT-100234 matches 2 orders across vendors; cannot disambiguate"
+}
+```
+</ResponseExample>
+
+## O que construir com cada campo
+
+- **Decida em código com `code`.** `reason` e `reasonDetail` são texto editável e traduzível — nunca os interprete.
+- **Mostre `reason` em uma linha**; `reasonDetail` é o parágrafo, para telas com mais espaço. Se `reason` vier `null` numa recusa, use `outcomeLabel` como reserva.
+- **Use `threshold`** para montar mensagens de "passou em N" de forma genérica, sem conhecer nenhuma regra em particular.
+- **Guarde `resolvedFrom`** nos seus logs: é o recibo que explica o veredito mesmo depois que as regras da conta mudarem.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Cancelar pedido" icon="ban" href="/pt/api-reference/cancel-order">
+    A outra metade do par: este endpoint pergunta, aquele executa.
+  </Card>
+  <Card title="Obter pedido" icon="receipt" href="/pt/api-reference/get-order">
+    Leia o pedido ao qual o veredito se refere.
+  </Card>
+</CardGroup>
