@@ -47,7 +47,7 @@ x-api-key: <your_api_key>
 The verdict comes wrapped in the standard envelope: `{ "success": true, "data": { ... } }`.
 
 <ResponseField name="canCancel" type="boolean">
-  The answer. Read the `pending` section below before treating `true` as a guarantee.
+  The answer. It is the same verdict the real cancellation will give.
 </ResponseField>
 
 <ResponseField name="outcome" type="string">
@@ -90,13 +90,13 @@ The verdict comes wrapped in the standard envelope: `{ "success": true, "data": 
   The evaluated context, as a map of field to value. It is the forensic receipt: it lets you reconstruct why this was decided even if the configuration changes afterwards.
 </ResponseField>
 
-<ResponseField name="pending" type="string[]">
-  Expensive checks that were **not** run: `CREDIT_NOTE` and/or `BUSINESS_DAY`. Empty when everything was checked.
-</ResponseField>
+### A `true` here is the same `true` the `POST /cancel` gives
 
-### `pending` — why a `true` is not a guarantee
+It was not always so. The credit note and the business day were checked separately inside the real cancellation, this endpoint skipped them, and a `pending` field announced those two omitted checks. **That field is gone**: both are policy rules now, and both endpoints run them.
 
-The preflight runs only the cheap phase. Checking the credit note costs a call to the fiscal provider, and the business day a query — over a list of orders that would be one call per row. So the preflight skips them and declares them in `pending`. A `canCancel: true` with a non-empty `pending` **can still end in a rejection** when you actually cancel: the real cancellation does run those checks.
+One difference survives, and it is a legitimate race rather than a design gap: between asking and cancelling, the business day can close or someone else can fire a cancellation. Asking reserves nothing.
+
+This endpoint answers for **one** order on purpose: resolving it costs two queries, and over a list that would be one per row.
 
 ### Denial codes
 
@@ -107,6 +107,8 @@ The real cancellation returns the same `code` when it denies for the same reason
 | `CANCELLATION_IN_PROGRESS` | Fire rule | A cancellation is already in flight. |
 | `FISCAL_ALREADY_CANCELLED` | Fire rule | The fiscal document is already voided. |
 | `ORDER_NOT_CANCELLABLE` | Fire rule | The order is `FORCE_CLOSED` or `CANCELLED`. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | Fire rule | There is an invoice and no credit note yet. Request the fiscal void first. |
+| `BUSINESS_DAY_CLOSED` | Fire rule | The order belongs to a closed business day, or to a day before the active one. |
 | `CANCELLATION_POLICY_DENIED` | account rule | A rule configured by the account denied it. The human-readable reason travels in `reason`. |
 
 <ResponseExample>
@@ -130,8 +132,7 @@ The real cancellation returns the same `code` when it denies for the same reason
       "isFinalConsumer": "true",
       "minutesSinceCreation": "12.4",
       "minutesSinceAuthorization": "11.9"
-    },
-    "pending": ["CREDIT_NOTE", "BUSINESS_DAY"]
+    }
   }
 }
 ```
@@ -154,8 +155,7 @@ The real cancellation returns the same `code` when it denies for the same reason
       "countryCode": "BR",
       "fiscalStatus": "cancelled",
       "minutesSinceCreation": "94.2"
-    },
-    "pending": []
+    }
   }
 }
 ```
@@ -185,8 +185,7 @@ The real cancellation returns the same `code` when it denies for the same reason
       "govIdType": "CPF",
       "minutesSinceCreation": "52.1",
       "minutesSinceAuthorization": "47.3"
-    },
-    "pending": []
+    }
   }
 }
 ```

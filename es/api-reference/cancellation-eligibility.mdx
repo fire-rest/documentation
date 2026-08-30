@@ -47,7 +47,7 @@ x-api-key: <tu_api_key>
 El veredicto llega envuelto en el sobre estándar: `{ "success": true, "data": { ... } }`.
 
 <ResponseField name="canCancel" type="boolean">
-  La respuesta. Lee la sección de `pending` más abajo antes de tratar un `true` como garantía.
+  La respuesta. Es el mismo veredicto que va a dar la cancelación real.
 </ResponseField>
 
 <ResponseField name="outcome" type="string">
@@ -90,13 +90,13 @@ El veredicto llega envuelto en el sobre estándar: `{ "success": true, "data": {
   El contexto evaluado, como un mapa de campo a valor. Es el recibo forense: permite reconstruir por qué se decidió eso aunque después cambie la configuración.
 </ResponseField>
 
-<ResponseField name="pending" type="string[]">
-  Verificaciones caras que **no** se corrieron: `CREDIT_NOTE` y/o `BUSINESS_DAY`. Vacío cuando ya se verificó todo.
-</ResponseField>
+### Un `true` de acá es el mismo `true` del `POST /cancel`
 
-### `pending` — por qué un `true` no es una garantía
+No fue siempre así. La nota de crédito y el día de negocio se comprobaban sueltas dentro de la cancelación real, este endpoint se las salteaba, y había un campo `pending` que anunciaba esas dos verificaciones omitidas. **Ese campo ya no existe**: las dos son reglas de la política, y las corren los dos endpoints.
 
-El preflight corre solo la fase barata. Comprobar la nota de crédito cuesta una llamada al proveedor fiscal, y el día de negocio una consulta — sobre una lista de órdenes serían una por fila. Por eso el preflight las omite y las declara en `pending`. Un `canCancel: true` con `pending` no vacío **todavía puede terminar en rechazo** al cancelar de verdad: la cancelación real sí corre esas verificaciones.
+Queda una diferencia, y es una carrera legítima, no un desfase de diseño: entre que preguntás y cancelás, el día de negocio puede cerrarse o alguien puede disparar otra cancelación. Preguntar no reserva nada.
+
+Este endpoint responde por **una** orden a propósito: resolverlo cuesta dos consultas, y sobre una lista sería una por fila.
 
 ### Códigos de rechazo
 
@@ -107,6 +107,8 @@ La cancelación real devuelve el mismo `code` cuando niega por el mismo motivo.
 | `CANCELLATION_IN_PROGRESS` | regla de Fire | Ya hay una cancelación en curso. |
 | `FISCAL_ALREADY_CANCELLED` | regla de Fire | El documento fiscal ya está anulado. |
 | `ORDER_NOT_CANCELLABLE` | regla de Fire | La orden está `FORCE_CLOSED` o `CANCELLED`. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | regla de Fire | Hay factura y todavía no hay nota de crédito. Pedí primero la anulación fiscal. |
+| `BUSINESS_DAY_CLOSED` | regla de Fire | La orden es de un día de negocio ya cerrado, o de un día anterior al activo. |
 | `CANCELLATION_POLICY_DENIED` | regla de la cuenta | Lo negó una regla configurada por la cuenta. El motivo legible viaja en `reason`. |
 
 <ResponseExample>
@@ -130,8 +132,7 @@ La cancelación real devuelve el mismo `code` cuando niega por el mismo motivo.
       "isFinalConsumer": "true",
       "minutesSinceCreation": "12.4",
       "minutesSinceAuthorization": "11.9"
-    },
-    "pending": ["CREDIT_NOTE", "BUSINESS_DAY"]
+    }
   }
 }
 ```
@@ -154,8 +155,7 @@ La cancelación real devuelve el mismo `code` cuando niega por el mismo motivo.
       "countryCode": "BR",
       "fiscalStatus": "cancelled",
       "minutesSinceCreation": "94.2"
-    },
-    "pending": []
+    }
   }
 }
 ```
@@ -185,8 +185,7 @@ La cancelación real devuelve el mismo `code` cuando niega por el mismo motivo.
       "govIdType": "CPF",
       "minutesSinceCreation": "52.1",
       "minutesSinceAuthorization": "47.3"
-    },
-    "pending": []
+    }
   }
 }
 ```
