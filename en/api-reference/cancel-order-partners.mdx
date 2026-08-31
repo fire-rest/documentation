@@ -1,0 +1,97 @@
+---
+title: "Cancel order (partners)"
+api: "POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders/{orderId}/cancel"
+description: "Cancels an injected order by its external id. Runs the cancellation policy."
+authMethod: "bearer"
+---
+
+Cancels an order you injected, looking it up by **the external id you gave it**. Unlike the
+backoffice endpoint, you do not need to store our internal UUID.
+
+<Info>
+  This endpoint runs the **cancellation policy**: Fire's rules plus whatever the account
+  configured. Before trying, you can ask [Cancellation
+  eligibility](/en/api-reference/cancellation-eligibility), which returns the same verdict and
+  the same `code` with a `200` and no side effects.
+</Info>
+
+## The order of the steps depends on the fiscal gateway
+
+This is the part integrations get wrong most often, and the only place where the order
+matters.
+
+<Tabs>
+  <Tab title="With gateway numbering">
+    Fire numbers the receipt, so **the fiscal void comes first**:
+
+    <Steps>
+      <Step title="Void the receipt">
+        `POST /api/v2/external/fiscal/numbering` with `operation: "CANCEL"`. It returns the
+        credit note. See [Fiscal numbering v2](/en/api-reference/fiscal-documents-v2).
+      </Step>
+      <Step title="Cancel the order">
+        Only now, this endpoint.
+      </Step>
+    </Steps>
+
+    It is the same pattern as issuing — the fiscal fact first, the order second — which makes
+    it easy to remember: **you void the way you issue**.
+
+    If you invert the steps, this endpoint answers `409` with
+    `FISCAL_REPRESENTATION_NOT_VOIDED`. It is not transient: retrying will not fix it.
+  </Tab>
+  <Tab title="Without gateway numbering">
+    There is no prior void to request: **cancel directly**, with this endpoint and nothing
+    else.
+  </Tab>
+</Tabs>
+
+Fire works out which of the two cases applies on its own, from that account, country and
+vendor's configuration. **You do not have to find out**: if the credit note applies to you,
+the `409` tells you.
+
+<ParamField header="Authorization" type="string" required>
+  `Bearer <api-key>` with the `orders:write` scope, vendor-scoped.
+</ParamField>
+
+<ParamField path="orderId" type="string" required>
+  The order's **external id** — the same `orderId` you sent when injecting it. Not our
+  internal UUID: you do not need to store it.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  The reason. Between 5 and 500 characters. With a catalog, the text of the chosen reason.
+</ParamField>
+
+<ParamField body="cancellationType" type="string">
+  The reason id within the catalog. For aggregator channels it must come from the SAG
+  catalog.
+</ParamField>
+
+<ParamField body="cancellationNote" type="string">
+  Free-form note, up to 500 characters. Stored separately from the reason.
+</ParamField>
+
+<ParamField body="cancellationGroup" type="string">
+  The group. **You do not need to send it**: the backend derives it.
+</ParamField>
+
+## Rejection codes
+
+All of them come back as `409`. **Branch on `code`**, never on the message: the text is for a
+person to read and may change or be translated without notice.
+
+| `code` | What happened | What to do |
+|---|---|---|
+| `CANCELLATION_IN_PROGRESS` | A cancellation is already in flight. | Wait; do not retry in a loop. |
+| `FISCAL_ALREADY_CANCELLED` | The fiscal document is already voided. | Nothing: the desired effect already happened. |
+| `ORDER_NOT_CANCELLABLE` | The order is already closed or cancelled. | Nothing: it is a terminal state. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | There is an invoice and no credit note yet. | Request the fiscal void first, wait for the response, and only then cancel. |
+| `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | Not cancellable over the API: an accounting adjustment applies. |
+| `CANCELLATION_POLICY_DENIED` | A rule configured by the account denied it. | Read `reason`: the customer wrote it, in their own language. |
+
+<Warning>
+  A `200` means **the order** was cancelled. It does **not** mean the fiscal document is
+  already voided: with a gateway you did that in the previous step, and with native issuing it
+  settles later, through the provider's callback.
+</Warning>

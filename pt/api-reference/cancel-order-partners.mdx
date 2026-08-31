@@ -1,0 +1,94 @@
+---
+title: "Cancelar pedido (parceiros)"
+api: "POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders/{orderId}/cancel"
+description: "Cancela um pedido injetado pelo seu id externo. Executa a política de cancelamento."
+authMethod: "bearer"
+---
+
+Cancela um pedido que você injetou, buscando-o pelo **id externo que você deu a ele**.
+Diferente do endpoint de backoffice, você não precisa guardar o nosso UUID interno.
+
+<Info>
+  Este endpoint executa a **política de cancelamento**: as regras do Fire mais as que a conta
+  tiver configurado. Antes de tentar, você pode perguntar à [Elegibilidade de
+  cancelamento](/pt/api-reference/cancellation-eligibility), que devolve o mesmo veredito e os
+  mesmos `code` com um `200` e sem efeitos.
+</Info>
+
+## A ordem dos passos depende do gateway fiscal
+
+É a parte que mais se erra ao integrar, e a única em que a ordem importa.
+
+<Tabs>
+  <Tab title="Com numeração por gateway">
+    O comprovante é numerado pelo Fire, então **o cancelamento fiscal vem primeiro**:
+
+    <Steps>
+      <Step title="Anular o comprovante">
+        `POST /api/v2/external/fiscal/numbering` com `operation: "CANCEL"`. Devolve a nota de
+        crédito. Ver [Numeração fiscal v2](/pt/api-reference/fiscal-documents-v2).
+      </Step>
+      <Step title="Cancelar o pedido">
+        Só agora, este endpoint.
+      </Step>
+    </Steps>
+
+    É o mesmo padrão da emissão — primeiro o fato fiscal, depois o pedido —, e por isso é
+    fácil de lembrar: **anula-se do mesmo jeito que se emite**.
+
+    Se você inverter os passos, este endpoint responde `409` com
+    `FISCAL_REPRESENTATION_NOT_VOIDED`. Não é transitório: repetir não resolve.
+  </Tab>
+  <Tab title="Sem numeração por gateway">
+    Não há cancelamento fiscal prévio a pedir: **cancela-se direto**, com este endpoint e mais
+    nada.
+  </Tab>
+</Tabs>
+
+O Fire resolve sozinho qual dos dois casos se aplica, pela configuração daquela conta, país e
+vendor. **Você não precisa descobrir**: se a nota de crédito se aplica a você, o `409` avisa.
+
+<ParamField header="Authorization" type="string" required>
+  `Bearer <api-key>` com o escopo `orders:write`, restrita a um vendor.
+</ParamField>
+
+<ParamField path="orderId" type="string" required>
+  O **id externo** do pedido — o mesmo `orderId` que você mandou ao injetá-lo. Não é o nosso
+  UUID interno: você não precisa guardá-lo.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  O motivo. Entre 5 e 500 caracteres. Com catálogo, o texto do motivo escolhido.
+</ParamField>
+
+<ParamField body="cancellationType" type="string">
+  O id do motivo dentro do catálogo. Para canais de agregador precisa sair do catálogo SAG.
+</ParamField>
+
+<ParamField body="cancellationNote" type="string">
+  Nota livre, até 500 caracteres. Guardada à parte do motivo.
+</ParamField>
+
+<ParamField body="cancellationGroup" type="string">
+  O grupo. **Não precisa mandar**: o backend deriva.
+</ParamField>
+
+## Códigos de recusa
+
+Todos saem com `409`. **Ramifique por `code`**, nunca pela mensagem: o texto é para uma pessoa
+ler e pode mudar ou ser traduzido sem aviso.
+
+| `code` | O que aconteceu | O que fazer |
+|---|---|---|
+| `CANCELLATION_IN_PROGRESS` | Já há um cancelamento em andamento. | Aguardar; não repetir em laço. |
+| `FISCAL_ALREADY_CANCELLED` | O documento fiscal já está anulado. | Nada: o efeito desejado já ocorreu. |
+| `ORDER_NOT_CANCELLABLE` | O pedido já está fechado ou cancelado. | Nada: é estado terminal. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | Há nota fiscal e ainda não há nota de crédito. | Pedir primeiro o cancelamento fiscal, aguardar a resposta, e só então cancelar. |
+| `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | Não se cancela pela API: cabe um ajuste contábil. |
+| `CANCELLATION_POLICY_DENIED` | Uma regra configurada pela conta negou. | Ler `reason`: o motivo foi escrito pelo cliente, no idioma dele. |
+
+<Warning>
+  Um `200` significa que **o pedido** foi cancelado. **Não** significa que o documento fiscal
+  já esteja anulado: com gateway você fez isso no passo anterior, e com emissão nativa se
+  resolve depois, pelo callback do provedor.
+</Warning>

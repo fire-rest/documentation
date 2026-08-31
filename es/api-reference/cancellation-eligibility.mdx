@@ -1,0 +1,235 @@
+---
+title: "Elegibilidad de cancelación"
+api: "GET https://app.fire.rest/api/v1/external/orders/{orderId}/cancellation-eligibility"
+description: "Pregunta si una orden se puede cancelar — sin cancelarla. El preflight del botón de cancelar."
+authMethod: "bearer"
+---
+
+Responde **si una orden se puede cancelar, sin cancelar nada**. El punto de venta lo consulta para mostrar u ocultar el botón de cancelar, y para explicarle al cajero por qué cuando no se puede.
+
+Corre el mismo servicio de políticas que la cancelación real, así que el preflight y el resultado no pueden discrepar sobre las reglas. El par natural de este endpoint es [Cancelar orden](/es/api-reference/cancel-order): este pregunta, aquel ejecuta.
+
+<Info>
+  `orderId` acepta cualquiera de las cuatro formas con las que una orden se puede nombrar desde afuera: el **id externo** que generó tu canal al inyectarla, el `order_id` que viajó en el payload de inyección, el `order_code` de Fire, y el UUID interno de Fire. Fire las prueba todas dentro del vendor de tu key. Si el id coincide con más de una orden de ese alcance, rechaza con `409` en vez de adivinar: contestar sobre la orden equivocada sería peor que no contestar.
+</Info>
+
+<Warning>
+  **Un `200` no significa "sí".** El veredicto viaja en el cuerpo: este endpoint devuelve `200` incluso cuando la orden no se puede cancelar, porque "no" es la respuesta a la pregunta, no un error. Un status distinto de `200` es un error de verdad — autenticación, orden inexistente —, nunca un rechazo de política.
+</Warning>
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con el scope `orders:read`. La key **debe estar acotada a un vendor** — las keys sin vínculo a una cuenta se rechazan con `403`. El tenant se deriva de la key, nunca del pedido.
+</ParamField>
+
+## Parámetros de ruta
+
+<ParamField path="orderId" type="string" required>
+  Identificador de la orden. Acepta el id externo, el `order_id` del payload, el `order_code` de Fire, o el UUID interno de Fire.
+</ParamField>
+
+## Parámetros de consulta
+
+<ParamField query="locale" type="string" default="es">
+  `es`, `en` o `pt`. Idioma de `reason`, `reasonDetail` y `outcomeLabel`. Solo afecta a las reglas propias de Fire, que traen su etiqueta en los tres idiomas; el texto de una regla configurada por la cuenta es suyo y vuelve tal cual esté escrito, sin traducir.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/external/orders/EXT-100234/cancellation-eligibility?locale=es
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+## Respuesta
+
+El veredicto llega envuelto en el sobre estándar: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="canCancel" type="boolean">
+  La respuesta. Es el mismo veredicto que va a dar la cancelación real.
+</ResponseField>
+
+<ResponseField name="outcome" type="string">
+  Resultado crudo de la política: `ALLOW` o `DENY`. Hoy es redundante con `canCancel` a propósito: viaja desde el principio para que, si algún día aparece un tercer resultado, agregarlo no rompa a los consumidores existentes.
+</ResponseField>
+
+<ResponseField name="outcomeLabel" type="string">
+  Nombre para mostrar del resultado, en el idioma pedido. Es la red cuando `reason` viene `null`: sin él, un rechazo por una regla sin nombre le llegaría al cajero sin una sola palabra que mostrar.
+</ResponseField>
+
+<ResponseField name="code" type="string | null">
+  El motivo, **estable**. `null` cuando la orden se puede cancelar. Este es el contrato — decide en código con `code`, nunca parseando `reason`. Los códigos posibles están listados más abajo.
+</ResponseField>
+
+<ResponseField name="reason" type="string | null">
+  El **nombre** de la regla que decidió, para humanos. Entra en una línea en la pantalla del POS. Es texto editable y traducible — **no es contrato**.
+</ResponseField>
+
+<ResponseField name="reasonDetail" type="string | null">
+  La **nota larga** de esa misma regla, o `null`. Va aparte de `reason` para que el consumidor decida cuánto espacio le da: el POS pinta una línea, una pantalla de detalle puede pintar las dos. También es texto editable, no contrato. Las reglas propias de Fire no llevan nota, así que un rechazo por una regla de Fire trae siempre `reasonDetail: null` — es lo esperado, no un bug. La nota solo aparece en reglas configuradas por la cuenta.
+</ResponseField>
+
+<ResponseField name="source" type="string">
+  De dónde salió la decisión: `baseline` (una regla de Fire), `account` (una regla configurada por la cuenta) o `default` (ninguna regla coincidió — la orden se puede cancelar).
+</ResponseField>
+
+<ResponseField name="threshold" type="object | null">
+  Presente solo cuando la regla que ganó comparaba contra un umbral numérico.
+
+  <Expandable title="threshold">
+    <ResponseField name="field" type="string">El campo del catálogo que evaluó la regla (p. ej. `minutesSinceAuthorization`).</ResponseField>
+    <ResponseField name="threshold" type="number">El límite escrito en la regla.</ResponseField>
+    <ResponseField name="actual" type="number">Lo que la orden traía en realidad.</ResponseField>
+  </Expandable>
+
+  Con esto puedes decirle al cajero "se pasó por 17 minutos" sin aprender códigos nuevos.
+</ResponseField>
+
+<ResponseField name="resolvedFrom" type="object">
+  El contexto evaluado, como un mapa de campo a valor. Es el recibo forense: permite reconstruir por qué se decidió eso aunque después cambie la configuración.
+</ResponseField>
+
+### Un `true` de acá es el mismo `true` del `POST /cancel`
+
+No fue siempre así. La nota de crédito y el día de negocio se comprobaban sueltas dentro de la cancelación real, este endpoint se las salteaba, y había un campo `pending` que anunciaba esas dos verificaciones omitidas. **Ese campo ya no existe**: las dos son reglas de la política, y las corren los dos endpoints.
+
+Queda una diferencia, y es una carrera legítima, no un desfase de diseño: entre que preguntás y cancelás, el día de negocio puede cerrarse o alguien puede disparar otra cancelación. Preguntar no reserva nada.
+
+Este endpoint responde por **una** orden a propósito: resolverlo cuesta dos consultas, y sobre una lista sería una por fila.
+
+### Códigos de rechazo
+
+La cancelación real devuelve el mismo `code` cuando niega por el mismo motivo.
+
+| Código | Origen | Qué pasó |
+|---|---|---|
+| `CANCELLATION_IN_PROGRESS` | regla de Fire | Ya hay una cancelación en curso. |
+| `FISCAL_ALREADY_CANCELLED` | regla de Fire | El documento fiscal ya está anulado. |
+| `ORDER_NOT_CANCELLABLE` | regla de Fire | La orden está `FORCE_CLOSED` o `CANCELLED`. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | regla de Fire | Hay factura y todavía no hay nota de crédito. Pedí primero la anulación fiscal. |
+| `BUSINESS_DAY_CLOSED` | regla de Fire | La orden es de un día de negocio ya cerrado, o de un día anterior al activo. |
+| `CANCELLATION_POLICY_DENIED` | regla de la cuenta | Lo negó una regla configurada por la cuenta. El motivo legible viaja en `reason`. |
+
+<ResponseExample>
+```json 200 — permitido
+{
+  "success": true,
+  "data": {
+    "canCancel": true,
+    "outcome": "ALLOW",
+    "outcomeLabel": "Permitir cancelar",
+    "code": null,
+    "reason": null,
+    "reasonDetail": null,
+    "source": "default",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "isFinalConsumer": "true",
+      "minutesSinceCreation": "12.4",
+      "minutesSinceAuthorization": "11.9"
+    }
+  }
+}
+```
+
+```json 200 — negado por una regla de Fire
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "No permitir",
+    "code": "ORDER_NOT_CANCELLABLE",
+    "reason": "La orden ya no está en un estado cancelable",
+    "reasonDetail": null,
+    "source": "baseline",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "CANCELLED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "cancelled",
+      "minutesSinceCreation": "94.2"
+    }
+  }
+}
+```
+
+```json 200 — negado por una regla de la cuenta
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "No permitir",
+    "code": "CANCELLATION_POLICY_DENIED",
+    "reason": "Prazo de anulação da SEFAZ vencido",
+    "reasonDetail": "A NFC-e autorizada só pode ser anulada em até 30 minutos. Depois disso é preciso abrir um chamado fiscal.",
+    "source": "account",
+    "threshold": {
+      "field": "minutesSinceAuthorization",
+      "threshold": 30,
+      "actual": 47.3
+    },
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "isFinalConsumer": "false",
+      "govIdType": "CPF",
+      "minutesSinceCreation": "52.1",
+      "minutesSinceAuthorization": "47.3"
+    }
+  }
+}
+```
+
+```json 403 — key sin vendor
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "Vendor-scoped API key required (accountId binding missing)"
+}
+```
+
+```json 404 — orden fuera de tu alcance
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "InjectedOrder not found: EXT-100234"
+}
+```
+
+```json 409 — id externo ambiguo
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "AMBIGUOUS_ORDER_REFERENCE",
+  "message": "External order id EXT-100234 matches 2 orders across vendors; cannot disambiguate"
+}
+```
+</ResponseExample>
+
+## Qué construir con cada campo
+
+- **Decide en código con `code`.** `reason` y `reasonDetail` son texto editable y traducible — nunca los parsees.
+- **Muestra `reason` en una línea**; `reasonDetail` es el párrafo, para pantallas con más lugar. Si `reason` viene `null` en un rechazo, usa `outcomeLabel` como respaldo.
+- **Usa `threshold`** para armar mensajes de "se pasó por N" de forma genérica, sin conocer ninguna regla en particular.
+- **Guarda `resolvedFrom`** en tus logs: es el recibo que explica el veredicto incluso después de que cambien las reglas de la cuenta.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Cancelar orden" icon="ban" href="/es/api-reference/cancel-order">
+    La otra mitad del par: este endpoint pregunta, aquel ejecuta.
+  </Card>
+  <Card title="Obtener orden" icon="receipt" href="/es/api-reference/get-order">
+    Lee la orden a la que se refiere el veredicto.
+  </Card>
+</CardGroup>
