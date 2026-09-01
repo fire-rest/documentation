@@ -72,6 +72,17 @@ Reglas:
 - product.updated y product.availability_changed usan `targets[]` — un solo evento cubre todas las tiendas afectadas
 - stores.sync y menus.sync: batches de hasta 50 items, con batchIndex/batchTotal
 
+## Manuales de usuario — usá la skill `user-manual-feature`
+
+Antes de crear o editar cualquier archivo en `en|es|pt/manuals/`, leé
+`.claude/skills/user-manual-feature/SKILL.md`: estructura del documento, generación de
+capturas por script, paridad de idiomas y verificación.
+
+Lo mínimo: el manual explica **qué problema resuelve la pantalla** y **qué errores cuestan
+plata**, no describe botones. Las capturas se generan con un script Playwright que vive en el
+repo de la app (`XMART_BACKOFFICE/scripts/docs/`) y escribe en `images/` de este repo, para que
+se puedan regenerar cuando la pantalla cambie.
+
 ## Changelog — usá la skill `changelog-entry`
 Antes de escribir o editar una entrada en `*/changelog.mdx`, leé
 `.claude/skills/changelog-entry/SKILL.md`: formato, tono, cuándo advertir y las reglas
