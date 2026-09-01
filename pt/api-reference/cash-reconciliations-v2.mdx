@@ -1,0 +1,292 @@
+---
+title: "Conciliações de caixa (v2)"
+api: "POST https://app.fire.rest/api/v2/external/cash-management/reconciliations"
+description: "Reporta a contagem de dinheiro no fim do turno com o fundo de troco e as sangrias declarados à parte, e deixa o Fire fazer a conta."
+authMethod: "key"
+---
+
+<Warning>
+  **API de parceiro.** Este endpoint é destinado a integradores de plataforma. Clientes padrão do Fire não têm acesso direto — fale com seu account manager se precisar desta integração.
+</Warning>
+
+Registra o fechamento de um turno e faz o Fire comparar com o que ele diz que deveria haver na gaveta. A diferença (`SHORTAGE`, `OVERAGE` ou `MATCH`) é calculada pelo Fire.
+
+<Note>
+  **A [v1](/pt/api-reference/cash-reconciliations) continua viva, sem data de descontinuação.** Se sua integração já a consome, não precisa fazer nada. A migração para a v2 acontece quando você quiser, sem deploy coordenado.
+</Note>
+
+## O que muda
+
+Uma só coisa, e não é um campo novo: **muda quem faz a conta**.
+
+|  | v1 | v2 |
+|---|---|---|
+| `declaredCash` | **líquido** — o PDV subtrai o fundo antes de enviar | **bruto** — o dinheiro contado na gaveta, fundo incluído |
+| `systemCash` | vendas em dinheiro | fundo + vendas em dinheiro − sangrias |
+| Sangrias do turno | não há onde declará-las | `withdrawals[]`, com categoria e autorizador |
+
+`discrepancy` é a mesma subtração nas duas versões: `declaredCash − systemCash`. Na v2 o fundo está dos dois lados, então a diferença significa exatamente o mesmo e uma linha v1 e uma v2 se comparam sem conversão nenhuma.
+
+<Warning>
+  **O passo que não se detecta sozinho.** Se você aponta para a v2 e continua subtraindo o fundo de `declaredCash`, a requisição passa sem erro nenhum e **todos os fechamentos saem com uma falta do tamanho do fundo** — todos os dias, com o operador aparecendo como devedor de um dinheiro que nunca tirou. O Fire não consegue distinguir uma contagem líquida de uma bruta: só você sabe qual enviou.
+
+  Antes de migrar, confira contra um dia de teste que a `discrepancy` devolvida pelo Fire é a mesma que você calcula.
+</Warning>
+
+## Autenticação e tenancy
+
+```http
+POST https://app.fire.rest/api/v2/external/cash-management/reconciliations
+x-api-key: pk_live_xxxxxxxxxxxxxxxx
+Content-Type: application/json
+```
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire, com o escopo `cash-management:write`.
+
+  Precisa ser **vendor-scoped**: trazer account **e** vendor. Se faltar algum, a resposta é `403`.
+</ParamField>
+
+<Warning>
+  **Aqui a chave é o tenant.** O `storeId` é buscado dentro do escopo da sua chave; se a loja for de outra conta ou de outro vendor, a resposta é `404` sem revelar se ela existe.
+
+  Essa é uma diferença real em relação à v1, que aceita qualquer `storeId` válido. **Se hoje você posta na v1 com uma chave compartilhada entre contas, essa chave não entra na v2** — vai precisar de uma própria.
+</Warning>
+
+## Um fechamento por turno
+
+Duas regras, e vale entender as duas antes de integrar:
+
+<ParamField body="sessionExternalId" type="string" required>
+  O identificador do turno no seu PDV. É a **chave de idempotência**: reenviar o mesmo fechamento devolve `409` em vez de duplicá-lo.
+
+  **Único por loja para sempre, não por dia.** Não carrega a data, então um contador que reinicia todo dia (`T01-1`, `T01-2`, …) colide com o fechamento de ontem. Se o seu id de turno reinicia, prefixe-o com o dia operacional: `T01-20260901-1`.
+
+  Um turno que trabalha com **duas moedas** envia dois POSTs com o **mesmo** `sessionExternalId` e `currency` diferente: a chave inclui a moeda, então os dois entram.
+</ParamField>
+
+E a outra, que é a que surpreende: **um turno fecha uma única vez**, não importa o id. Se você enviar um segundo fechamento para o mesmo dia, loja, operador, moeda e `shiftStart` com outro `sessionExternalId`, a resposta é `409`. Gerar um id novo a cada envio não é uma retentativa: é um fechamento novo, e o Fire o trata como tal.
+
+## Corpo da requisição
+
+<ParamField body="storeId" type="string" required>
+  UUID da loja. Precisa pertencer ao escopo da sua API key.
+</ParamField>
+
+<ParamField body="currency" type="string" required>
+  Código ISO 4217 de 3 caracteres (`BRL`, `USD`, `ARS`, `CLP`, `COP`, `VES`).
+</ParamField>
+
+<ParamField body="declaredCash" type="number" required>
+  **O dinheiro contado na gaveta, bruto — com o fundo incluído.** Decimal com até 2 casas, não negativo.
+
+  É o campo que mudou de significado em relação à v1. Leia o aviso acima.
+</ParamField>
+
+<ParamField body="openingBalance" type="number" required>
+  O fundo com que o caixa abriu neste turno, nesta moeda. Decimal com até 2 casas, não negativo. **Envie sempre, mesmo que seja `0`.**
+</ParamField>
+
+<ParamField body="shiftStart" type="string" required>
+  Início do turno, ISO 8601 **com offset** (`2026-09-01T13:00:00-03:00`). O Fire usa a janela para atribuir as vendas do turno.
+</ParamField>
+
+<ParamField body="shiftEnd" type="string" required>
+  Fim do turno, mesmo formato. Precisa ser posterior a `shiftStart`.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  Causa categórica da diferença. Uma de: `WRONG_CHANGE_GIVEN`, `COUNTING_ERROR`, `INCOMPLETE_CUSTOMER_PAYMENT`, `MINOR_UNIDENTIFIED_DIFFERENCE`, `THEFT_SUSPECTED`, `UNRECORDED_PAYMENT`, `OTHER`.
+
+  Obrigatória mesmo quando o fechamento bate. **Quando há sobra, o único valor aceito é `OTHER`** — qualquer outro volta `400`: dinheiro a mais não se explica por erro de contagem do cliente.
+</ParamField>
+
+<ParamField body="withdrawals" type="array">
+  O dinheiro que saiu da gaveta durante o turno. Até 100 entradas. São subtraídas do esperado; o detalhe de cada uma fica guardado para auditoria.
+
+  <Expandable title="campos de cada sangria">
+    <ParamField body="amount" type="number" required>
+      Maior que zero, até 2 casas decimais.
+    </ParamField>
+    <ParamField body="category" type="string" required>
+      Uma de: `SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`.
+
+      Pagamentos a fornecedor e despesas miúdas são **um único valor** (`PAID_OUT`), de propósito: separá-los só gera dúvida sobre qual escolher.
+    </ParamField>
+    <ParamField body="withdrawnAt" type="string">
+      Quando aconteceu, ISO 8601 com offset.
+    </ParamField>
+    <ParamField body="authorizerUid" type="string">
+      Quem autorizou, no seu sistema.
+    </ParamField>
+    <ParamField body="authorizerName" type="string">
+      Nome de quem autorizou, para exibição.
+    </ParamField>
+    <ParamField body="notes" type="string">
+      Até 500 caracteres. **Obrigatório quando `category` é `OTHER`.**
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="businessDayDate" type="string">
+  Dia operacional em `YYYY-MM-DD`. O padrão é o dia operacional atual da loja. Use para registrar um fechamento de um dia passado — o Fire marca o resultado com `details.post_close: true` se o dia já estiver fechado.
+</ParamField>
+
+<ParamField body="operatorUid" type="string">
+  O operador do turno. Opcional: omita quando o fechamento é da loja inteira.
+
+  Com operador, o Fire conta só as vendas dessa pessoa — e rejeita um operador que não teve nenhuma transação e mesmo assim declara dinheiro de vendas.
+</ParamField>
+
+<ParamField body="operatorName" type="string">
+  Nome do operador, exibido nas telas de conciliação.
+</ParamField>
+
+<ParamField body="terminalUid" type="string">
+  O caixa físico do turno. Permite agrupar os fechamentos do mesmo caixa no relatório.
+</ParamField>
+
+<ParamField body="notes" type="string">
+  Texto livre, até 2000 caracteres.
+</ParamField>
+
+<ParamField body="authorizationTokenId" type="string">
+  UUID de um token de autorização, quando o fechamento precisou de assinatura de um supervisor.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://app.fire.rest/api/v2/external/cash-management/reconciliations
+x-api-key: <sua_api_key>
+Content-Type: application/json
+
+{
+  "storeId": "550e8400-e29b-41d4-a716-446655440000",
+  "businessDayDate": "2026-09-01",
+  "currency": "BRL",
+  "sessionExternalId": "T01-20260901-2",
+  "shiftStart": "2026-09-01T13:00:00-03:00",
+  "shiftEnd": "2026-09-01T21:30:00-03:00",
+  "terminalUid": "CAIXA-01",
+  "operatorUid": "op-cashier-123",
+  "operatorName": "María Pérez",
+  "openingBalance": 100.00,
+  "declaredCash": 878.00,
+  "withdrawals": [
+    {
+      "amount": 300.00,
+      "category": "SAFE_DROP",
+      "withdrawnAt": "2026-09-01T17:40:00-03:00",
+      "authorizerUid": "sup-002",
+      "authorizerName": "Juan Ramos"
+    }
+  ],
+  "reason": "OTHER",
+  "notes": "Fechamento do turno da tarde"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "id": "e6a28764-ef46-41cf-8bb8-eb8d4f0e2916",
+    "accountId": "1cc47b00-f321-437b-841e-1965a78a0d91",
+    "vendorId": "100.1.1",
+    "storeId": "550e8400-e29b-41d4-a716-446655440000",
+    "businessDayDate": "2026-09-01",
+    "currency": "BRL",
+    "apiVersion": 2,
+    "sessionExternalId": "T01-20260901-2",
+    "terminalUid": "CAIXA-01",
+    "operatorUid": "op-cashier-123",
+    "openingBalance": 100.00,
+    "withdrawalsTotal": 300.00,
+    "systemCash": 878.00,
+    "declaredCash": 878.00,
+    "discrepancy": 0.00,
+    "discrepancyType": "MATCH",
+    "shiftStart": "2026-09-01T16:00:00+00:00",
+    "shiftEnd": "2026-09-02T00:30:00+00:00",
+    "reportedBy": "apikey:key_01H...",
+    "reportedAt": "2026-09-01T21:35:12.004Z",
+    "details": {
+      "reason": "OTHER",
+      "notes": "Fechamento do turno da tarde",
+      "post_close": false,
+      "opening_balance": 100.00,
+      "operator_name": "María Pérez",
+      "withdrawals": [
+        {
+          "amount": 300.00,
+          "category": "SAFE_DROP",
+          "withdrawn_at": "2026-09-01T17:40:00-03:00",
+          "authorizer_uid": "sup-002",
+          "authorizer_name": "Juan Ramos",
+          "notes": null
+        }
+      ]
+    }
+  }
+}
+```
+</ResponseExample>
+
+### Campos da resposta
+
+Os mesmos da v1, mais estes:
+
+<ResponseField name="apiVersion" type="number">
+  `2` para as linhas que entraram por este endpoint. As da v1 trazem `1`. A UI do Fire ramifica por este campo para exibir as duas de forma comparável.
+</ResponseField>
+
+<ResponseField name="openingBalance" type="number">
+  O fundo, como você enviou.
+</ResponseField>
+
+<ResponseField name="withdrawalsTotal" type="number">
+  A soma de `withdrawals[]`. O detalhe de cada uma fica em `details.withdrawals`.
+</ResponseField>
+
+<ResponseField name="sessionExternalId" type="string">
+  Eco da requisição. `null` nas linhas da v1.
+</ResponseField>
+
+<ResponseField name="terminalUid" type="string | null">
+  Eco da requisição.
+</ResponseField>
+
+<ResponseField name="systemCash" type="number">
+  O que o Fire calculou que deveria haver na gaveta: `openingBalance + vendas em dinheiro − withdrawalsTotal`.
+</ResponseField>
+
+<ResponseField name="discrepancy" type="number">
+  `declaredCash − systemCash`. Negativo é falta, positivo é sobra.
+</ResponseField>
+
+## Erros
+
+| Status | Quando | O que fazer |
+|---|---|---|
+| `400` | Campos inválidos ou faltando; mais de 2 casas decimais; `shiftEnd` anterior a `shiftStart`; `notes` faltando numa sangria `OTHER` | Corrigir o payload |
+| `400` | Sobra com `reason` diferente de `OTHER` | Uma sobra só se declara com `OTHER` |
+| `400` | `systemCash` negativo: as sangrias superam o fundo mais as vendas | Revisar `withdrawals[]` — a mensagem nomeia os três termos |
+| `403` | A chave não é vendor-scoped | Pedir uma chave com account e vendor |
+| `404` | A loja não existe, ou não é do seu escopo | Conferir o `storeId`. O Fire não revela qual das duas coisas é |
+| `409` | Já recebemos um fechamento com esse `sessionExternalId` nessa moeda | **Não é erro se você está retentando**: o envio anterior chegou |
+| `409` | Já há um fechamento para esse turno com outro `sessionExternalId` | Um turno fecha uma vez. Se está retentando, envie o mesmo id da primeira vez |
+
+## Migrar da v1
+
+1. **Trocar a URL**: `/api/v1/adapters/xmart/cash-management/reconciliations` → `/api/v2/external/cash-management/reconciliations`. Se sua chave não for vendor-scoped, peça uma nova.
+2. **Parar de subtrair o fundo de `declaredCash`.** Enviar o dinheiro contado como está.
+3. Enviar sempre `openingBalance` — mesmo que `0` — e o par `shiftStart` / `shiftEnd`.
+4. Enviar sempre `sessionExternalId`, único por loja para sempre.
+5. Se houver sangrias durante o turno, declará-las em `withdrawals[]`.
+6. **Conferir contra um dia de teste** que a `discrepancy` devolvida pelo Fire é a mesma que você calcula.
+
+<Note>
+  **Não há `GET` na v2.** A [listagem da v1](/pt/api-reference/cash-reconciliations#get-—-listar-conciliações) já devolve todas as linhas do dia, não importa com qual versão entraram — é onde você vai ver um fechamento v1 e um v2 lado a lado.
+</Note>

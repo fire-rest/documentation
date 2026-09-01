@@ -1,0 +1,292 @@
+---
+title: "Cash reconciliations (v2)"
+api: "POST https://app.fire.rest/api/v2/external/cash-management/reconciliations"
+description: "Report an end-of-shift cash count with the opening float and withdrawals declared separately, and let Fire do the arithmetic."
+authMethod: "key"
+---
+
+<Warning>
+  **Partner API.** This endpoint is intended for platform integrators. Standard Fire customers do not have direct access — contact your account manager if you need this integration.
+</Warning>
+
+Records a shift close and has Fire compare it against what it says should be in the drawer. Fire computes the difference (`SHORTAGE`, `OVERAGE` or `MATCH`).
+
+<Note>
+  **[v1](/en/api-reference/cash-reconciliations) stays alive, with no sunset date.** If your integration already consumes it, you don't have to do anything. Migrate to v2 whenever you want — no coordinated deploy needed.
+</Note>
+
+## What changes
+
+One thing only, and it isn't a new field: **who does the arithmetic changes**.
+
+|  | v1 | v2 |
+|---|---|---|
+| `declaredCash` | **net** — the POS subtracts the float before sending | **gross** — the cash counted in the drawer, float included |
+| `systemCash` | cash sales | float + cash sales − withdrawals |
+| Shift withdrawals | nowhere to declare them | `withdrawals[]`, with category and authorizer |
+
+`discrepancy` is the same subtraction in both versions: `declaredCash − systemCash`. Under v2 the float sits on both sides, so the difference means exactly the same thing and a v1 row and a v2 row compare with no conversion.
+
+<Warning>
+  **The step that doesn't announce itself.** If you point at v2 and keep subtracting the float from `declaredCash`, the request goes through with no error at all and **every close comes back short by exactly the float** — every day, with the cashier showing as owing money they never took. Fire cannot tell a net count from a gross one: only you know which you sent.
+
+  Before migrating, check against a test day that the `discrepancy` Fire returns is the one you compute yourself.
+</Warning>
+
+## Authentication and tenancy
+
+```http
+POST https://app.fire.rest/api/v2/external/cash-management/reconciliations
+x-api-key: pk_live_xxxxxxxxxxxxxxxx
+Content-Type: application/json
+```
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key, with the `cash-management:write` scope.
+
+  It must be **vendor-scoped**: it has to carry both account **and** vendor. Missing either one returns `403`.
+</ParamField>
+
+<Warning>
+  **Here the key is the tenant.** The `storeId` is looked up inside your key's scope; if the store belongs to another account or vendor, the response is `404` without revealing whether it exists.
+
+  That is a real difference from v1, which accepts any valid `storeId`. **If you post to v1 today with a key shared across accounts, that key cannot use v2** — you'll need one of your own.
+</Warning>
+
+## One close per shift
+
+Two rules, and both are worth understanding before you integrate:
+
+<ParamField body="sessionExternalId" type="string" required>
+  Your POS's identifier for the shift. It is the **idempotency key**: re-sending the same close returns `409` instead of duplicating it.
+
+  **Unique per store forever, not per day.** It carries no date, so a counter that resets daily (`T01-1`, `T01-2`, …) collides with yesterday's close. If your shift id resets, prefix it with the business day: `T01-20260901-1`.
+
+  A shift handling **two currencies** sends two POSTs with the **same** `sessionExternalId` and a different `currency`: the key includes the currency, so both go through.
+</ParamField>
+
+And the other one, which is the surprising one: **a shift closes once**, regardless of the id. If you send a second close for the same day, store, operator, currency and `shiftStart` under a different `sessionExternalId`, the response is `409`. Generating a fresh id per send is not a retry — it is a new close, and Fire treats it as one.
+
+## Request body
+
+<ParamField body="storeId" type="string" required>
+  Store UUID. It must belong to your API key's scope.
+</ParamField>
+
+<ParamField body="currency" type="string" required>
+  3-character ISO 4217 code (`USD`, `BRL`, `ARS`, `CLP`, `COP`, `VES`).
+</ParamField>
+
+<ParamField body="declaredCash" type="number" required>
+  **The cash counted in the drawer, gross — float included.** Decimal with at most 2 places, non-negative.
+
+  This is the field whose meaning changed from v1. Read the warning above.
+</ParamField>
+
+<ParamField body="openingBalance" type="number" required>
+  The float the register was opened with for this shift, in this currency. Decimal with at most 2 places, non-negative. **Always send it, even when it is `0`.**
+</ParamField>
+
+<ParamField body="shiftStart" type="string" required>
+  Shift start, ISO 8601 **with offset** (`2026-09-01T13:00:00-05:00`). Fire uses the window to attribute the shift's sales.
+</ParamField>
+
+<ParamField body="shiftEnd" type="string" required>
+  Shift end, same format. Must be later than `shiftStart`.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  Categorical cause of the difference. One of: `WRONG_CHANGE_GIVEN`, `COUNTING_ERROR`, `INCOMPLETE_CUSTOMER_PAYMENT`, `MINOR_UNIDENTIFIED_DIFFERENCE`, `THEFT_SUSPECTED`, `UNRECORDED_PAYMENT`, `OTHER`.
+
+  Required even when the close matches. **On an overage the only accepted value is `OTHER`** — anything else returns `400`: extra cash is not explained by a customer's counting error.
+</ParamField>
+
+<ParamField body="withdrawals" type="array">
+  Cash that left the drawer during the shift. Up to 100 entries. They are subtracted from what's expected; the per-withdrawal detail is stored for audit.
+
+  <Expandable title="fields of each withdrawal">
+    <ParamField body="amount" type="number" required>
+      Greater than zero, at most 2 decimals.
+    </ParamField>
+    <ParamField body="category" type="string" required>
+      One of: `SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`.
+
+      Supplier payments and petty expenses are **one single value** (`PAID_OUT`), deliberately: splitting them only creates doubt about which to pick.
+    </ParamField>
+    <ParamField body="withdrawnAt" type="string">
+      When it happened, ISO 8601 with offset.
+    </ParamField>
+    <ParamField body="authorizerUid" type="string">
+      Who authorized it, in your system.
+    </ParamField>
+    <ParamField body="authorizerName" type="string">
+      Authorizer's name, for display.
+    </ParamField>
+    <ParamField body="notes" type="string">
+      Up to 500 characters. **Required when `category` is `OTHER`.**
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="businessDayDate" type="string">
+  Business day as `YYYY-MM-DD`. Defaults to the store's current business day. Use it to record a close for a past day — Fire flags the result with `details.post_close: true` when the day is already closed.
+</ParamField>
+
+<ParamField body="operatorUid" type="string">
+  The shift's cashier. Optional: omit it when the close covers the whole store.
+
+  With a cashier, Fire counts only that person's sales — and rejects an operator who had no transactions and still declares money from sales.
+</ParamField>
+
+<ParamField body="operatorName" type="string">
+  Cashier's name, shown on the reconciliation screens.
+</ParamField>
+
+<ParamField body="terminalUid" type="string">
+  The physical register for the shift. Lets the report group closes by register.
+</ParamField>
+
+<ParamField body="notes" type="string">
+  Free text, up to 2000 characters.
+</ParamField>
+
+<ParamField body="authorizationTokenId" type="string">
+  UUID of an authorization token, when the close needed a supervisor's sign-off.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://app.fire.rest/api/v2/external/cash-management/reconciliations
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "storeId": "550e8400-e29b-41d4-a716-446655440000",
+  "businessDayDate": "2026-09-01",
+  "currency": "USD",
+  "sessionExternalId": "T01-20260901-2",
+  "shiftStart": "2026-09-01T13:00:00-05:00",
+  "shiftEnd": "2026-09-01T21:30:00-05:00",
+  "terminalUid": "REGISTER-01",
+  "operatorUid": "op-cashier-123",
+  "operatorName": "María Pérez",
+  "openingBalance": 100.00,
+  "declaredCash": 878.00,
+  "withdrawals": [
+    {
+      "amount": 300.00,
+      "category": "SAFE_DROP",
+      "withdrawnAt": "2026-09-01T17:40:00-05:00",
+      "authorizerUid": "sup-002",
+      "authorizerName": "Juan Ramos"
+    }
+  ],
+  "reason": "OTHER",
+  "notes": "Afternoon shift close"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "id": "e6a28764-ef46-41cf-8bb8-eb8d4f0e2916",
+    "accountId": "1cc47b00-f321-437b-841e-1965a78a0d91",
+    "vendorId": "100.1.1",
+    "storeId": "550e8400-e29b-41d4-a716-446655440000",
+    "businessDayDate": "2026-09-01",
+    "currency": "USD",
+    "apiVersion": 2,
+    "sessionExternalId": "T01-20260901-2",
+    "terminalUid": "REGISTER-01",
+    "operatorUid": "op-cashier-123",
+    "openingBalance": 100.00,
+    "withdrawalsTotal": 300.00,
+    "systemCash": 878.00,
+    "declaredCash": 878.00,
+    "discrepancy": 0.00,
+    "discrepancyType": "MATCH",
+    "shiftStart": "2026-09-01T18:00:00+00:00",
+    "shiftEnd": "2026-09-02T02:30:00+00:00",
+    "reportedBy": "apikey:key_01H...",
+    "reportedAt": "2026-09-01T21:35:12.004Z",
+    "details": {
+      "reason": "OTHER",
+      "notes": "Afternoon shift close",
+      "post_close": false,
+      "opening_balance": 100.00,
+      "operator_name": "María Pérez",
+      "withdrawals": [
+        {
+          "amount": 300.00,
+          "category": "SAFE_DROP",
+          "withdrawn_at": "2026-09-01T17:40:00-05:00",
+          "authorizer_uid": "sup-002",
+          "authorizer_name": "Juan Ramos",
+          "notes": null
+        }
+      ]
+    }
+  }
+}
+```
+</ResponseExample>
+
+### Response fields
+
+The same ones as v1, plus these:
+
+<ResponseField name="apiVersion" type="number">
+  `2` for rows that came in through this endpoint. v1 rows carry `1`. Fire's UI branches on this field to show both in a comparable way.
+</ResponseField>
+
+<ResponseField name="openingBalance" type="number">
+  The float, as you sent it.
+</ResponseField>
+
+<ResponseField name="withdrawalsTotal" type="number">
+  The sum of `withdrawals[]`. The per-withdrawal detail lives in `details.withdrawals`.
+</ResponseField>
+
+<ResponseField name="sessionExternalId" type="string">
+  Echo of the request. `null` on v1 rows.
+</ResponseField>
+
+<ResponseField name="terminalUid" type="string | null">
+  Echo of the request.
+</ResponseField>
+
+<ResponseField name="systemCash" type="number">
+  What Fire computed should be in the drawer: `openingBalance + cash sales − withdrawalsTotal`.
+</ResponseField>
+
+<ResponseField name="discrepancy" type="number">
+  `declaredCash − systemCash`. Negative is a shortage, positive is an overage.
+</ResponseField>
+
+## Errors
+
+| Status | When | What to do |
+|---|---|---|
+| `400` | Invalid or missing fields; more than 2 decimals; `shiftEnd` before `shiftStart`; `notes` missing on an `OTHER` withdrawal | Fix the payload |
+| `400` | Overage with a `reason` other than `OTHER` | An overage is only declared with `OTHER` |
+| `400` | Negative `systemCash`: withdrawals exceed the float plus sales | Review `withdrawals[]` — the message names all three terms |
+| `403` | The key is not vendor-scoped | Request a key carrying account and vendor |
+| `404` | The store doesn't exist, or isn't in your scope | Check the `storeId`. Fire doesn't reveal which of the two it is |
+| `409` | We already have a close with that `sessionExternalId` in that currency | **Not an error if you're retrying**: the earlier send did arrive |
+| `409` | There is already a close for that shift under a different `sessionExternalId` | A shift closes once. If you're retrying, send the same id as the first time |
+
+## Migrating from v1
+
+1. **Change the URL**: `/api/v1/adapters/xmart/cash-management/reconciliations` → `/api/v2/external/cash-management/reconciliations`. If your key isn't vendor-scoped, request a new one.
+2. **Stop subtracting the float from `declaredCash`.** Send the counted cash as is.
+3. Always send `openingBalance` — even `0` — and the `shiftStart` / `shiftEnd` pair.
+4. Always send `sessionExternalId`, unique per store forever.
+5. If you take cash out during the shift, declare it in `withdrawals[]`.
+6. **Check against a test day** that the `discrepancy` Fire returns is the one you compute yourself.
+
+<Note>
+  **There is no `GET` on v2.** The [v1 listing](/en/api-reference/cash-reconciliations#get-—-list-reconciliations) already returns every row for the day regardless of which version wrote it — that's where you'll see a v1 close and a v2 close side by side.
+</Note>
