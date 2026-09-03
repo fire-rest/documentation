@@ -1,0 +1,144 @@
+---
+title: "Categorias de estação"
+description: "Dê a cada produto uma categoria de roteamento e uma miniatura de cozinha para a linha cair na estação certa."
+---
+
+O roteamento casa as linhas do pedido por `item_type`. Se o produto não tem categoria de estação, a linha não pega o mapeamento e cai na estação padrão: hambúrgueres na fritadeira, bebidas na grelha. Se a miniatura não coincide com o que a cozinha vê, escolhem o item errado.
+
+Esta página é **KDS → Categorias de estação**. É o catálogo da conta de códigos (`BEVERAGE`, `FRIES`) que os mapeamentos de roteamento usam. Aqui não se criam estações.
+
+<Note>
+  **O mínimo que você precisa saber**
+
+  - Crie o **código** uma vez. Não dá para mudar. Os mapeamentos de roteamento apontam para esse código.
+  - Na página **Ver** da categoria, toque em **Adicionar produto** e anexe uma miniatura para o cartão da cozinha parecer o prato.
+  - O primeiro match em [Roteamento](/pt/manuals/kds/routing) vale. Um produto sem categoria usa fallback, não um palpite.
+</Note>
+
+## O caminho simples
+
+<Steps>
+  <Step title="Abra Categorias de estação">
+    Vá em **KDS → Categorias de estação** (`/kds/admin/station-categories`).
+  </Step>
+  <Step title="Crie um código">
+    Clique em **Criar categoria**. Informe um **Nome** (ex.: Bebidas) e um **Código** (`BEVERAGE`). Só letras, números e `_`. Salve.
+  </Step>
+  <Step title="Atribua produtos">
+    Abra **Ver**. Clique em **Adicionar produto**, busque por nome ou PLU e toque em cada produto. Você pode adicionar vários sem fechar o diálogo.
+  </Step>
+</Steps>
+
+<Frame>
+  <img src="/images/manuals/kds/station-categories/01-list.png" alt="Lista de categorias de estação com códigos usados pelo roteamento de produtos" />
+</Frame>
+
+<Tip>
+  Se você só tem uma estação de produção e mapeamentos vazios, as categorias ainda ajudam depois. Pode parar quando tiver os códigos que vai mapear.
+</Tip>
+
+## Lista vs visualização
+
+| Tela | O que você faz |
+|---|---|
+| **Lista** | Buscar, criar, editar o nome visível, excluir. |
+| **Ver** | Ver produtos desta categoria, adicioná-los ou removê-los, e definir miniaturas. |
+
+<Frame>
+  <img src="/images/manuals/kds/station-categories/02-category-products-thumbs.png" alt="Visualização da categoria de estação com produtos atribuídos e miniaturas de cozinha" />
+</Frame>
+
+**Editar nome** muda só o rótulo que aparece no backoffice. O **Código** continua sendo o id de roteamento.
+
+## Como isso alimenta o roteamento
+
+1. O produto carrega o código da categoria como seu `item_type`.
+2. A [estratégia de roteamento](/pt/manuals/kds/routing) ativa procura um mapeamento desse código para estações de produção.
+3. O primeiro mapeamento que casa vale. Sem mapeamento → **fallback**.
+4. As regras da estação ainda podem rejeitar a linha depois.
+
+Não duplique o CRUD de categorias em [Estações](/pt/manuals/kds/stations). As estações consomem esses códigos; não os possuem.
+
+## Receitas
+
+<AccordionGroup>
+  <Accordion title="Separar grelha e fritadeira">
+    1. Crie `BURGER` e `FRIES`.
+    2. Em cada página **Ver**, adicione os produtos correspondentes.
+    3. Em **Roteamento → Mapeamentos**, mapeie `BURGER` → grelha e `FRIES` → fritadeira.
+    4. Deixe bebidas sem mapeamento só se o fallback for a estação certa.
+  </Accordion>
+  <Accordion title="Um produto que não pode ir para a linha quente">
+    1. Coloque-o em `BEVERAGE` (ou crie esse código).
+    2. Mapeie `BEVERAGE` para a estação fria, ou exclua-o nas **regras da estação** da grelha.
+    3. Confirme um pedido de teste: a bebida não deve aparecer na grelha.
+  </Accordion>
+  <Accordion title="Corrigir uma miniatura errada">
+    1. Abra **Ver** na categoria.
+    2. Encontre o produto e substitua a miniatura.
+    3. O próximo ticket mostra a imagem nova. Miniatura velha é como a cozinha envia a linha errada.
+  </Accordion>
+  <Accordion title="Excluir uma categoria que você não usa mais">
+    1. Confirme que nenhum mapeamento ainda aponta para esse código.
+    2. **Excluir**. Os produtos ficam; perdem o vínculo da categoria (`SET NULL`).
+    3. Esses produtos roteiam por fallback até você atribuir outra categoria.
+  </Accordion>
+</AccordionGroup>
+
+## Exemplo com números
+
+| Produto | Código da categoria | Mapeamento | Para onde vai a linha |
+|---|---|---|---|
+| Classic burger | `BURGER` | `BURGER` → `GRILL` | Grelha |
+| Fries regular | `FRIES` | `FRIES` → `FRY` | Fritadeira |
+| Soda 500 | *(nenhum)* | — | Estação fallback |
+
+## Erros que saem caro
+
+<Warning>
+  **Produto sem categoria.** O roteamento não consegue casar `item_type`. A linha cai no fallback. Numa cozinha com várias estações isso é o cozinheiro errado.
+</Warning>
+
+<Warning>
+  **Miniatura que não coincide com o prato.** O cozinheiro risca a linha pai errada. Strike-before-bump então bloqueia o item real ou envia o ticket cedo demais.
+</Warning>
+
+<Warning>
+  **Renomear de memória depois de criar.** O **Código** fica congelado. Se você digitou `BEBIDA` e os mapeamentos dizem `BEVERAGE`, nada casa. Crie o código certo e mova os produtos.
+</Warning>
+
+<Warning>
+  **Excluir enquanto os mapeamentos ainda usam o código.** Os produtos perdem o vínculo. Linhas que pegavam um mapeamento caem no fallback até você corrigir os dois lados.
+</Warning>
+
+## Glossário
+
+| Termo | Significado |
+|---|---|
+| **Código** | Id estável de `item_type` (`BEVERAGE`). Imutável depois de criar. |
+| **Nome** | Rótulo no backoffice. Pode editar. |
+| **Ver** | Página onde você atribui produtos e miniaturas. |
+| **Primeiro match** | O primeiro mapeamento de roteamento para esse `item_type` vale. |
+
+## Perguntas frequentes
+
+<AccordionGroup>
+  <Accordion title="Posso mudar o código depois?">
+    Não. Crie uma categoria nova e mova os produtos. Depois atualize o mapeamento de roteamento.
+  </Accordion>
+  <Accordion title="Excluir uma categoria apaga os produtos?">
+    Não. Os produtos ficam. Perdem o vínculo da categoria e roteiam por fallback.
+  </Accordion>
+  <Accordion title="Onde mapeio o código para uma estação?">
+    Em [Roteamento](/pt/manuals/kds/routing), não nesta página.
+  </Accordion>
+  <Accordion title="Por que a cozinha ainda mostra a foto antiga?">
+    Substitua a miniatura em **Ver**. Tickets que já estão na tela mantêm a imagem que carregaram.
+  </Accordion>
+</AccordionGroup>
+
+## O que esta página não faz
+
+- Não cria estações nem telas.
+- Não escolhe a distribuição (`ALL`, `ROUND_ROBIN`). Isso vive no roteamento.
+- Não atribui qual monitor mostra qual estação. Veja [Telas](/pt/manuals/kds/screens).
