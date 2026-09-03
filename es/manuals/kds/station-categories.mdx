@@ -1,0 +1,144 @@
+---
+title: "Categorías de estación"
+description: "Dale a cada producto una categoría de ruteo y una miniatura de cocina para que la línea caiga en la estación correcta."
+---
+
+El ruteo empareja las líneas del pedido por `item_type`. Si el producto no tiene categoría de estación, la línea no pega el mapeo y cae a la estación por defecto: hamburguesas en la freidora, bebidas en la parrilla. Si la miniatura no coincide con lo que ve cocina, eligen el ítem equivocado.
+
+Esta página es **KDS → Categorías de estación**. Es el catálogo de la cuenta de códigos (`BEVERAGE`, `FRIES`) que usan los mapeos de ruteo. Aquí no se crean estaciones.
+
+<Note>
+  **Lo mínimo que hay que saber**
+
+  - Crea el **código** una sola vez. No se puede cambiar. Los mapeos de ruteo apuntan a ese código.
+  - En la página **Ver** de la categoría, pulsa **Agregar producto** y adjunta una miniatura para que la tarjeta de cocina se parezca al plato.
+  - El primer match en [Ruteo](/es/manuals/kds/routing) gana. Un producto sin categoría usa fallback, no una adivinanza.
+</Note>
+
+## El camino simple
+
+<Steps>
+  <Step title="Abre Categorías de estación">
+    Ve a **KDS → Categorías de estación** (`/kds/admin/station-categories`).
+  </Step>
+  <Step title="Crea un código">
+    Pulsa **Crear categoría**. Escribe un **Nombre** (p. ej. Bebidas) y un **Código** (`BEVERAGE`). Solo letras, números y `_`. Guarda.
+  </Step>
+  <Step title="Asigna productos">
+    Abre **Ver**. Pulsa **Agregar producto**, busca por nombre o PLU y toca cada producto. Puedes agregar varios sin cerrar el diálogo.
+  </Step>
+</Steps>
+
+<Frame>
+  <img src="/images/manuals/kds/station-categories/01-list.png" alt="Listado de categorías de estación con códigos usados por el ruteo de productos" />
+</Frame>
+
+<Tip>
+  Si solo tienes una estación de producción y mapeos vacíos, las categorías igual sirven después. Puedes parar cuando tengas los códigos que vas a mapear.
+</Tip>
+
+## Listado vs vista
+
+| Pantalla | Qué haces |
+|---|---|
+| **Listado** | Buscar, crear, editar el nombre visible, eliminar. |
+| **Ver** | Ver productos de esta categoría, agregarlos o quitarlos, y definir miniaturas. |
+
+<Frame>
+  <img src="/images/manuals/kds/station-categories/02-category-products-thumbs.png" alt="Vista de categoría de estación con productos asignados y miniaturas de cocina" />
+</Frame>
+
+**Editar nombre** cambia solo la etiqueta que se ve en el backoffice. El **Código** sigue siendo el id de ruteo.
+
+## Cómo alimenta el ruteo
+
+1. El producto lleva el código de categoría como su `item_type`.
+2. La [estrategia de ruteo](/es/manuals/kds/routing) activa busca un mapeo de ese código a estaciones de producción.
+3. El primer mapeo que coincide gana. Sin mapeo → **fallback**.
+4. Las reglas de estación aún pueden rechazar la línea después.
+
+No dupliques el CRUD de categorías en [Estaciones](/es/manuals/kds/stations). Las estaciones consumen estos códigos; no los poseen.
+
+## Recetas
+
+<AccordionGroup>
+  <Accordion title="Separar parrilla y freidora">
+    1. Crea `BURGER` y `FRIES`.
+    2. En cada página **Ver**, agrega los productos que correspondan.
+    3. En **Ruteo → Mapeos**, mapea `BURGER` → parrilla y `FRIES` → freidora.
+    4. Deja las bebidas sin mapeo solo si el fallback es la estación correcta.
+  </Accordion>
+  <Accordion title="Un producto que no debe ir a la línea caliente">
+    1. Ponlo en `BEVERAGE` (o crea ese código).
+    2. Mapea `BEVERAGE` a la estación fría, o exclúyelo en las **reglas de estación** de la parrilla.
+    3. Confirma un pedido de prueba: la bebida no debe aparecer en la parrilla.
+  </Accordion>
+  <Accordion title="Corregir una miniatura equivocada">
+    1. Abre **Ver** en la categoría.
+    2. Encuentra el producto y reemplaza la miniatura.
+    3. El siguiente ticket muestra la imagen nueva. Una miniatura vieja es cómo cocina envía la línea equivocada.
+  </Accordion>
+  <Accordion title="Eliminar una categoría que ya no usas">
+    1. Confirma que ningún mapeo apunta todavía a ese código.
+    2. **Eliminar**. Los productos se quedan; pierden el vínculo de categoría (`SET NULL`).
+    3. Esos productos rutean por fallback hasta que les asignes otra categoría.
+  </Accordion>
+</AccordionGroup>
+
+## Ejemplo con números
+
+| Producto | Código de categoría | Mapeo | Adónde va la línea |
+|---|---|---|---|
+| Classic burger | `BURGER` | `BURGER` → `GRILL` | Parrilla |
+| Fries regular | `FRIES` | `FRIES` → `FRY` | Freidora |
+| Soda 500 | *(ninguno)* | — | Estación fallback |
+
+## Errores que salen caros
+
+<Warning>
+  **Producto sin categoría.** El ruteo no puede emparejar `item_type`. La línea cae a fallback. En una cocina multiestación eso es el cocinero equivocado.
+</Warning>
+
+<Warning>
+  **Miniatura que no coincide con el plato.** El cocinero tacha la línea padre equivocada. Strike-before-bump entonces bloquea el ítem real o envía el ticket demasiado pronto.
+</Warning>
+
+<Warning>
+  **Renombrar de memoria después de crear.** El **Código** queda congelado. Si escribiste `BEBIDA` y los mapeos dicen `BEVERAGE`, nada coincide. Crea el código correcto y mueve los productos.
+</Warning>
+
+<Warning>
+  **Eliminar mientras los mapeos aún usan el código.** Los productos pierden el vínculo. Las líneas que pegaban un mapeo caen a fallback hasta que corrijas ambos lados.
+</Warning>
+
+## Glosario
+
+| Término | Significado |
+|---|---|
+| **Código** | Id estable de `item_type` (`BEVERAGE`). Inmutable después de crear. |
+| **Nombre** | Etiqueta en el backoffice. Se puede editar. |
+| **Ver** | Página donde asignas productos y miniaturas. |
+| **Primer match** | El primer mapeo de ruteo para ese `item_type` gana. |
+
+## Preguntas frecuentes
+
+<AccordionGroup>
+  <Accordion title="¿Puedo cambiar el código después?">
+    No. Crea una categoría nueva y mueve los productos. Luego actualiza el mapeo de ruteo.
+  </Accordion>
+  <Accordion title="¿Eliminar una categoría borra los productos?">
+    No. Los productos se quedan. Pierden el vínculo de categoría y rutean por fallback.
+  </Accordion>
+  <Accordion title="¿Dónde mapeo el código a una estación?">
+    En [Ruteo](/es/manuals/kds/routing), no en esta página.
+  </Accordion>
+  <Accordion title="¿Por qué cocina sigue viendo la foto vieja?">
+    Reemplaza la miniatura en **Ver**. Los tickets que ya están en pantalla conservan la imagen que cargaron.
+  </Accordion>
+</AccordionGroup>
+
+## Lo que esta página no hace
+
+- No crea estaciones ni pantallas.
+- No elige la distribución (`ALL`, `ROUND_ROBIN`). Eso vive en el ruteo.
+- No asigna qué monitor muestra qué estación. Ver [Pantallas](/es/manuals/kds/screens).
