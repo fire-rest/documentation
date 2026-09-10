@@ -1024,6 +1024,94 @@ support documentation possible.
 tienda no configurada: EC / tienda K0050"` can be fixed; `"document rejected"` forces opening a
 ticket.
 
+### 6.1 Which code goes with which case
+
+`5xx` is not the drawer for everything that went wrong. What separates it from `422` is a single
+question: **the same request, sent again in a little while — could it work?**
+
+| Situation | HTTP | `retryable` |
+|---|---|---|
+| A request field is missing, extra, or has the wrong format | `422` | `false` |
+| The store is not in your catalog, or is missing the configuration you need in order to number it —fiscal identity, resolution, technical key— | `422` | `false` |
+| The tax authority rejects it under a rule of the regime | `422` | `false` |
+| Your service, your database, or the tax authority is unavailable right now | `503` | `true` |
+| Something of yours broke and you do not yet know what | `500` | `true` |
+| You do not serve that country | `404` | `false` |
+
+<Warning>
+  **Missing configuration is `422`, not `500`.**
+
+  It is the most expensive one to get wrong, because a `5xx` tells us the opposite of what should
+  be done. A store with no technical key will fail exactly the same in one second and in one
+  week: there is nothing to wait for. But a `5xx` makes us retry —with the customer standing at
+  the register— and then leaves the sale in `FAILED_RETRYABLE`, which means "come back later" for
+  something that is only fixed by filling in a field.
+
+  And what is left on the other end is an `"Internal Server Error"` that names no field. Whoever
+  reads it can do nothing but open a ticket — which is exactly what `failure.message` exists to
+  prevent.
+</Warning>
+
+### 6.2 An unhandled error answers with the envelope too
+
+**The global `catch` is part of the contract.** An exception you did not catch is still the answer
+to a numbering request, and whoever receives it needs the same two things as always: whether
+retrying makes sense, and where to start looking.
+
+The body the framework builds on its own is not enough:
+
+```jsonc
+// ❌ This does not meet the contract
+{
+  "path": "/api/v1/fiscal/co/prekeys",
+  "error": "Internal Server Error",
+  "status": 500,
+  "timestamp": "2026-09-10T14:32:42.418Z"
+}
+```
+
+No `retryable`, so it has to be guessed. No `failure`, so it does not say what happened. No
+`orderCode`, so it does not even state which sale it is talking about. It is the NestJS default
+handler —Spring Boot's is the same with the keys in another order— and it shows up when nobody
+replaced it.
+
+The minimum that does meet the contract:
+
+```json
+HTTP 500
+
+{
+  "orderCode": "FUEL-CO-1789050796519",
+  "retryable": true,
+  "failure": {
+    "code": "INTERNAL_ERROR",
+    "message": "internal error while computing the CUFE",
+    "details": []
+  },
+  "provider": { "name": "…", "version": "…", "reference": "req-01H8XK3M4P" }
+}
+```
+
+<Note>
+  **In a `500`, `provider.reference` is the most valuable thing in the body.** It is the
+  identifier you will search YOUR logs by when we report the case. Without it the conversation
+  starts with "it failed on September 10 at 14:32 UTC" and continues with you searching by hand.
+
+  And set a `failure.code` even if it is generic. `INTERNAL_ERROR` is worse than
+  `CUFE_COMPUTATION_FAILED`, but it is infinitely better than nothing: you can alert on a code,
+  you cannot alert on free text.
+</Note>
+
+<Warning>
+  **A `500` with `retryable: true` is a promise about your idempotency.** We will retry with the
+  same `orderCode`, and if the error happened AFTER you consumed the sequential, that retry has
+  to return the document you already numbered with `reused: true` —see [4](#4-idempotency)—,
+  not number another one.
+
+  It is the case that explains why the key is `country + orderCode + operation` and not something
+  generated when processing starts: when it breaks halfway through, the key has to already exist.
+</Warning>
+
 ---
 
 ## 7. Integration rules

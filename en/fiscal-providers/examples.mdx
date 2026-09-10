@@ -262,6 +262,46 @@ Why this error is well constructed:
   while the customer waits, or abandoning a sale that could have been numbered.
 </Warning>
 
+### The same request, with something broken on your side
+
+```json
+HTTP 500
+
+{
+  "orderCode": "E2E-FUEL-FALLA-02",
+  "retryable": true,
+  "failure": {
+    "code": "INTERNAL_ERROR",
+    "message": "internal error while computing the CUFE",
+    "details": []
+  },
+  "document": null,
+  "graphic": null,
+  "provider": { "name": "hio.fiscalization", "version": "", "reference": "req-01H8XK3M4P" }
+}
+```
+
+Why this error is well built:
+
+| | |
+|---|---|
+| **HTTP `500`, and the envelope all the same** | An exception you did not catch is still the answer to a numbering request. The framework's default body —`{"path", "error", "status", "timestamp"}`— says neither whether to retry nor which sale it is about |
+| **`retryable: true`** | You do not know what broke, so the safe reading is that it may be temporary. It leaves the request open instead of killing the sale |
+| **`provider.reference`** | In a `500` it is the most valuable thing in the body: it is what you search YOUR logs by when we report the case |
+| **`failure.code`, even a generic one** | You can alert on `INTERNAL_ERROR`. You cannot alert on free text |
+
+<Warning>
+  **`retryable: true` is a promise about your idempotency.** We will retry with the same
+  `orderCode`. If the error happened AFTER you consumed the sequential, that retry has to return
+  the already-numbered document with `reused: true`, not number another one.
+</Warning>
+
+<Note>
+  **Missing configuration does NOT belong here.** A store with no fiscal identity, no numbering
+  resolution or no technical key will fail exactly the same in a week: that is the `422` above,
+  with `retryable: false`. `5xx` is only for what can start working on its own later.
+</Note>
+
 ## What we do with each response
 
 The state FIRE exposes to its channels is **derived** from what the provider returns. The
