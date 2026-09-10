@@ -260,6 +260,46 @@ Por qué este error está bien construido:
   mientras el cliente espera, o abandonar una venta que se podía numerar.
 </Warning>
 
+### La misma petición, con algo roto de tu lado
+
+```json
+HTTP 500
+
+{
+  "orderCode": "E2E-FUEL-FALLA-02",
+  "retryable": true,
+  "failure": {
+    "code": "INTERNAL_ERROR",
+    "message": "error interno al calcular el CUFE",
+    "details": []
+  },
+  "document": null,
+  "graphic": null,
+  "provider": { "name": "hio.fiscalization", "version": "", "reference": "req-01H8XK3M4P" }
+}
+```
+
+Por qué este error está bien construido:
+
+| | |
+|---|---|
+| **HTTP `500`, y el sobre igual** | Una excepción que no atrapaste sigue siendo la respuesta a un pedido de numeración. El cuerpo por defecto del framework —`{"path", "error", "status", "timestamp"}`— no dice si reintentar ni de qué venta habla |
+| **`retryable: true`** | No sabés qué se rompió, así que la lectura segura es que puede ser pasajero. Deja la solicitud abierta en vez de matar la venta |
+| **`provider.reference`** | En un `500` es lo más valioso del cuerpo: es por donde buscás en TUS logs cuando te reportemos el caso |
+| **`failure.code`, aunque sea genérico** | Sobre `INTERNAL_ERROR` se puede alertar. Sobre un texto libre, no |
+
+<Warning>
+  **`retryable: true` es una promesa sobre tu idempotencia.** Vamos a reintentar con el mismo
+  `orderCode`. Si el error ocurrió DESPUÉS de que consumiste el secuencial, ese reintento tiene
+  que devolver el documento ya numerado con `reused: true`, no numerar otro.
+</Warning>
+
+<Note>
+  **Que falte configuración NO entra acá.** Una tienda sin identidad fiscal, sin resolución de
+  numeración o sin clave técnica va a fallar igual dentro de una semana: eso es el `422` de
+  arriba, con `retryable: false`. El `5xx` es solo para lo que puede andar solo más tarde.
+</Note>
+
 ## Qué hacemos con cada respuesta
 
 El estado que expone FIRE a sus canales se **deriva** de lo que devuelve el proveedor. El

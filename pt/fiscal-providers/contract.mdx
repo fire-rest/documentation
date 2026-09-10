@@ -1010,6 +1010,94 @@ construir alertas e documentação de suporte.
 tienda no configurada: EC / tienda K0050"` permite consertar; `"documento rejeitado"` obriga a abrir
 um chamado.
 
+### 6.1 Qual código vai em cada caso
+
+`5xx` não é a gaveta de tudo o que deu errado. O que o separa do `422` é uma única pergunta: **a
+mesma requisição, enviada de novo daqui a pouco, pode funcionar?**
+
+| Situação | HTTP | `retryable` |
+|---|---|---|
+| Um campo da requisição falta, sobra ou está no formato errado | `422` | `false` |
+| A loja não está no seu catálogo, ou falta a configuração de que você precisa para numerar —identidade fiscal, resolução, chave técnica— | `422` | `false` |
+| O órgão rejeita por uma regra do regime | `422` | `false` |
+| Seu serviço, seu banco ou o órgão não estão disponíveis agora | `503` | `true` |
+| Quebrou algo do seu lado e você ainda não sabe o quê | `500` | `true` |
+| Você não atende esse país | `404` | `false` |
+
+<Warning>
+  **Faltar configuração é `422`, não `500`.**
+
+  É o mais caro de confundir, porque o `5xx` nos diz justamente o contrário do que se deve fazer.
+  Uma loja sem chave técnica vai falhar igual daqui a um segundo e daqui a uma semana: não há o
+  que esperar. Mas um `5xx` nos faz tentar de novo —com o cliente parado no caixa— e depois deixa
+  a venda em `FAILED_RETRYABLE`, que significa "volte mais tarde" para algo que só se resolve
+  preenchendo um dado.
+
+  E do outro lado sobra um `"Internal Server Error"` que não nomeia nenhum campo. Quem lê não
+  pode fazer nada além de abrir um chamado — que é exatamente o que `failure.message` existe para
+  evitar.
+</Warning>
+
+### 6.2 Um erro não tratado também responde o envelope
+
+**O `catch` global faz parte do contrato.** Uma exceção que você não capturou continua sendo a
+resposta a um pedido de numeração, e quem a recebe precisa das mesmas duas coisas de sempre: se
+faz sentido tentar de novo, e por onde começar a olhar.
+
+O corpo que o framework monta sozinho não basta:
+
+```jsonc
+// ❌ Isto não cumpre o contrato
+{
+  "path": "/api/v1/fiscal/co/prekeys",
+  "error": "Internal Server Error",
+  "status": 500,
+  "timestamp": "2026-09-10T14:32:42.418Z"
+}
+```
+
+Não traz `retryable`, então é preciso adivinhar. Não traz `failure`, então não diz o que
+aconteceu. Não traz `orderCode`, então nem afirma de que venda está falando. É o handler padrão
+do NestJS —o do Spring Boot é igual com as chaves em outra ordem— e aparece quando ninguém o
+substituiu.
+
+O mínimo que cumpre:
+
+```json
+HTTP 500
+
+{
+  "orderCode": "FUEL-CO-1789050796519",
+  "retryable": true,
+  "failure": {
+    "code": "INTERNAL_ERROR",
+    "message": "erro interno ao calcular o CUFE",
+    "details": []
+  },
+  "provider": { "name": "…", "version": "…", "reference": "req-01H8XK3M4P" }
+}
+```
+
+<Note>
+  **Num `500`, `provider.reference` é o mais valioso do corpo.** É o identificador com que você
+  vai buscar nos SEUS logs quando reportarmos o caso. Sem ele a conversa começa com "falhou em 10
+  de setembro às 14:32 UTC" e segue com você procurando na mão.
+
+  E coloque um `failure.code` mesmo que genérico. `INTERNAL_ERROR` é pior que
+  `CUFE_COMPUTATION_FAILED`, mas é infinitamente melhor que nada: sobre um código dá para
+  alertar, sobre um texto livre não.
+</Note>
+
+<Warning>
+  **Um `500` com `retryable: true` é uma promessa sobre a sua idempotência.** Vamos tentar de novo
+  com o mesmo `orderCode`, e se o erro aconteceu DEPOIS de você consumir o sequencial, essa nova
+  tentativa tem que devolver o documento que você já numerou com `reused: true` —ver a seção
+  **4. Idempotência**—, não numerar outro.
+
+  É o caso que explica por que a chave é `country + orderCode + operation` e não algo gerado ao
+  começar a processar: quando quebra no meio, a chave tem que existir desde antes.
+</Warning>
+
 ---
 
 ## 7. Regras da integração
