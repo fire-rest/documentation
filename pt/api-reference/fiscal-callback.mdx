@@ -50,10 +50,12 @@ Este endpoint requer uma **API key com scope `webhooks:fiscal`**, vendor-scoped 
 
 ## Corpo da requisição
 
-O body é um objeto JSON com estes campos top-level. O formato do `document` é **discriminado por `countryCode`** — veja [Documento por país](#documento-por-pais) abaixo.
+O body é um objeto JSON com estes campos top-level. **Tudo o que é canônico vive aqui em cima**; `document` leva SOMENTE o vocabulário do ente do seu país, escolhido por `country` — veja [Documento por país](#documento-por-pais) abaixo.
 
-<ParamField body="countryCode" type="string" required>
+<ParamField body="country" type="string" required>
   Código de país ISO 3166-1 alpha-2. Um de `BR`, `CO`, `EC`, `CL`, `AR`, `VE`. Determina as regras de validação do objeto `document`.
+
+  **Antes se chamava `countryCode`.**
 </ParamField>
 
 <ParamField body="eventType" type="string" required>
@@ -88,60 +90,117 @@ O body é um objeto JSON com estes campos top-level. O formato do `document` é 
 </ParamField>
 
 <ParamField body="document" type="object">
-  O documento fiscal autorizado / cancelado. **Obrigatório** quando `eventType` é `authorized` ou `cancelled`. O formato varia por país — veja [Documento por país](#documento-por-pais).
+  O vocabulário do ente do seu país, e **nada mais**: `claveAcceso`, `cufe`, `chaveAcesso`, `folio`, `cae`… **Obrigatório** quando `eventType` é `authorized` ou `cancelled`. Veja [Documento por país](#documento-por-pais).
+
+  Os campos comuns —`docType`, as URLs, os valores, as datas— **não vão mais aqui dentro**: subiram para a raiz.
 </ParamField>
 
-<ParamField body="error" type="object">
-  Contexto de erro para resultados negativos. **Obrigatório** quando `eventType` é `rejected`, `denied` ou `error`.
+### Campos canônicos (raiz)
 
-  <Expandable title="error">
+Significam a mesma coisa nos seis países, então vivem na **raiz** do payload e não dentro de `document`. É a mesma regra da resposta de numeração fiscal, para que o mesmo fato não seja procurado em duas profundidades distintas segundo por onde entrou.
+
+<ParamField body="docType" type="string">
+  `invoice` ou `cancellation`. **Obrigatório quando há comprovante** (`authorized` / `cancelled`); uma rejeição não tem documento a tipificar.
+</ParamField>
+
+<ParamField body="docSubtype" type="string">
+  Como o seu regime o chama: `nfce`, `nfe`, `factura`, `boleta`, `factura_a`. Aberto: não o validamos contra uma lista e **não ramifica nada** do nosso lado — é referencial. **Obrigatório quando há comprovante.**
+</ParamField>
+
+<ParamField body="issuedAt" type="string">
+  Data/hora UTC (ISO 8601) em que o documento foi emitido. Mesmo nome que na numeração fiscal.
+</ParamField>
+
+<ParamField body="cancelledAt" type="string">
+  Data/hora UTC do cancelamento — relevante quando `eventType` é `cancelled`.
+</ParamField>
+
+<ParamField body="authorizationMode" type="string">
+  `ONLINE`, `OFFLINE` ou `BATCH`. `OFFLINE` é contingência: o comprovante vale mas foi emitido sem conseguir consultar o ente, e há regimes que exigem que o ticket o diga (o RIDE equatoriano imprime `EMISION POR CONTINGENCIA`).
+</ParamField>
+
+<ParamField body="pdfUrl" type="string">
+  Link de download do PDF (DANFE / RIDE / representação gráfica). **Obrigatório** para `authorized`, `cancelled` e `fiscal_graphic`.
+</ParamField>
+
+<ParamField body="xmlUrl" type="string">
+  Link de download do XML canônico do ente. **Obrigatório** para `authorized` e `cancelled`.
+</ParamField>
+
+<ParamField body="totalAmount" type="number">
+  Valor total bruto do documento, em decimais reais.
+</ParamField>
+
+<ParamField body="taxAmount" type="number">
+  Valor total de impostos.
+</ParamField>
+
+<ParamField body="currencyCode" type="string">
+  Código ISO 4217 — exatamente 3 letras (`BRL`, `COP`, `USD`).
+</ParamField>
+
+<ParamField body="providerDocId" type="string">
+  O id do documento no seu sistema. É por ele que o PDF e o XML são buscados.
+</ParamField>
+
+<ParamField body="orderCode" type="string">
+  O código VISÍVEL do pedido, o que se lê no ticket. Não substitui `orderId` —esse é o UUID que resolve o pedido— serve para conciliar contra o seu sistema, que quase nunca conhece nossos UUIDs.
+</ParamField>
+
+<ParamField body="provider" type="object">
+  Quem emitiu e com qual versão.
+
+  <Expandable title="provider">
+    <ParamField body="name" type="string">Nome do provedor (`hio.fiscalization`, `plugnotas`).</ParamField>
+    <ParamField body="version" type="string">Versão do emissor.</ParamField>
+    <ParamField body="reference" type="string">Referência livre.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="failure" type="object">
+  Por que NÃO há comprovante. **Obrigatório** quando `eventType` é `rejected`, `denied` ou `error`.
+
+  **Antes se chamava `error`**, e agora leva a mesma forma que a resposta de numeração fiscal.
+
+  <Expandable title="failure">
     <ParamField body="code" type="string">
-      Código de erro opcional do provedor/autoridade (ex.: `DIAN_42`, `cStat_204`).
+      Código de erro opcional do provedor/autoridade (p. ex. `DIAN_42`, `cStat_204`).
+    </ParamField>
+    <ParamField body="scope" type="string">
+      `TECHNICAL` ou `FUNCTIONAL`. É o que o canal ramifica: com `TECHNICAL` o comprovante ainda pode sair e o ticket imprime «em trâmite»; com `FUNCTIONAL` o ente o rejeitou pelo conteúdo e não vai sair.
     </ParamField>
     <ParamField body="message" type="string" required>
       Mensagem legível. Mínimo 1 caractere.
     </ParamField>
+    <ParamField body="details" type="array">
+      Detalhe campo a campo, quando o ente fornece.
+    </ParamField>
   </Expandable>
 </ParamField>
 
-<ParamField body="providerSpecific" type="object">
-  Bag free-form para extras específicos do provedor (resposta raw, IDs internos, etc.). Não validado; passa para o log de auditoria.
+<ParamField body="metadata" type="object">
+  Bag free-form para extras específicos do provedor (resposta raw, IDs internos, etc.). Não validado; chega ao log de auditoria e **não** é guardado junto ao documento.
+
+  **Antes se chamava `providerSpecific`.**
 </ParamField>
 
 ## Documento por país
 
-O formato exigido do campo `document` depende do `countryCode`. **Todas as variantes compartilham os campos base abaixo** (comuns aos 6 países) mais os identificadores específicos do país exigidos por aquela autoridade.
-
-### Campos base comuns
-
-Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatórios**; o restante é **opcional** — envie-os sempre que seu provedor fiscal os tiver disponíveis. O Fire os persiste em `fiscal_documents` / `orders.fiscal` e os reemite nos eventos outbound `order.invoiced` / `order.reversed` (Brasil) e no próximo `order.completed` / `order.cancelled`.
-
-| Campo | Tipo | Obrigatório | Notas |
-|---|---|---|---|
-| `docType` | `"invoice"` / `"cancellation"` | ✓ | Classe do documento — `invoice` para emissão, `cancellation` para cancelamento |
-| `docSubtype` | string | ✓ | Subtipo conforme país/provedor (ex.: `nfce`, `nfe`, `factura`, `boleta`, `factura_a`) |
-| `pdfUrl` | string (URL) \| null | | Link de download do PDF do documento (DANFE / representação gráfica) |
-| `xmlUrl` | string (URL) \| null | | Link de download do XML canônico da autoridade fiscal |
-| `issuedAt` | string (ISO 8601) \| null | | Data/hora UTC em que o documento foi emitido. **Antes se chamava `emittedAt`** — veja o aviso abaixo |
-| `cancelledAt` | string (ISO 8601) \| null | | Timestamp UTC do cancelamento — relevante quando `eventType` é `cancelled` |
-| `totalAmount` | number \| null | | Valor total bruto do documento |
-| `taxAmount` | number \| null | | Valor total de impostos |
-| `currencyCode` | string \| null | | Código de moeda ISO 4217 — exatamente 3 letras (ex.: `BRL`, `COP`, `USD`) |
+A forma exigida de `document` depende de `country`. **`document` leva SOMENTE os identificadores do ente desse país** — os campos comuns aos seis vivem na raiz do payload, acima.
 
 <Warning>
-  **Renomeado: `emittedAt` → `issuedAt`**
+  **`document` mudou de conteúdo**
 
-  Este campo passou a se chamar `issuedAt`, que é como **o mesmo fato** se chama na resposta
-  de numeração fiscal. Eram dois nomes para a mesma coisa, e essa diferença obrigava a saber
-  por qual caminho o documento entrou só para poder ler sua data.
+  Até agora `document` misturava duas coisas: o que significa o mesmo em todos os países
+  —`docType`, `pdfUrl`, `xmlUrl`, os valores, as datas— e o vocabulário do ente de cada um.
+  Essa mistura se propagava para tudo o que lia o callback.
 
-  **Se você ainda envia `emittedAt`, o dado não se perde**: continua sendo aceito na
-  ingestão. Mas não faz parte do contrato e deixará de ser aceito — migre para o nome novo.
+  Agora **o canônico vive na raiz** e `document` fica só com o do regime. É a mesma forma da
+  resposta de numeração fiscal: o mesmo fato, no mesmo lugar, sem importar por onde entrou.
+
+  Outras mudanças do mesmo pacote: `countryCode` → `country`, `error` → `failure` (com `scope`
+  e `details`), `providerSpecific` → `metadata`, e `emittedAt` → `issuedAt`.
 </Warning>
-
-<Note>
-  `pdfUrl` e `xmlUrl` são armazenados **exatamente como você os envia** — o Fire não baixa nem re-hospeda o arquivo. Se seu provedor assina essas URLs com expiração, considere que o link armazenado pode caducar; baixe e persista o artefato do seu lado se precisar de acesso durável.
-</Note>
 
 <Tabs>
   <Tab title="Brasil (BR)">
@@ -162,27 +221,27 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
     ```json
     {
-      "countryCode": "BR",
+      "country": "BR",
       "eventType": "authorized",
       "providerEventId": "evt-br-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "docType": "invoice",
+      "docSubtype": "nfce",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 142.90,
+      "taxAmount": 18.57,
+      "currencyCode": "BRL",
+      "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/xml",
       "document": {
-        "docType": "invoice",
-        "docSubtype": "nfce",
         "chaveAcesso": "35260229062609000177650500000000011000000010",
         "protocolo": "141210001176277",
         "numero": 1,
         "serie": 50,
         "modelo": 65,
-        "cnpjEmitente": "29062609000177",
-        "issuedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 142.90,
-        "taxAmount": 18.57,
-        "currencyCode": "BRL",
-        "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/xml"
+        "cnpjEmitente": "29062609000177"
       }
     }
     ```
@@ -202,27 +261,27 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
     ```json
     {
-      "countryCode": "CO",
+      "country": "CO",
       "eventType": "authorized",
       "providerEventId": "evt-co-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 95000.00,
+      "taxAmount": 15170.17,
+      "currencyCode": "COP",
+      "pdfUrl": "https://api.fiscal-provider.example/dian/C012001/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/dian/C012001/xml",
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
         "prefijo": "C012",
         "numeroDian": "001",
         "numeroComprobante": "C012001",
         "ambiente": "1",
-        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=633732c7a2a577bfa1828551e64d03f715f0",
-        "issuedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 95000.00,
-        "taxAmount": 15170.17,
-        "currencyCode": "COP",
-        "pdfUrl": "https://api.fiscal-provider.example/dian/C012001/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/dian/C012001/xml"
+        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=633732c7a2a577bfa1828551e64d03f715f0"
       }
     }
     ```
@@ -270,27 +329,27 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
     ```json
     {
-      "countryCode": "EC",
+      "country": "EC",
       "eventType": "authorized",
       "providerEventId": "evt-ec-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 24.50,
+      "taxAmount": 3.15,
+      "currencyCode": "USD",
+      "pdfUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/xml",
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "numeroComprobante": "001-020-000000123",
         "claveAcceso": "0102030405060708091011121314151617181920212223242",
         "establecimiento": "001",
         "puntoEmision": "020",
         "secuencial": "000000123",
-        "ambiente": "2",
-        "issuedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 24.50,
-        "taxAmount": 3.15,
-        "currencyCode": "USD",
-        "pdfUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/xml"
+        "ambiente": "2"
       }
     }
     ```
@@ -308,25 +367,25 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
     ```json
     {
-      "countryCode": "CL",
+      "country": "CL",
       "eventType": "authorized",
       "providerEventId": "evt-cl-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 18900,
+      "taxAmount": 3019,
+      "currencyCode": "CLP",
+      "pdfUrl": "https://api.fiscal-provider.example/sii/12345/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/sii/12345/xml",
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "folio": 12345,
         "ted": "<TED>...base64-or-xml...</TED>",
         "tipoDte": 33,
-        "trackId": "SII-TRK-998877",
-        "issuedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 18900,
-        "taxAmount": 3019,
-        "currencyCode": "CLP",
-        "pdfUrl": "https://api.fiscal-provider.example/sii/12345/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/sii/12345/xml"
+        "trackId": "SII-TRK-998877"
       }
     }
     ```
@@ -345,26 +404,26 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
     ```json
     {
-      "countryCode": "AR",
+      "country": "AR",
       "eventType": "authorized",
       "providerEventId": "evt-ar-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "docType": "invoice",
+      "docSubtype": "factura_a",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 12100.00,
+      "taxAmount": 2100.00,
+      "currencyCode": "ARS",
+      "pdfUrl": "https://api.fiscal-provider.example/afip/0001-12345/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/afip/0001-12345/xml",
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura_a",
         "cae": "74256178925412",
         "fechaVtoCae": "2026-05-31",
         "puntoVenta": 1,
         "numeroComprobante": 12345,
-        "tipoComprobante": 1,
-        "issuedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 12100.00,
-        "taxAmount": 2100.00,
-        "currencyCode": "ARS",
-        "pdfUrl": "https://api.fiscal-provider.example/afip/0001-12345/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/afip/0001-12345/xml"
+        "tipoComprobante": 1
       }
     }
     ```
@@ -381,24 +440,24 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
     ```json
     {
-      "countryCode": "VE",
+      "country": "VE",
       "eventType": "authorized",
       "providerEventId": "evt-ve-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "docType": "invoice",
+      "docSubtype": "factura",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 480.00,
+      "taxAmount": 76.80,
+      "currencyCode": "VES",
+      "pdfUrl": "https://api.fiscal-provider.example/seniat/00-00012345/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/seniat/00-00012345/xml",
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "numeroControl": "00-00012345",
         "numeroFactura": "12345",
-        "rifEmisor": "J-12345678-9",
-        "issuedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 480.00,
-        "taxAmount": 76.80,
-        "currencyCode": "VES",
-        "pdfUrl": "https://api.fiscal-provider.example/seniat/00-00012345/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/seniat/00-00012345/xml"
+        "rifEmisor": "J-12345678-9"
       }
     }
     ```
@@ -417,7 +476,7 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
 ```json fiscal_graphic (CO)
 {
-  "countryCode": "CO",
+  "country": "CO",
   "eventType": "fiscal_graphic",
   "providerEventId": "evt-co-graphic-1",
   "occurredAt": "2026-04-26T14:32:05.000Z",
@@ -437,18 +496,18 @@ Aplicam-se a qualquer `countryCode`. `docType` e `docSubtype` são **obrigatóri
 
 ### Resultados negativos (`rejected`, `denied`, `error`)
 
-Para estados não autorizados, omita `document` e forneça `error`. O `countryCode` ainda se aplica (valida o roteamento); o documento não é exigido porque não há artefato autorizado.
+Para estados não autorizados, omita `document` e forneça `failure`. `country` ainda se aplica (valida o roteamento); o documento não é exigido porque não há artefato autorizado — e `docType`/`docSubtype` também não, já que não há comprovante a tipificar.
 
 ```json Rejeitado
 {
-  "countryCode": "CO",
+  "country": "CO",
   "eventType": "rejected",
   "providerEventId": "evt-co-2",
   "occurredAt": "2026-04-26T14:32:11.000Z",
   "orderId": "550e8400-e29b-41d4-a716-446655440000",
   "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "document": null,
-  "error": {
+  "failure": {
     "code": "DIAN_42",
     "message": "CUFE inválido"
   }
