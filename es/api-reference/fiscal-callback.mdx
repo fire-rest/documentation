@@ -125,7 +125,7 @@ Cómo llama cada régimen a su documento va en `docSubtype`, y ese campo es **ab
 </ParamField>
 
 <ParamField body="authorizedAt" type="string">
-  Fecha/hora UTC (ISO 8601) en que el ente **aprobó** el documento — un hecho distinto de `issuedAt`. Pueden separarse por segundos (autorización en línea) o por horas (contingencia autorizada cuando vuelve la conexión). Opcional; si no viene, los consumidores de los eventos ven `authority.authorizedAt: null`. En una cancelación usá `cancelledAt`.
+  Fecha/hora UTC (ISO 8601) en que el ente **aprobó** el documento — un hecho distinto de `issuedAt`. Pueden separarse por segundos (autorización en línea) o por horas (contingencia autorizada cuando vuelve la conexión). Opcional; si no viene, los consumidores de los eventos ven `authority.authorizedAt: null`. En una cancelación usa `cancelledAt`: un callback `cancelled` **conserva el `issuedAt` y el `authorizedAt` que el documento ya tenía** —son los de la factura— y solo usa los que mandes si Fire no tenía ninguno.
 </ParamField>
 
 <ParamField body="cancelledAt" type="string">
@@ -574,6 +574,8 @@ La forma requerida del campo `document` depende de `country`. **`document` lleva
 
 Para estados no autorizados, omite `document` (o mándalo en `null`) y provee `failure`. El `country` sigue aplicando (valida el routing); el documento no se requiere porque no hay artefacto autorizado — y `documentType`/`docSubtype` tampoco, porque no hay comprobante que tipificar.
 
+**Un resultado negativo no guarda datos de comprobante.** Si mandas `documentNumber`, `providerDocId`, `issuedAt`, `authorizedAt`, importes, `pdfUrl`, `xmlUrl` o `graphic` con `rejected`, `denied` o `error`, Fire los ignora: solo se guardan `documentType`, `docSubtype`, las claves del país en `document`, `failure`, `provider` y `metadata`. Un documento que ya tenía datos de comprobante los conserva.
+
 ```json Rechazado
 {
   "country": "CO",
@@ -757,6 +759,8 @@ Esta es la matriz completa de comportamiento — cada combinación que podés en
 ## Concurrencia
 
 Las transiciones de estado en `fiscal_documents` usan **locking optimista**. Si dos callbacks para el mismo documento llegan concurrentes, uno tiene éxito y el otro resuelve a `idempotent` o `regression` según el orden. El merge de `orders.fiscal` JSONB es atómico.
+
+Cuando la orden ya tiene documento, el callback se asocia a él por `eventId`. Un callback con otro `eventId` válido termina en `notFound`, no en `regression`; reenviar el `eventId` del documento con un estado anterior es un reenvío del mismo par. Ninguno de los dos cambia el documento.
 
 ## Qué pasa después del 202
 
