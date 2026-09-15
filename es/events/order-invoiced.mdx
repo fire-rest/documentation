@@ -3,328 +3,153 @@ title: "order.invoiced"
 description: "La autoridad fiscal autorizó el documento (factura electrónica) de una orden vía tu proveedor fiscal — todos los países."
 ---
 
-<Tabs>
-  <Tab title="v1.2 · actual">
-    Estás viendo el contrato **actual (v1.2)** de `order.invoiced`. **v1.2 agrega** `data.fiscalRepresentation`: la numeración fiscal que el punto de venta obtuvo antes de inyectar la orden. Viaja **siempre**: en `null` cuando no se intentó numerar, y con contenido cuando sí —`numberingStatus` dice cómo terminó—. Que traiga contenido **no** significa que el comprobante esté autorizado. Solo aditivo — nada de lo que ya leías cambió.
+import FiscalEventBlock from '/snippets/fiscal-event-block.es.mdx';
 
-    El bloque lleva el documento fiscal **vigente** de la orden: los campos que significan lo mismo en todo país arriba, los identificadores del ente dentro de `countryData` con el vocabulario de su país, y los documentos anteriores en `history`. Cuando una anulación numera, la nota de crédito pasa arriba y la factura baja al histórico — con `compensates` apuntando a ella.
+<Tabs>
+  <Tab title="v2 · actual">
+    Estás viendo el contrato **actual (v2)** de `order.invoiced`. **v2 es un cambio que rompe solo en `data.fiscal`**: la bolsa plana se reemplaza por un bloque estructurado — campos canónicos dentro de `authority`, los identificadores del ente dentro de `authority.countryData`, los montos dentro de `authority.amounts` — más `history` y `compensates`. `docType`, `dataAutorizacao` y `cStat` ya no se emiten. El resto del snapshot de la orden no cambia. Ver [Rutas que cambian respecto del contrato anterior](#rutas-que-cambian-respecto-del-contrato-anterior).
   </Tab>
-  <Tab title="v1.1 · anterior">
-    **v1.1 agregó** `data.policy.deferredPayment` (¿esta orden puede trabajarse antes del pago?) y `data.lastKnown` (estado orientativo de cocina/fiscal), más el evento nuevo [`order.opened`](/es/events/order-opened). Sigue siendo válido: v1.2 solo suma un bloque.
-  </Tab>
-  <Tab title="v1 · deprecado">
-    <Warning>El contrato **v1** está **deprecado** — se mantiene como referencia histórica. Abrilo acá: [`order.invoiced` — v1](/es/events-v1/order-invoiced).</Warning>
+  <Tab title="v1.2 · deprecado">
+    <Warning>El contrato **v1.2** está **deprecado** — se mantiene como referencia histórica. Ábrelo acá: [`order.invoiced` — v1.2](/es/events-v1/order-invoiced).</Warning>
   </Tab>
   <Tab title="v0 · deprecado">
-    <Warning>El contrato **v0** está **deprecado** — se mantiene solo como referencia histórica. Ábrelo acá: [order-completed — v0](/es/events-v0/order-completed).</Warning>
+    <Warning>El snapshot de orden **v0** está **deprecado** — se mantiene solo como referencia histórica. Ver [order.completed — v0](/es/events-v0/order-completed).</Warning>
   </Tab>
 </Tabs>
 
-`order.invoiced` dispara cuando la **autoridad fiscal del país** autoriza el documento fiscal asociado a una orden — SEFAZ en Brasil, SRI en Ecuador, DIAN en Colombia, AFIP en Argentina, SII en Chile, SENIAT en Venezuela. Lo emite el pipeline fiscal de Fire, que se integra con tu proveedor fiscal como proveedor de documentos.
+`order.invoiced` dispara cuando la **autoridad fiscal del país** autoriza el documento fiscal asociado a una orden — SEFAZ en Brasil, SRI en Ecuador, DIAN en Colombia, AFIP en Argentina, SII en Chile, SENIAT en Venezuela.
 
-Este evento es **separado de** [`order.completed`](/es/events/order-completed): la orden se paga primero (`order.completed`), después Fire pide la emisión fiscal vía tu proveedor fiscal, y `order.invoiced` dispara solo cuando la autoridad fiscal devuelve la autorización.
+Este evento es **separado de** [`order.completed`](/es/events/order-completed): la orden se paga primero (`order.completed`), después el documento se emite vía tu proveedor fiscal, y `order.invoiced` dispara solo cuando la autoridad devuelve la autorización.
 
 ## Condición de disparo
 
-Fire emite `order.invoiced` una vez por documento fiscal, la primera vez que **todo** lo siguiente es verdadero:
-
-- La orden está en una tienda con facturación fiscal habilitada (`storeFiscalConfig.enabled === true`)
-- Se emitió un documento fiscal a tu proveedor fiscal
-- tu proveedor fiscal reporta que la autoridad fiscal autorizó el documento (el `status` transiciona a `authorized`; en Brasil esto corresponde al código `cStat` de autorización SEFAZ)
+Fire emite `order.invoiced` cuando un documento fiscal de la orden llega a `authorized`, ya sea que Fire se entere por su integración nativa con el proveedor o por el [callback fiscal](/es/api-reference/fiscal-callback) con `eventType: "authorized"`.
 
 | | |
 |---|---|
-| Cobertura | **Todos los países** — Brasil (NFC-e/NF-e vía SEFAZ) y CO/EC/CL/AR/VE vía el [callback fiscal genérico](/es/api-reference/fiscal-callback). El país viaja en `fiscal.countryCode`, ya no en el nombre del evento |
-| Tipos de documento | Varían por país — `nfce`/`nfe` (BR), factura electrónica (CO/EC/CL/AR/VE). Llega en `fiscal.docSubtype` |
+| Cobertura | **Todos los países** — el país viaja en `fiscal.countryCode`, no en el nombre del evento |
 | Llave de idempotencia | `event.id` |
-| Dispara más de una vez | No, salvo en reintentos |
-| Latencia relativa a `order.completed` | Usualmente segundos; puede ser minutos si la autoridad fiscal está degradada |
+| Dispara más de una vez | Una vez por cada Integration Flow activo suscrito al evento; se reintenta ante fallas de entrega |
+| Latencia respecto de `order.completed` | Normalmente segundos; minutos si la autoridad está degradada |
 
 ## Qué hay en `trigger.data`
 
-Mismo snapshot V4 que [`order.completed`](/es/events/order-completed) más un bloque top-level **`fiscal`** con las referencias del documento autorizado. **Los campos varían por país** — abajo se muestra Brasil (`chaveAcesso`, `protocolo`); otros países llevan sus identificadores propios (`cufe` en CO, `claveAcceso` en EC, `cae` en AR, etc.). Ver el [callback fiscal genérico](/es/api-reference/fiscal-callback) para el contrato por país.
+El mismo snapshot V4 de orden que [`order.completed`](/es/events/order-completed), más el bloque **`fiscal`** descrito abajo. El `status` de la orden queda en `"COMPLETED"`: una autorización fiscal no cambia el status de la orden.
 
-El `status` de la orden permanece `"COMPLETED"` y `paymentStatus` permanece `"SUCCEEDED"` — la autorización fiscal no cambia el status de orden.
-
-## Ejemplo — payload real de producción (BR, sanitizado)
+## Ejemplo — Brasil (NFC-e, sanitizado)
 
 ```json
 {
-  "event": {
-    "id": "...",
-    "type": "order.invoiced",
-    "createdAt": "2026-05-06T01:23:11.000Z"
-  },
+  "event": { "id": "…", "type": "order.invoiced", "createdAt": "2026-09-15T05:02:12.004Z" },
   "data": {
-    "orderId": "8017b54c-af0c-4246-a60a-a0d4ae9a0fef",
+    "orderId": "15801bd1-83d3-4d70-bb1b-793fd30b7bec",
     "orderCode": "OC-br-001",
-    "businessDayDate": "2026-03-31",
-    "externalOrderId": "8017b54c-af0c-4246-a60a-a0d4ae9a0fef",
     "status": "COMPLETED",
     "paymentStatus": "SUCCEEDED",
-    "createdAt": "2026-05-06T01:22:56.488Z",
-    "store": { /* igual que order.completed — incluye storeFiscalConfig con CNPJ, legalName */ },
-    "client": { /* ... */ },
-    "payments": { /* ... — incluye payments.metadata.fiscal con agregados */ },
-    "orderLines": [ /* igual que order.completed — incluye rewardId por línea y por modificador seleccionado */ ],
-    "fulfillment": { /* ... */ },
-    "device": { /* ... */ },
-    "channel": { /* ... */ },
-    "operator": { /* ... */ },
-    "kds": { /* ... */ },
-    "marketing": null,
-    "metadata": {},
+    "store": { /* igual que order.completed */ },
+    "orderLines": [ /* igual que order.completed */ ],
+    "payments": { /* igual que order.completed */ },
 
     "fiscal": {
       "status": "authorized",
-      "docSubtype": "nfce",
-      "chaveAcesso": "41201008187168000160558050010000131609769080",
-      "numero": "1000013",
-      "protocolo": "141200000956123",
-      "providerDocId": "69fa97fe427d1240856e1282",
-      "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
-      "xmlUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/xml",
-      "dataAutorizacao": "2026-05-06T01:23:10.991Z",
-      "cStat": null
+      "countryCode": "BR",
+      "providerCode": "plugnotas",
+      "occurredAt": "2026-09-15T05:00:48.003Z",
+      "authority": {
+        "documentType": "SALE_INVOICE",
+        "docSubtype": "nfce",
+        "documentNumber": "12388",
+        "issuedAt": "2026-09-15T05:00:48.003Z",
+        "authorizedAt": "2026-09-15T03:00:00.000Z",
+        "cancelledAt": null,
+        "authorizationMode": "ONLINE",
+        "providerDocId": "6aa8d10117b687522d90ae0a",
+        "pdfUrl": "https://api.fiscal-provider.example/nfce/6aa8d10117b687522d90ae0a/pdf",
+        "xmlUrl": "https://api.fiscal-provider.example/nfce/6aa8d10117b687522d90ae0a/xml",
+        "amounts": { "total": 11.9, "tax": 1.65, "currencyCode": "BRL" },
+        "countryData": {
+          "chaveAcesso": "41201008187168000160558050010000131609769080",
+          "numero": "12388",
+          "serie": "2",
+          "modelo": 65,
+          "protocolo": "135266298552102"
+        },
+        "graphic": { "qr": "41201008187168000160558050010000131609769080" },
+        "providerIdentity": null,
+        "providerMetadata": null
+      },
+      "history": [
+        {
+          "status": "authorized",
+          "occurredAt": "2026-09-15T05:00:48.003Z",
+          "providerCode": "plugnotas",
+          "authority": { /* idéntico a authority de arriba */ }
+        }
+      ],
+      "compensates": null
     }
   },
-  "_meta": { "executionId": "...", "flowId": "...", "attempt": "1" }
+  "_meta": { "executionId": "…", "flowId": "…", "attempt": "1" }
 }
 ```
 
-## Referencia de `data.fiscal`
+<Note>Los bloques elididos como *igual que `order.completed`* son exactamente el snapshot que lleva `order.completed`. Ver la [referencia de campos de `order.completed`](/es/events/order-completed#referencia-de-campos).</Note>
 
-<ResponseField name="fiscal" type="object">
-  Referencias del documento autorizado por SEFAZ.
-
-  <Expandable title="fiscal">
-    <ResponseField name="status" type="string">
-      Status del documento. Para este evento, siempre `"authorized"`. Otros valores que puedes ver en tu proveedor fiscal (`pending`, `processing`, `rejected`, `denied`) **no** disparan `order.invoiced` — solo el estado terminal autorizado.
-    </ResponseField>
-    <ResponseField name="docSubtype" type="string">
-      Tipo de documento. Valores: `nfce` (NFC-e — factura de consumidor, B2C) o `nfe` (NF-e — factura de negocio, B2B).
-    </ResponseField>
-    <ResponseField name="chaveAcesso" type="string">
-      Chave de acesso SEFAZ de 44 dígitos. Codifica UF, año/mes, CNPJ, modelo, serie, número, tipo de emisión y un dígito verificador. Úsala para reconciliar con portales SEFAZ.
-    </ResponseField>
-    <ResponseField name="numero" type="string">
-      Número de documento asignado por el pipeline de emisión de Fire. Secuencial por `(cnpj, serie, docSubtype)`.
-    </ResponseField>
-    <ResponseField name="serie" type="string | null">
-      Serie del documento. Puede ser `null` para algunas configuraciones; la serie está codificada en `chaveAcesso` igualmente.
-    </ResponseField>
-    <ResponseField name="protocolo" type="string">
-      Número de protocolo de autorización SEFAZ. Requerido para cualquier operación SEFAZ subsecuente (cancelación, corrección).
-    </ResponseField>
-    <ResponseField name="providerDocId" type="string">
-      ID interno del documento en tu proveedor fiscal. Úsalo para consultar las APIs de tu proveedor fiscal directamente (p. ej. obtener el XML canónico).
-    </ResponseField>
-    <ResponseField name="pdfUrl" type="string">
-      URL para descargar el PDF del documento (DANFE para NF-e, DANFCE para NFC-e). Hosteado por tu proveedor fiscal; firmado/de vida corta en producción, durable en sandbox.
-    </ResponseField>
-    <ResponseField name="xmlUrl" type="string">
-      URL para descargar el XML canónico SEFAZ. Mismo hosting que `pdfUrl`.
-    </ResponseField>
-    <ResponseField name="dataAutorizacao" type="string">
-      Timestamp ISO 8601 UTC de la autorización SEFAZ (cuando SEFAZ estampó el protocolo).
-    </ResponseField>
-    <ResponseField name="cStat" type="string | null">
-      Código de status raw de SEFAZ. Puede ser `null` cuando el proveedor no lo expone (tu proveedor fiscal lo oculta para algunos flows de consumidor). Cuando está presente, `100` (NF-e) o `100` (NFC-e) indican autorización.
-    </ResponseField>
-  </Expandable>
-</ResponseField>
+<FiscalEventBlock />
 
 ## Dónde viven los totales fiscales
 
-Los valores agregados fiscales (vBC, vNF, vICMS, etc.) **no están** dentro de `data.fiscal` — están en `data.payments.metadata.fiscal`, el mismo lugar donde [`order.completed`](/es/events/order-completed#datos-fiscales) los lleva. `order.invoiced` no los duplica; trata el snapshot de la orden como la única fuente de verdad para los agregados monetarios.
-
-La clasificación por línea (NCM, CFOP, CSOSN, fiscalCategoryCode) vive en `data.orderLines[n].metadata.fiscal`. Igual que en `order.completed`.
-
-El bloque `data.store.storeFiscalConfig` lleva la identidad del emisor (CNPJ, legalName, tradeName) — también igual a `order.completed`.
+`authority.amounts` son los montos **del documento** tal como los reportó el ente. Los agregados propios de la orden (vBC, vNF, vICMS…) siguen en `data.payments.metadata.fiscal`, y la clasificación por línea (NCM, CFOP) en `data.orderLines[n].metadata.fiscal` — igual que en `order.completed`.
 
 ## Handler de ejemplo
 
 ```js
-async function onFiscalAuthorized(data) {
-  const { orderId, fiscal, store } = data;
+async function onOrderInvoiced(data) {
+  const { orderId, fiscal } = data;
+  const doc = fiscal.authority;
 
-  // 1. Persiste la autorización SEFAZ para auditoría
   await db.fiscalDocs.upsert({
-    where: { providerDocId: fiscal.providerDocId },
+    where: { providerDocId: doc.providerDocId },
     create: {
-      providerDocId: fiscal.providerDocId,
       fireOrderId: orderId,
-      country: "BR",
-      cnpj: store.storeFiscalConfig.govIdNumber,
-      docSubtype: fiscal.docSubtype,
-      chaveAcesso: fiscal.chaveAcesso,
-      protocolo: fiscal.protocolo,
-      authorizedAt: new Date(fiscal.dataAutorizacao),
-      status: "authorized",
+      country: fiscal.countryCode,
+      documentType: doc.documentType,
+      documentNumber: doc.documentNumber,
+      issuedAt: doc.issuedAt,
+      // Recorre countryData: las claves dependen del país.
+      identifiers: doc.countryData,
+      total: doc.amounts.total ?? null,
     },
     update: {},
   });
 
-  // 2. Obtén el XML canónico para archivado (legalmente requerido en BR)
-  const xml = await fetch(fiscal.xmlUrl).then(r => r.text());
-  await archive.put(`xml/${fiscal.providerDocId}.xml`, xml);
-
-  // 3. Notifica al cliente con el link del PDF
-  await mailer.send({
-    to: data.client?.email,
-    template: "fiscal-receipt",
-    pdf: fiscal.pdfUrl,
-  });
+  // Archiva el XML legal — el link puede expirar.
+  const xml = await fetch(doc.xmlUrl).then((r) => r.text());
+  await archive.put(`xml/${doc.providerDocId}.xml`, xml);
 }
 ```
 
-## `data.policy` y `data.lastKnown`
-
-Todos los eventos de orden llevan estos dos bloques, no solo este. Se agregaron
-junto con el ciclo de pago diferido y son **agregados en v1.1**, aditivos: los consumidores
-existentes siguen funcionando sin cambios.
-
-| Bloque | Qué es | ¿Confiar? |
-|---|---|---|
-| `policy.deferredPayment` | Si la orden puede trabajarse **antes** del pago. Se resuelve una vez al inyectar y se estampa inmutable — todos los eventos posteriores repiten el mismo valor. | Sí. Es una decisión, no un estado. |
-| `lastKnown` | Foto orientativa del estado de cocina (`kds`) y fiscal al emitir el evento. Puede venir `null` o viejo. | **No.** Nunca condiciones una acción irreversible a esto. |
-
-```json
-"policy": { "deferredPayment": { "eligible": true, "resolvedAt": "2026-08-02T15:55:42.407Z",
-    "configVersion": "fnv1a:3144c6fb",
-    "resolvedFrom": { "channelCode": "APP", "fulfillmentCode": "DELIVERY", "paymentMethod": "CASH" } } },
-"lastKnown": { "kds": null, "fiscal": { "status": "processing", "sourceEvent": "fiscal.callback" } }
-```
-
-El detalle campo por campo está en [`order.opened`](/es/events/order-opened#política-de-pago-diferido),
-el evento donde estos bloques más importan.
-
 ## Errores comunes
 
-- **`status === "authorized"`, no `"COMPLETED"`.** El `data.status` (status de la orden) es `"COMPLETED"`; el status fiscal está en `data.fiscal.status`.
-- **`pdfUrl` y `xmlUrl` pueden ser efímeros.** En producción, tu proveedor fiscal puede firmar/expirar estos links. Descarga y persiste los artefactos al recibir, en lugar de linkear clientes directamente a tu proveedor fiscal.
-- **`cStat` a menudo es `null`.** No hagas lógica que dependa de él. Usa `status === "authorized"` y `protocolo` como señales autoritativas.
-- **No hay evento para `rejected` / `denied` / `error`.** Si SEFAZ rechaza el documento, no dispara evento hoy. El status del documento fiscal se persiste internamente pero no se dispara flow. Vigila esto en el roadmap.
-- **El país ya no vive en el nombre del evento.** `order.invoiced` dispara para todos los países; usa `fiscal.countryCode` para filtrar. Los campos del bloque `fiscal` varían por país (chaveAcesso/protocolo en BR, cufe en CO, claveAcceso en EC, etc.).
+- **Lee `fiscal.authority.*`, no `fiscal.*`.** Los campos planos de v1.2 ya no están. La tabla de [Rutas que cambian](#rutas-que-cambian-respecto-del-contrato-anterior) mapea cada uno.
+- **No alinees por hora con `authorizedAt` en Brasil.** Lleva una medianoche convencional; usa `issuedAt` para la hora.
+- **`history` incluye el documento vigente.** No cuentes sus entradas como "documentos anteriores".
+- **No hay evento para `rejected` / `denied` / `error`.** Esos resultados se guardan pero no disparan `order.invoiced`.
 
 ## Eventos relacionados
 
 <CardGroup cols={2}>
   <Card title="order.completed" icon="receipt" href="/es/events/order-completed">
-    Dispara antes de este evento — la orden misma.
+    Dispara antes que este evento — la orden en sí.
   </Card>
   <Card title="order.reversed" icon="file-circle-xmark" href="/es/events/order-reversed">
-    Dispara después si el documento se cancela en SEFAZ.
+    Dispara después si el documento se cancela ante la autoridad.
+  </Card>
+  <Card title="Callback fiscal" icon="arrow-right-to-bracket" href="/es/api-reference/fiscal-callback">
+    Cómo un proveedor reporta la autorización que dispara este evento.
   </Card>
 </CardGroup>
 
 ## `data.fiscalRepresentation`
 
-La **numeración fiscal** que el punto de venta obtuvo *antes* de inyectar la orden:
-cobra, pide los identificadores, imprime el comprobante y recién después inyecta.
-Por eso viaja en la orden y no en un evento fiscal aparte — cuando la orden nace,
-esto ya ocurrió.
-
-<Warning>
-  **Que este bloque exista NO significa que el comprobante esté autorizado.** Son
-  los números que se imprimieron en la caja; el veredicto del ente lo da
-  `lastKnown.fiscal.status`. Un ticket que diga "autorizado" solo porque el bloque
-  está presente declara algo que puede no haber pasado.
-</Warning>
-
-**La clave viaja siempre.** Llega en `null` cuando no se intentó numerar
-—agregadores, países sin representación fiscal, o comercios con la numeración
-desactivada— y con el bloque cuando sí se intentó.
-
-Que traiga bloque significa **que se intentó numerar, no que se numeró**:
-`numberingStatus` dice cómo terminó el intento, y `failure` por qué cuando no
-terminó bien.
-
-Ramificá por valor, no por presencia de la clave:
-
-```js
-if (data.fiscalRepresentation) {
-  // se intentó numerar — mirá numberingStatus para saber cómo salió
-}
-```
-
-| Campo | Qué es |
-|---|---|
-| `numberingStatus` | Cómo terminó el **acto de numerar**: `GENERATED`, `PENDING`, `FAILED_RETRYABLE`, `FAILED_FINAL`, `UNAVAILABLE`. **No es el veredicto del ente** — ese está en `lastKnown.fiscal.status`. |
-| `documentNumber` | Número visible del comprobante, compuesto según el país (`005-004-000000042`). Es presentación y **lo arma Fire**, no el ente: para conciliar usá `countryData`. |
-| `issuedAt` | Cuándo se **numeró**. No es la fecha de autorización. |
-| `authorizationMode` | `ONLINE`, `OFFLINE` o `BATCH`. Concepto del proveedor, no universal. |
-| `providerCode` | Identificador del adaptador que numeró. |
-| `countryData` | Los identificadores del ente, con el vocabulario del **país que numeró** y solo los de ese país. Ecuador: `numeroComprobante` (el número visible del comprobante, ya armado por el proveedor), `claveAcceso`, `establecimiento`, `puntoEmision`, `secuencial`, `ambiente`. Venezuela: `numeroControl`, `numeroFactura`, `serie`. **Recorrelo; no lo indexes a ciegas** — que aparezca una clave nueva no es un cambio que rompa. Es el mismo bloque que devuelve el endpoint de numeración y que trae el callback del ente. La referencia por país, con las claves de cada régimen, está en [`countryData` por país](/es/api-reference/fiscal-documents#countrydata-por-país). |
-| `graphic` | El artefacto imprimible que entregó el proveedor (QR y demás), tal cual vino. `null` si no entregó ninguno. |
-| `failure` | Por qué **no** hay comprobante. `null` cuando la numeración salió bien. |
-| `providerIdentity` | **Quién numeró, del lado del proveedor**: `{ "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" }`. A diferencia de la bolsa de abajo, **tiene forma**: los tres campos están en el contrato y siempre vienen, con `null` cuando no aplica. `reference` es **la referencia de soporte del proveedor** — el identificador que se le cita a él para que encuentre la operación en sus registros; no es la `Idempotency-Key` que mandó el canal. No lleva `providerCode`: ese es nuestro y viaja arriba. |
-| `providerMetadata` | **La bolsa de diagnóstico del proveedor**, tal como la devolvió: en Ecuador con HIO llega `{ "deviceUid": "4B8E…", "externalStoreCode": "K000" }`. Es **opaca** — las claves las pone el proveedor y pueden cambiar sin aviso, así que no programes contra ellas; sirve para pegar en un ticket, no para ramificar. **Es exactamente el mismo campo que devuelve el endpoint de numeración**, con el mismo nombre y el mismo contenido: los tres campos del proveedor se leen igual en los dos extremos. |
-| `environment` | En qué ambiente numeró **Fire**: `SANDBOX` o `PRODUCTION`. Es nuestro, no del ente — el del ente viaja dentro de `countryData` con el código del país. |
-| `compensates` | A qué documento anula este. Presente **solo** cuando `documentType` es `CREDIT_NOTE`. Es un **puntero**, no una copia: buscá su `documentNumber` en `history` si querés el documento entero. `reason` es el código canónico — el texto impreso lo redacta cada empresa y se resuelve en la respuesta del endpoint de numeración. |
-| `history` | Los documentos **anteriores** de la orden, del más viejo al más nuevo. Vacío mientras hubo uno solo; cuando una anulación numera, la factura baja acá y la nota queda arriba. Cada entrada tiene **la misma forma** que el bloque de arriba, así que se leen igual. Solo documentos: un intento que falló no entra. |
-
-```json
-"fiscalRepresentation": {
-  "numberingStatus": "GENERATED",
-  "documentNumber": "005-004-000000042",
-  "countryData": {
-    "numeroComprobante": "005-004-000000042",
-    "claveAcceso": "1208202601000000000000110050040000000421234567810",
-    "establecimiento": "005",
-    "puntoEmision": "004",
-    "secuencial": "000000042",
-    "ambiente": "2"
-  },
-  "authorizationMode": "ONLINE",
-  "issuedAt": "2026-08-13T08:11:29.744Z",
-  "providerCode": "hio",
-  "graphic": { "qr": "1208202601000000000000110050040000000421234567810" },
-  "failure": null,
-  "providerIdentity": { "name": "hio.fiscalization", "version": "2026.08.1", "reference": "HIO-91f3c2" },
-  "providerMetadata": { "deviceUid": "4B8E21F9A0D35C7A", "externalStoreCode": "K004" },
-  "environment": "PRODUCTION",
-  "compensates": null,
-  "history": []
-}
-```
-
-**El veredicto del ente no lo altera.** Lo que el cliente se llevó impreso no
-cambia porque el organismo después autorice o rechace; para eso está
-`lastKnown.fiscal`, que es lo que sí se mueve.
-
-**Lo que sí lo reemplaza es un documento nuevo.** El bloque lleva el documento
-fiscal **vigente** de la orden. Mientras solo hubo uno, era siempre la factura;
-cuando una anulación produce una nota de crédito, arriba queda la nota —
-`documentType` dice cuál es— y la factura **baja a `history`**, entera y con sus
-propios identificadores del ente. No se pierde: se mueve. `compensates` apunta a
-ella por su número, así que la relación entre los dos queda explícita.
-
-### Cuando la numeración falla
-
-Una venta puede cobrarse y quedarse **sin comprobante fiscal**. Ese caso también
-viaja, y hay que contemplarlo: los identificadores vienen en `null` y el motivo
-en `failure`.
-
-```json
-"fiscalRepresentation": {
-  "numberingStatus": "FAILED_FINAL",
-  "documentNumber": null,
-  "issuedAt": null,
-  "providerCode": "hio",
-  "graphic": null,
-  "failure": { "code": "RUC_INVALIDO", "scope": "FUNCTIONAL", "message": "RUC no habilitado" }
-}
-```
-
-Ramificá por `failure.scope`:
-
-- **`TECHNICAL`** — imprimí "en trámite" y seguí. Puede resolverse solo.
-- **`FUNCTIONAL`** — hay un dato mal y reintentar no lo arregla. Requiere corrección.
-
-<Note>
-  **`lastKnown.fiscal.sourceEvent` ahora informa la procedencia real.** Antes se
-  deducía del estado, y un `processing` sembrado al inyectar se reportaba como
-  `fiscal.callback` sin que ningún callback hubiera ocurrido. Ahora ese caso dice
-  `order.injected`. Si ramificás por este campo, contemplá el valor nuevo.
-</Note>
+Sin cambios en v2. Es la **numeración fiscal** que el punto de venta obtuvo *antes* de inyectar la orden — lo que se imprimió en la caja — y es un bloque distinto de `fiscal`: `fiscalRepresentation` es lo que se numeró, `fiscal.authority` es lo que decidió el ente. La referencia de campos está en [`order.completed`](/es/events/order-completed) y en la [página v1.2](/es/events-v1/order-invoiced#data-fiscalrepresentation).

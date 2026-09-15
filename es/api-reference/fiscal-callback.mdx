@@ -1,11 +1,11 @@
 ---
 title: "Callback fiscal"
 api: "POST https://app.fire.rest/api/v1/webhooks/fiscal/callback"
-description: "Endpoint inbound al que tu proveedor fiscal hace POST cuando un documento fiscal cambia de estado. Multipaís (BR, CO, EC, CL, AR, VE). Actualiza el estado fiscal de la orden dentro de Fire y — para Brasil — dispara los eventos de orden downstream."
+description: "Endpoint inbound al que tu proveedor fiscal hace POST cuando un documento fiscal cambia de estado. Multipaís (BR, CO, EC, CL, AR, VE). Actualiza el estado fiscal de la orden dentro de Fire y dispara order.invoiced / order.reversed para todos los países."
 authMethod: "bearer"
 ---
 
-Este endpoint es **inbound** — tu proveedor fiscal le hace POST cada vez que un documento fiscal es autorizado, rechazado, denegado, cancelado o falla. Es la **API canónica multipaís de fiscal callback** que acepta payloads de BR, CO, EC, CL, AR, VE. Fire valida el payload, actualiza el estado fiscal de la orden en `fiscal_documents` y `orders.fiscal`, y — para Brasil — despacha eventos outbound `order.invoiced` / `order.reversed` a tus Integration Flows.
+Este endpoint es **inbound** — tu proveedor fiscal le hace POST cada vez que un documento fiscal es autorizado, rechazado, denegado, cancelado o falla. Es la **API canónica multipaís de fiscal callback** que acepta payloads de BR, CO, EC, CL, AR, VE. Fire valida el payload, guarda el veredicto del ente en la orden y despacha `order.invoiced` / `order.reversed` a tus Integration Flows — para todos los países. Lo que mandás acá es lo que leen los consumidores de los eventos: ver [Del callback a los eventos](#del-callback-a-los-eventos).
 
 <Note>
   **Este endpoint es asíncrono.** Fire autentica, corre el guard de source-of-truth + tenancy, deduplica, pre-marca la orden como `processing` y **encola** el callback — luego devuelve **`202 Accepted`** con un `webhookEventId` (típicamente en menos de 100&nbsp;ms). La actualización de `fiscal_documents` / `orders.fiscal` ocurre un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para ver el resultado del procesamiento, consultá [`GET /v1/webhooks/events/{webhookEventId}`](#comprobar-el-resultado). Los problemas corregibles por el cliente (payload inválido, `eventId` equivocado, tenant equivocado, una acción reusando el evento de otra) se rechazan **sincrónicamente** con `4xx` **antes** del `202`.
@@ -21,20 +21,12 @@ flowchart LR
     B --> C[Tu proveedor fiscal<br/>emite el documento]
     C --> D([POST /v1/webhooks/fiscal/callback])
     D --> E[Fire actualiza fiscal_documents<br/>+ orders.fiscal JSONB]
-    E -. solo BR .-> F([order.invoiced event])
+    E --> F([order.invoiced / order.reversed])
 ```
 
-Después de procesar el callback, el **siguiente** `order.completed` o `order.cancelled` para el mismo `orderId` refleja el estado fiscal actualizado en:
+Después de procesar un callback `authorized`, Fire emite [`order.invoiced`](/es/events/order-invoiced); después de uno `cancelled`, [`order.reversed`](/es/events/order-reversed). Ambos salen **para todos los países** — el país viaja en el bloque fiscal del evento, no en su nombre. Los eventos posteriores de la orden para el mismo `orderId` también reflejan el nuevo estado en `data.lastKnown.fiscal`.
 
-- `data.store.storeFiscalConfig` — contexto del emisor (CNPJ / NIT / RUC / RUT / CUIT / RIF…)
-- `data.payments.metadata.fiscal` — agregados fiscales totales (BR populado; otros países `null`)
-- `data.orderLines[].metadata.fiscal` — clasificación fiscal por línea (BR populado; otros `null`)
-
-Para Brasil específicamente, también se emite un evento `order.invoiced` (o `order.reversed`) separado con las referencias del documento SEFAZ en `data.fiscal`.
-
-<Note>
-  **Hoy, solo `order.invoiced` y `order.reversed` están cableados como eventos outbound (Brasil).** El endpoint valida y guarda callbacks para los 6 países (CO, EC, CL, AR, VE, BR), y el estado fiscal actualizado aparece en el siguiente evento `order.completed` / `order.cancelled` sin importar el país. Los eventos outbound para CO/EC/CL/AR/VE están en camino.
-</Note>
+Para el panorama fiscal completo — numeración, callback y eventos, y cómo encajan — ver el [panorama fiscal](/es/fiscal/overview).
 
 ## Autenticación
 
@@ -45,15 +37,17 @@ Este endpoint requiere una **API key con scope `webhooks:fiscal`**, vendor-scope
 </ParamField>
 
 <ParamField header="Authorization" type="string">
-  Opcional `Bearer <token>`. No se requiere para este endpoint hoy, pero está reservado para futuros tokens emitidos por proveedor.
+  Alias legado: la misma API key de Fire, como `Bearer pk_live_...`. Prefiere `x-api-key`; si llegan los dos, se usa `x-api-key`.
 </ParamField>
 
 ## Body de la petición
 
-El body es un objeto JSON con estos campos top-level. La forma del `document` está **discriminada por `countryCode`** — ver [Documento por país](#documento-por-pais) abajo.
+El body es un objeto JSON con estos campos top-level. **Todo lo canónico vive acá arriba**; `document` lleva SOLO el vocabulario del ente de tu país, elegido por `country` — ver [Documento por país](#documento-por-país) abajo.
 
-<ParamField body="countryCode" type="string" required>
+<ParamField body="country" type="string" required>
   Código de país ISO 3166-1 alpha-2. Uno de `BR`, `CO`, `EC`, `CL`, `AR`, `VE`. Determina las reglas de validación del objeto `document`.
+
+  **Antes se llamaba `countryCode`.**
 </ParamField>
 
 <ParamField body="eventType" type="string" required>
@@ -65,11 +59,11 @@ El body es un objeto JSON con estos campos top-level. La forma del `document` es
   - `denied` — la autoridad denegó la solicitud (típicamente fallo permanente de regla de negocio)
   - `error` — ocurrió un error no recuperable en el proveedor o autoridad
 
-  Cuando `eventType` es `fiscal_graphic`, `authorized` o `cancelled`, el campo `document` es **requerido**. Cuando es `rejected`, `denied` o `error`, el campo `error` es **requerido**.
+  Cuando `eventType` es `fiscal_graphic`, `authorized` o `cancelled`, el campo `document` es **requerido**. Cuando es `rejected`, `denied` o `error`, el campo `failure` es **requerido**.
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  El id propio de tu proveedor para esta entrega. Se guarda para auditoría/forense — **no es la llave de idempotencia**. Fire deduplica por `(orderId, eventId)`, así que podés enviar un `providerEventId` nuevo en cada reintento sin crear duplicados. Usa el ID nativo del evento del proveedor si está disponible; si no, un UUID.
+  El id propio de tu proveedor para esta entrega. Se guarda para auditoría/forense — **no es la llave de idempotencia**. Fire deduplica por `(orderId, eventId)` — un `eventType` distinto sobre el mismo par devuelve `409`, salvo `fiscal_graphic` — así que podés enviar un `providerEventId` nuevo en cada reintento sin crear duplicados. Usa el ID nativo del evento del proveedor si está disponible; si no, un UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -88,55 +82,170 @@ El body es un objeto JSON con estos campos top-level. La forma del `document` es
 </ParamField>
 
 <ParamField body="document" type="object">
-  El documento fiscal autorizado / cancelado. **Requerido** cuando `eventType` es `authorized` o `cancelled`. La forma varía por país — ver [Documento por país](#documento-por-pais).
+  El vocabulario del ente de tu país, y **nada más**: `claveAcceso`, `cufe`, `chaveAcesso`, `folio`, `cae`… **Requerido** cuando `eventType` es `authorized`, `cancelled` o `fiscal_graphic`. Ver [Documento por país](#documento-por-país).
+
+  Los campos comunes —`documentType`, el número, las URLs, los importes, las fechas— **no van acá adentro**: están en la raíz. Todo lo que va en `document` llega a los eventos como `authority.countryData`, con los mismos nombres de clave.
 </ParamField>
 
-<ParamField body="error" type="object">
-  Contexto de error para resultados negativos. **Requerido** cuando `eventType` es `rejected`, `denied` o `error`.
+### Campos canónicos (raíz)
 
-  <Expandable title="error">
+Significan lo mismo en los seis países, así que viven en la **raíz** del payload y no dentro de `document`. Es la misma regla que la respuesta de numeración fiscal, para que el mismo hecho no se busque en dos profundidades distintas según por dónde entró.
+
+<ParamField body="documentType" type="string">
+  `SALE_INVOICE` o `CREDIT_NOTE` — el mismo vocabulario que la numeración fiscal. **Requerido cuando hay comprobante** (`authorized` / `cancelled`), y tiene que coincidir con el evento: `authorized` es un `SALE_INVOICE`, `cancelled` es un `CREDIT_NOTE`. Cualquier otra combinación devuelve `400`.
+
+  **Antes era `docType: "invoice" | "cancellation"`.** El nombre viejo **se ignora**, no se traduce: un payload `authorized` o `cancelled` que trae solo `docType` recibe `400` en `documentType`.
+</ParamField>
+
+<ParamField body="docSubtype" type="string">
+  Cómo lo llama tu régimen: `nfce`, `nfe`, `factura`, `boleta`, `factura_a`. Abierto: no lo validamos contra una lista y **no ramifica nada** de nuestro lado — es referencial. **Requerido cuando hay comprobante.**
+</ParamField>
+
+### Tipos de documento
+
+Fire acepta **exactamente dos** valores en `documentType`. No hay un tercer tipo: cualquier otro valor devuelve `400`.
+
+| `documentType` | Qué es | `eventType` del callback | Operación de numeración |
+|---|---|---|---|
+| `SALE_INVOICE` | El documento de la venta: factura, NFC-e / NF-e, boleta… | `authorized` | `INVOICE` |
+| `CREDIT_NOTE` | El documento que anula una venta | `cancelled` | `CANCEL` |
+
+Cómo llama cada régimen a su documento va en `docSubtype`, y ese campo es **abierto**: `nfce`, `nfe` (Brasil), `factura` (Ecuador, Colombia), `boleta` (Chile), `factura_a` (Argentina) y cualquier otro nombre que use tu autoridad. Fire no lo valida contra una lista ni decide nada con él.
+
+<Note>
+  No lo confundas con el [catálogo de tipos de documento](/es/api-reference/fiscal-document-types): ese endpoint lista los documentos de **identificación del comprador** (`CEDULA`, `CPF`, `NIT`…), no tipos de documento fiscal.
+</Note>
+
+<ParamField body="documentNumber" type="string">
+  El número **visible** del documento, tal como lo arma el ente (`12388`, `001-020-000000123`, `C012001`). Las piezas con las que se arma siguen viajando en `document` con los nombres del país. **Requerido en `authorized`**: Fire ya no lo deduce.
+</ParamField>
+
+<ParamField body="issuedAt" type="string">
+  Fecha/hora UTC (ISO 8601) en que se **emitió** el documento. Mismo nombre que en la numeración fiscal. **Requerido en `authorized`.**
+</ParamField>
+
+<ParamField body="authorizedAt" type="string">
+  Fecha/hora UTC (ISO 8601) en que el ente **aprobó** el documento — un hecho distinto de `issuedAt`. Pueden separarse por segundos (autorización en línea) o por horas (contingencia autorizada cuando vuelve la conexión). Opcional; si no viene, los consumidores de los eventos ven `authority.authorizedAt: null`. En una cancelación usá `cancelledAt`.
+</ParamField>
+
+<ParamField body="cancelledAt" type="string">
+  Fecha/hora UTC en que el ente aprobó la cancelación. Mandalo en `cancelled`.
+</ParamField>
+
+<ParamField body="authorizationMode" type="string">
+  `ONLINE`, `OFFLINE` o `BATCH`. `OFFLINE` es contingencia: el comprobante vale pero se emitió sin poder consultar al ente, y hay regímenes que exigen que el ticket lo diga (el RIDE ecuatoriano imprime `EMISION POR CONTINGENCIA`).
+</ParamField>
+
+<ParamField body="pdfUrl" type="string">
+  Enlace de descarga del PDF (DANFE / RIDE). HTTPS, descargable con un GET directo, válido por al menos 24 h — Fire lo archiva. **Requerido** para `authorized` y `cancelled`.
+</ParamField>
+
+<ParamField body="xmlUrl" type="string">
+  Enlace de descarga del XML legal del ente. Mismas condiciones que `pdfUrl`. **Requerido** para `authorized` y `cancelled`.
+</ParamField>
+
+<ParamField body="totalAmount" type="number">
+  Total bruto del documento, en decimales reales (sin escalar). **Requerido en `authorized`.**
+</ParamField>
+
+<ParamField body="taxAmount" type="number">
+  Total de impuestos del documento, en decimales reales. **Requerido en `authorized`.**
+</ParamField>
+
+<ParamField body="currencyCode" type="string">
+  Código ISO 4217 — exactamente 3 letras (`BRL`, `COP`, `USD`). **Requerido en `authorized`.**
+</ParamField>
+
+<ParamField body="providerDocId" type="string">
+  El id del documento en tu sistema. Es por lo que se buscan el PDF y el XML y con lo que se pide una cancelación. **Requerido en `authorized`.**
+</ParamField>
+
+<ParamField body="graphic" type="object">
+  Lo que se imprime: un mapa clave → string exacto a codificar (`{ "qr": "…" }`, `{ "ted": "…" }`). La clave nombra el propósito; cómo se dibuja lo decide la plantilla del ticket. Va en la raíz, al lado de `document`, como en la respuesta de numeración fiscal. **Requerido y no vacío en `fiscal_graphic`**; opcional en el resto.
+</ParamField>
+
+<ParamField body="provider" type="object">
+  Quién emitió y con qué versión. Llega a la orden y a los eventos como `authority.providerIdentity` — el mismo nombre que en la numeración fiscal — con las tres claves siempre presentes. Si no mandás `provider`, o lo mandás vacío, `providerIdentity` es `null`.
+
+  <Expandable title="provider">
+    <ParamField body="name" type="string">Nombre del proveedor (`hio.fiscalization`, `plugnotas`).</ParamField>
+    <ParamField body="version" type="string">Versión del emisor.</ParamField>
+    <ParamField body="reference" type="string">Referencia libre.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="failure" type="object">
+  Por qué NO hay comprobante. **Requerido** cuando `eventType` es `rejected`, `denied` o `error`.
+
+  **Antes se llamaba `error`**, y ahora lleva la misma forma que la respuesta de numeración fiscal.
+
+  <Expandable title="failure">
     <ParamField body="code" type="string">
       Código de error opcional del proveedor/autoridad (p. ej. `DIAN_42`, `cStat_204`).
+    </ParamField>
+    <ParamField body="scope" type="string">
+      `TECHNICAL` o `FUNCTIONAL`. Es lo que el canal ramifica: con `TECHNICAL` el comprobante todavía puede salir y el ticket imprime «en trámite»; con `FUNCTIONAL` el ente lo rechazó por su contenido y no va a salir.
     </ParamField>
     <ParamField body="message" type="string" required>
       Mensaje legible. Mínimo 1 carácter.
     </ParamField>
+    <ParamField body="details" type="array">
+      Detalle campo por campo, cuando el ente lo da: una lista de `{ "field": "…", "issue": "…" }`, ambos opcionales.
+    </ParamField>
   </Expandable>
 </ParamField>
 
-<ParamField body="providerSpecific" type="object">
-  Bag free-form para extras específicos del proveedor (respuesta raw, IDs internos, etc.). No validado; pasa al log de auditoría.
+<ParamField body="metadata" type="object">
+  Bag free-form para extras específicos del proveedor (respuesta raw, IDs internos, etc.). No validado. Llega a la orden y a los eventos como `authority.providerMetadata`, tal cual y opaco — igual que en la numeración fiscal. Ausente o `{}` queda en `null`. No mandes `null`: omítelo o manda `{}` — `null` devuelve `400`.
+
+  **Antes se llamaba `providerSpecific`.**
 </ParamField>
+
+<Warning>
+  **La raíz no admite claves extra.** Solo se leen los campos de arriba; cualquier otra clave de raíz se **descarta en silencio** — no se rechaza. `orderCode` no es parte del contrato — la orden se resuelve por `orderId`.
+</Warning>
+
+### Qué es requerido, por evento
+
+| Campo | `authorized` | `cancelled` | `fiscal_graphic` | `rejected` · `denied` · `error` |
+|---|---|---|---|---|
+| `document` | requerido | requerido | requerido | — |
+| `documentType` | `SALE_INVOICE` | `CREDIT_NOTE` | — | — |
+| `docSubtype` | requerido | requerido | — | — |
+| `pdfUrl`, `xmlUrl` | requerido | requerido | — | — |
+| `documentNumber`, `providerDocId`, `issuedAt` | requerido | — | — | — |
+| `totalAmount`, `taxAmount`, `currencyCode` | requerido | — | — | — |
+| `graphic` | opcional | opcional | requerido, no vacío | — |
+| `failure` | — | — | — | requerido |
+
+`authorizedAt`, `cancelledAt`, `authorizationMode` y `provider` son siempre opcionales. Un campo requerido enviado como `null` cuenta como faltante.
 
 ## Documento por país
 
-La forma requerida del campo `document` depende del `countryCode`. **Todas las variantes comparten los campos base de abajo** (comunes a los 6 países) más los identificadores específicos del país requeridos por esa autoridad.
+La forma requerida del campo `document` depende de `country`. **`document` lleva SOLO los identificadores del ente de ese país** — los campos comunes a los seis viven en la raíz del payload, arriba.
 
-### Campos base comunes
+<Warning>
+  **`document` cambió de contenido**
 
-Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**; el resto son **opcionales** — envíalos cuando tu proveedor fiscal los tenga disponibles. Fire los persiste en `fiscal_documents` / `orders.fiscal` y los reemite en los eventos outbound `order.invoiced` / `order.reversed` (Brasil) y en el siguiente `order.completed` / `order.cancelled`.
+  Hasta ahora `document` mezclaba dos cosas: lo que significa lo mismo en todos los países
+  —`docType`, `pdfUrl`, `xmlUrl`, los importes, las fechas— y el vocabulario del ente de cada
+  uno. Esa mezcla se propagaba a todo lo que leía el callback.
 
-| Campo | Tipo | Requerido | Notas |
-|---|---|---|---|
-| `docType` | `"invoice"` / `"cancellation"` | ✓ | Clase del documento — `invoice` para emisión, `cancellation` para cancelación |
-| `docSubtype` | string | ✓ | Subtipo según país/proveedor (p. ej. `nfce`, `nfe`, `factura`, `boleta`, `factura_a`) |
-| `pdfUrl` | string (URL) \| null | | Enlace de descarga del PDF del documento (DANFE / representación gráfica) |
-| `xmlUrl` | string (URL) \| null | | Enlace de descarga del XML canónico de la autoridad fiscal |
-| `emittedAt` | string (ISO 8601) \| null | | Fecha/hora UTC en que la autoridad autorizó/emitió el documento |
-| `cancelledAt` | string (ISO 8601) \| null | | Fecha/hora UTC de la cancelación — relevante cuando `eventType` es `cancelled` |
-| `totalAmount` | number \| null | | Monto total bruto del documento |
-| `taxAmount` | number \| null | | Monto total de impuestos |
-| `currencyCode` | string \| null | | Código de moneda ISO 4217 — exactamente 3 letras (p. ej. `BRL`, `COP`, `USD`) |
+  Ahora **lo canónico va en la raíz** y `document` queda solo con lo del régimen. Es la misma
+  forma que la respuesta de numeración fiscal: el mismo hecho, en el mismo lugar, sin importar
+  por qué camino entró.
 
-<Note>
-  `pdfUrl` y `xmlUrl` se guardan **tal cual los envías** — Fire no descarga ni re-hostea el archivo. Si tu proveedor firma estas URLs con expiración, ten en cuenta que el enlace almacenado puede caducar; descarga y persiste el artefacto por tu lado si necesitas acceso durable.
-</Note>
+  Otros cambios del mismo paquete: `countryCode` → `country`, `docType` → `documentType`
+  (`SALE_INVOICE` / `CREDIT_NOTE`, sin alias), `error` → `failure` (con `scope` y
+  `details`), `providerSpecific` → `metadata`, y `emittedAt` → `issuedAt`. Nuevos en la raíz:
+  `documentNumber`, `authorizedAt` y `graphic`.
+</Warning>
 
 <Tabs>
   <Tab title="Brasil (BR)">
     Documentos fiscales brasileños (NF-e / NFC-e). Usa este código de país al enviar callbacks desde tu proveedor fiscal o cualquier otro proveedor BR.
 
-    Además de los [campos base comunes](#campos-base-comunes) (`docType`, `docSubtype`, `pdfUrl`, `xmlUrl`, `emittedAt`, etc.), BR requiere estos identificadores específicos:
+    Además de los [campos canónicos de la raíz](#campos-canónicos-raíz) (`documentType`, `docSubtype`, `documentNumber`, `pdfUrl`, `xmlUrl`, `issuedAt`, etc.), BR requiere estos identificadores específicos:
 
     | Campo | Tipo | Requerido | Notas |
     |---|---|---|---|
@@ -145,33 +254,35 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
     | `numero` | int / string | ✓ | Número de documento |
     | `serie` | int / string \| null | | Serie del documento (codificada en chave) |
     | `modelo` | `55` / `65` \| null | | `55` = NF-e, `65` = NFC-e |
-    | `cnpjEmitente` | string \| null | | CNPJ del emisor |
 
-    El ejemplo de abajo incluye los campos base opcionales (`pdfUrl`, `xmlUrl`, `emittedAt`, `totalAmount`, `taxAmount`, `currencyCode`) — todos pueden omitirse, pero si tu proveedor los tiene, envíalos:
+    El ejemplo de abajo es un payload `authorized` completo: cada campo de raíz que muestra es **requerido** para ese evento, salvo `provider` y `metadata`, que son opcionales y llegan a la orden como `authority.providerIdentity` y `authority.providerMetadata` — ver [Qué es requerido, por evento](#qué-es-requerido-por-evento).
 
     ```json
     {
-      "countryCode": "BR",
+      "country": "BR",
       "eventType": "authorized",
       "providerEventId": "evt-br-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "documentType": "SALE_INVOICE",
+      "docSubtype": "nfce",
+      "documentNumber": "1",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 142.90,
+      "taxAmount": 18.57,
+      "currencyCode": "BRL",
+      "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/xml",
+      "providerDocId": "69fa97fe427d1240856e1282",
+      "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-69fa97fe427d1240856e1282" },
+      "metadata": { "providerTraceId": "trace-69fa97fe427d1240856e1282" },
       "document": {
-        "docType": "invoice",
-        "docSubtype": "nfce",
         "chaveAcesso": "35260229062609000177650500000000011000000010",
         "protocolo": "141210001176277",
         "numero": 1,
         "serie": 50,
-        "modelo": 65,
-        "cnpjEmitente": "29062609000177",
-        "emittedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 142.90,
-        "taxAmount": 18.57,
-        "currencyCode": "BRL",
-        "pdfUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/nfce/69fa97fe427d1240856e1282/xml"
+        "modelo": 65
       }
     }
     ```
@@ -191,27 +302,31 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
 
     ```json
     {
-      "countryCode": "CO",
+      "country": "CO",
       "eventType": "authorized",
       "providerEventId": "evt-co-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "documentType": "SALE_INVOICE",
+      "docSubtype": "factura",
+      "documentNumber": "C012001",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 95000.00,
+      "taxAmount": 15170.17,
+      "currencyCode": "COP",
+      "pdfUrl": "https://api.fiscal-provider.example/dian/C012001/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/dian/C012001/xml",
+      "providerDocId": "C012001",
+      "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-C012001" },
+      "metadata": { "providerTraceId": "trace-C012001" },
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
         "prefijo": "C012",
         "numeroDian": "001",
         "numeroComprobante": "C012001",
         "ambiente": "1",
-        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=633732c7a2a577bfa1828551e64d03f715f0",
-        "emittedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 95000.00,
-        "taxAmount": 15170.17,
-        "currencyCode": "COP",
-        "pdfUrl": "https://api.fiscal-provider.example/dian/C012001/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/dian/C012001/xml"
+        "qrCode": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=633732c7a2a577bfa1828551e64d03f715f0"
       }
     }
     ```
@@ -226,9 +341,9 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
       `numeroComprobante`. Mandar el armado en los dos hace que la conciliación compare
       `SETP990000001` contra `990000001` y no cruce.
 
-      Los dos campos nuevos son **opcionales**: quien ya manda callbacks sin ellos sigue
-      funcionando. El callback nunca se rechaza por un campo que falte — cuando llega, el
-      documento ya existe ante la DIAN.
+      Los dos campos son **opcionales dentro de `document`**: quien ya manda callbacks sin ellos sigue
+      funcionando. Eso no se extiende a la raíz: los campos listados en [Qué es requerido, por evento](#qué-es-requerido-por-evento)
+      son requeridos, y un callback al que le falten recibe `400`.
     </Note>
   </Tab>
 
@@ -238,42 +353,52 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
     | Campo | Tipo | Requerido | Notas |
     |---|---|---|---|
     | `claveAcceso` | string | ✓ | Exactamente 49 dígitos — clave de acceso SRI |
-    | `numeroAutorizacion` | string | ✓ | Número de autorización SRI |
     | `numeroComprobante` | string \| null | | El número **visible**, ya armado: `estab-ptoEmi-secuencial` |
     | `ambiente` | `'1'` / `'2'` \| null | | `1` = pruebas, `2` = producción |
+    | `establecimiento` | string \| null | | Código del establecimiento (`001`) |
+    | `puntoEmision` | string \| null | | Código del punto de emisión (`020`) |
+    | `secuencial` | string \| null | | Secuencial del comprobante (`000000123`) |
 
     <Note>
-      **`numeroComprobante` no es `numeroAutorizacion`.** El primero es el número que va
-      impreso en el comprobante —quince dígitos en tres tramos, art. 18 del Reglamento de
-      Comprobantes de Venta—; el segundo es la respuesta del SRI. Son hechos distintos y
-      viajan en campos distintos.
+      **`numeroAutorizacion` fue retirado del contrato.** En el esquema de autorización en
+      línea el SRI devuelve como número de autorización **la misma clave de acceso**, así que
+      era el mismo dato declarado dos veces. Si tu sistema lo sigue enviando no rompe nada
+      —los campos no declarados se preservan— pero no lo pedimos ni lo interpretamos.
+      Quien necesite el número de autorización lee `claveAcceso`.
 
-      Es **opcional**: si tu proveedor no lo emite, no lo mandes. Fire no lo compone a partir
-      de `establecimiento`, `puntoEmision` y `secuencial` —esa regla es del régimen— y el
-      documento queda sin número visible en lugar de mostrar uno armado por nosotros.
+      **Las tres piezas del número** —`establecimiento`, `puntoEmision`, `secuencial`— ahora
+      existen en las dos rutas: la numeración previa y este callback. Son **opcionales**: si
+      tu proveedor no las emite, no las mandes. Fire no las deriva de `claveAcceso` —esa
+      regla es del régimen— y el comprobante se imprime sin ellas.
     </Note>
 
     ```json
     {
-      "countryCode": "EC",
+      "country": "EC",
       "eventType": "authorized",
       "providerEventId": "evt-ec-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "documentType": "SALE_INVOICE",
+      "docSubtype": "factura",
+      "documentNumber": "001-020-000000123",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 24.50,
+      "taxAmount": 3.15,
+      "currencyCode": "USD",
+      "pdfUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/xml",
+      "providerDocId": "AUT-EC-001",
+      "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-AUT-EC-001" },
+      "metadata": { "providerTraceId": "trace-AUT-EC-001" },
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "numeroComprobante": "001-020-000000123",
         "claveAcceso": "0102030405060708091011121314151617181920212223242",
-        "numeroAutorizacion": "AUT-EC-001",
-        "ambiente": "2",
-        "emittedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 24.50,
-        "taxAmount": 3.15,
-        "currencyCode": "USD",
-        "pdfUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/sri/AUT-EC-001/xml"
+        "establecimiento": "001",
+        "puntoEmision": "020",
+        "secuencial": "000000123",
+        "ambiente": "2"
       }
     }
     ```
@@ -291,25 +416,29 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
 
     ```json
     {
-      "countryCode": "CL",
+      "country": "CL",
       "eventType": "authorized",
       "providerEventId": "evt-cl-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "documentType": "SALE_INVOICE",
+      "docSubtype": "factura",
+      "documentNumber": "12345",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 18900,
+      "taxAmount": 3019,
+      "currencyCode": "CLP",
+      "pdfUrl": "https://api.fiscal-provider.example/sii/12345/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/sii/12345/xml",
+      "providerDocId": "12345",
+      "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-12345" },
+      "metadata": { "providerTraceId": "trace-12345" },
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "folio": 12345,
         "ted": "<TED>...base64-or-xml...</TED>",
         "tipoDte": 33,
-        "trackId": "SII-TRK-998877",
-        "emittedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 18900,
-        "taxAmount": 3019,
-        "currencyCode": "CLP",
-        "pdfUrl": "https://api.fiscal-provider.example/sii/12345/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/sii/12345/xml"
+        "trackId": "SII-TRK-998877"
       }
     }
     ```
@@ -328,26 +457,30 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
 
     ```json
     {
-      "countryCode": "AR",
+      "country": "AR",
       "eventType": "authorized",
       "providerEventId": "evt-ar-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "documentType": "SALE_INVOICE",
+      "docSubtype": "factura_a",
+      "documentNumber": "0001-00012345",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 12100.00,
+      "taxAmount": 2100.00,
+      "currencyCode": "ARS",
+      "pdfUrl": "https://api.fiscal-provider.example/afip/0001-12345/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/afip/0001-12345/xml",
+      "providerDocId": "0001-12345",
+      "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-0001-12345" },
+      "metadata": { "providerTraceId": "trace-0001-12345" },
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura_a",
         "cae": "74256178925412",
         "fechaVtoCae": "2026-05-31",
         "puntoVenta": 1,
         "numeroComprobante": 12345,
-        "tipoComprobante": 1,
-        "emittedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 12100.00,
-        "taxAmount": 2100.00,
-        "currencyCode": "ARS",
-        "pdfUrl": "https://api.fiscal-provider.example/afip/0001-12345/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/afip/0001-12345/xml"
+        "tipoComprobante": 1
       }
     }
     ```
@@ -364,24 +497,28 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
 
     ```json
     {
-      "countryCode": "VE",
+      "country": "VE",
       "eventType": "authorized",
       "providerEventId": "evt-ve-1",
       "occurredAt": "2026-04-26T14:32:11.000Z",
       "orderId": "550e8400-e29b-41d4-a716-446655440000",
       "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+      "documentType": "SALE_INVOICE",
+      "docSubtype": "factura",
+      "documentNumber": "12345",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "totalAmount": 480.00,
+      "taxAmount": 76.80,
+      "currencyCode": "VES",
+      "pdfUrl": "https://api.fiscal-provider.example/seniat/00-00012345/pdf",
+      "xmlUrl": "https://api.fiscal-provider.example/seniat/00-00012345/xml",
+      "providerDocId": "00-00012345",
+      "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-00-00012345" },
+      "metadata": { "providerTraceId": "trace-00-00012345" },
       "document": {
-        "docType": "invoice",
-        "docSubtype": "factura",
         "numeroControl": "00-00012345",
         "numeroFactura": "12345",
-        "rifEmisor": "J-12345678-9",
-        "emittedAt": "2026-04-26T14:32:10.000Z",
-        "totalAmount": 480.00,
-        "taxAmount": 76.80,
-        "currencyCode": "VES",
-        "pdfUrl": "https://api.fiscal-provider.example/seniat/00-00012345/pdf",
-        "xmlUrl": "https://api.fiscal-provider.example/seniat/00-00012345/xml"
+        "rifEmisor": "J-12345678-9"
       }
     }
     ```
@@ -390,51 +527,68 @@ Aplican a cualquier `countryCode`. `docType` y `docSubtype` son **obligatorios**
 
 ## El estado `fiscal_graphic`
 
-`fiscal_graphic` reporta que tu proveedor está entregando la **representación gráfica** — el artefacto imprimible (PDF / RIDE / DANFE) del documento. Es un **estado propio**, no un resultado:
+`fiscal_graphic` reporta que tu proveedor está entregando la **representación gráfica** — lo que imprime la caja para el documento. Es un **estado propio**, no un resultado:
 
 - **No es una aprobación.** Recibir `fiscal_graphic` no dice nada sobre si la autoridad aprobó el documento. Fire guarda la gráfica y el documento sigue en un estado no terminal.
 - **Es opcional.** Si tu proveedor no tiene gráfica para un documento, envía `authorized` (o cualquier estado terminal) **directamente** — no hace falta un `fiscal_graphic` previo. Ambos flujos son válidos.
 - **Puede compartir el `eventId` con su desenlace.** La gráfica y el resultado terminal pertenecen a la misma acción, así que podés enviar `fiscal_graphic` y luego `authorized` / `rejected` / `denied` / `cancelled` reusando el **mismo** `eventId`. Eso no es un conflicto y nunca devuelve `409` — ver [Idempotencia y escenarios](#idempotencia-y-escenarios).
-- **Requiere `document` con `pdfUrl`.** El PDF *es* la representación, así que es obligatorio. `xmlUrl` queda opcional acá — el XML legal viaja con la autorización.
+- **Requiere `document` y un `graphic` no vacío.** La representación gráfica es lo que imprime la caja — el QR, el TED, la clave de acceso codificada — y viaja en el `graphic` de la raíz. El PDF y el XML son los archivos del documento autorizado y llegan con `authorized`.
 - **No dispara ningún evento saliente.** `order.invoiced` y `order.reversed` siguen atados a `authorized` y `cancelled` respectivamente. La gráfica solo cambia el estado del documento.
 
-```json fiscal_graphic (CO)
+```json fiscal_graphic (EC)
 {
-  "countryCode": "CO",
+  "country": "EC",
   "eventType": "fiscal_graphic",
-  "providerEventId": "evt-co-graphic-1",
+  "providerEventId": "evt-ec-graphic-1",
   "occurredAt": "2026-04-26T14:32:05.000Z",
   "orderId": "550e8400-e29b-41d4-a716-446655440000",
   "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "documentType": "SALE_INVOICE",
+  "docSubtype": "factura",
+  "documentNumber": "001-020-000000123",
+  "issuedAt": "2026-04-26T14:32:04.000Z",
+  "providerDocId": "AUT-EC-001",
   "document": {
-    "docType": "invoice",
-    "docSubtype": "factura",
-    "cufe": "633732c7a2a577bfa1828551e64d03f715f0",
-    "prefijo": "C012",
-    "numeroDian": "001",
-    "numeroComprobante": "C012001",
-    "pdfUrl": "https://api.fiscal-provider.example/dian/C012001/pdf"
+    "numeroComprobante": "001-020-000000123",
+    "claveAcceso": "0102030405060708091011121314151617181920212223242",
+    "establecimiento": "001",
+    "puntoEmision": "020",
+    "secuencial": "000000123",
+    "ambiente": "2"
+  },
+  "graphic": {
+    "qr": "0102030405060708091011121314151617181920212223242"
+  },
+  "provider": {
+    "name": "hio.fiscalization",
+    "version": "2026.09.1",
+    "reference": "HIO-EC-GRAPHIC-001"
+  },
+  "metadata": {
+    "providerTraceId": "ec-graphic-trace-001"
   }
 }
 ```
 
 ### Resultados negativos (`rejected`, `denied`, `error`)
 
-Para estados no autorizados, omite `document` y provee `error`. El `countryCode` sigue aplicando (valida el routing); el documento no se requiere porque no hay artefacto autorizado.
+Para estados no autorizados, omite `document` (o mándalo en `null`) y provee `failure`. El `country` sigue aplicando (valida el routing); el documento no se requiere porque no hay artefacto autorizado — y `documentType`/`docSubtype` tampoco, porque no hay comprobante que tipificar.
 
 ```json Rechazado
 {
-  "countryCode": "CO",
+  "country": "CO",
   "eventType": "rejected",
   "providerEventId": "evt-co-2",
   "occurredAt": "2026-04-26T14:32:11.000Z",
   "orderId": "550e8400-e29b-41d4-a716-446655440000",
   "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "document": null,
-  "error": {
+  "failure": {
     "code": "DIAN_42",
     "message": "CUFE inválido"
-  }
+  },
+  "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-CO-REJ-002" },
+  "metadata": { "providerTraceId": "trace-co-rej-002" }
 }
 ```
 
@@ -449,7 +603,7 @@ El body trae **dos ids distintos** para que no haya ambigüedad: `eventId` es el
 </ResponseField>
 
 <ResponseField name="duplicate" type="boolean">
-  `true` cuando este `(orderId, eventId)` ya se ingresó **con el mismo `eventType`** — se devuelve el registro existente y no se re-encola nada. `false` para un evento nuevo.
+  `true` cuando este `(orderId, eventId)` ya se ingresó **con el mismo `eventType`** — se devuelve el registro existente y no se re-encola nada. `false` para un evento nuevo. Un `eventType` distinto sobre el mismo par nunca llega a este campo: devuelve `409`, salvo `fiscal_graphic`.
 </ResponseField>
 
 <ResponseField name="eventId" type="string">
@@ -573,7 +727,7 @@ Un `404` se devuelve para ids desconocidos — o ids de otro tenant — sin filt
 
 ## Idempotencia y escenarios
 
-Fire deduplica callbacks por **`(orderId, eventId)`** — *no* por `providerEventId` (que podés regenerar libremente). Un evento es único con su orden: el mismo `(orderId, eventId)` reenviado con el **mismo** `eventType` es un replay benigno; el mismo `(orderId, eventId)` con un `eventType` **distinto** es un intento de colgar una acción sobre el evento de otra, y Fire lo rechaza.
+Fire deduplica callbacks por **`(orderId, eventId)`** — *no* por `providerEventId` (que podés regenerar libremente). El mismo par reenviado con el **mismo** `eventType` es un replay benigno; el mismo par con un `eventType` **distinto** devuelve `409` — un intento de colgar una acción sobre el evento de otra — salvo `fiscal_graphic`, que puede compartir el `eventId` con su resultado.
 
 
 **`fiscal_graphic` es la excepción.** Es un paso de la *misma* acción, no un desenlace que compita, así que puede compartir el `eventId` con el estado terminal que llega después — esa combinación se acepta, nunca da `409`.
@@ -583,7 +737,7 @@ Esta es la matriz completa de comportamiento — cada combinación que podés en
 | Escenario | Resultado |
 |---|---|
 | `(orderId, eventId)` nuevo | **`202`** · `duplicate: false` — encolado |
-| Mismo `(orderId, eventId, eventType)` reenviado (cualquier `providerEventId`) | **`202`** · `duplicate: true` — se devuelve el registro existente, **no** se re-encola |
+| Mismo `(orderId, eventId)` con el mismo `eventType` reenviado (cualquier `providerEventId`) | **`202`** · `duplicate: true` — se devuelve el registro existente, **no** se re-encola |
 | `fiscal_graphic` y luego un estado terminal con el **mismo `eventId`** | **`202`** ambas veces — la gráfica es un paso de la misma acción, no un conflicto |
 | Mismo `(orderId, eventId)` pero **`eventType` distinto** (ej. `cancelled` con el `eventId` del `authorized`) | **`409`** — rechazado. Usá el evento que pertenece a *esta* acción |
 | `eventId` no emitido por Fire para ese `orderId` | **`400`** — `eventId` incorrecto/inventado |
@@ -606,14 +760,32 @@ Las transiciones de estado en `fiscal_documents` usan **locking optimista**. Si 
 
 ## Qué pasa después del 202
 
+<CardGroup cols={2}>
+  <Card title="Del callback a los eventos" icon="arrow-right-arrow-left" href="/es/fiscal/callback-to-events">
+    Cómo llega cada campo que mandás acá a `order.invoiced` y `order.reversed`.
+  </Card>
+  <Card title="Panorama fiscal" icon="file-invoice" href="/es/fiscal/overview">
+    Numeración, callback y eventos en una sola imagen.
+  </Card>
+</CardGroup>
+
 El `202` solo encola el evento. Un worker en segundo plano lo toma — en ~2&nbsp;segundos vía el wake-up instantáneo, o en el próximo ciclo de polling como fallback — y:
 
-1. **La fila `fiscal_documents` se hace upsert** con el nuevo status y referencias del documento (`chaveAcesso`, `protocolo`, `cufe`, `cae`, etc., según país).
-2. **La columna `orders.fiscal` JSONB se mergea** con la misma data — visible en el siguiente evento `order.completed` / `order.cancelled` para el mismo `orderId`, sin importar el país.
-3. **Se despacha un trigger outbound** — para Brasil, `triggerType = 'order.invoiced'` (para `eventType=authorized`) o `'order.reversed'` (para `eventType=cancelled`). Los Integration Flows activos para ese trigger corren y hacen POST a tu endpoint.
+1. **Se actualiza el documento fiscal** con el nuevo status y los identificadores del ente.
+2. **El veredicto se guarda en la orden**, estructurado: campos canónicos, `amounts`, `countryData` y `graphic` — y se agrega al historial fiscal de la orden.
+3. **Se despacha un evento outbound, para todos los países**: `order.invoiced` para `eventType=authorized`, `order.reversed` para `eventType=cancelled`. Los Integration Flows activos para ese evento corren y hacen POST a tu endpoint. `fiscal_graphic`, `rejected`, `denied` y `error` actualizan el estado pero no emiten evento.
 
-  - **Hoy**, solo `order.invoiced` y `order.reversed` están cableados. Disparan cuando un callback authorized/cancelled para una tienda BR se procesa.
-  - **Para CO/EC/CL/AR/VE**, los eventos outbound equivalentes aún no están cableados — los callbacks se validan y guardan, y el estado fiscal se refleja en el siguiente `order.completed` / `order.cancelled` para la misma orden.
+## Del callback a los eventos
+
+Quien consume `order.invoiced` u `order.reversed` lee **exactamente lo que mandaste acá**, reorganizado en el bloque fiscal del evento. La referencia completa de ese bloque está en [`order.invoiced`](/es/events/order-invoiced#el-bloque-fiscal).
+
+Los campos raíz caen en `fiscal.authority` (o `cancellation.fiscal.authority`) con los mismos nombres, salvo los tres importes, que se agrupan en `authority.amounts`. `document` pasa a ser `authority.countryData`, y `provider` y `metadata` pasan a ser `providerIdentity` y `providerMetadata` (`null` si están ausentes o vacíos). La tabla campo por campo está en [Del callback a los eventos](/es/fiscal/callback-to-events#dónde-cae-cada-campo-del-callback).
+
+**`document` y `countryData` son el mismo bloque.** Fire no guarda una lista de las claves de cada país: todo lo que venga en `document` que no sea un campo canónico llega intacto a `countryData`. Un identificador nuevo que tu ente empiece a exigir viaja a los eventos sin ningún cambio del lado de Fire.
+
+### Por qué este endpoint conserva su path `/v1`
+
+Los renombres de campos de arriba (`docType` → `documentType`, `countryCode` → `country`, `error` → `failure`, `providerSpecific` → `metadata`) rompen a un emisor que siga usando los nombres anteriores: recibe `400` nombrando el campo. Aun así, el endpoint conservó su path. Cuando cambió el contrato, este callback solo llevaba tráfico de pruebas en producción, y el cliente de pruebas de Fire se movió en el mismo release, así que un `/v2` paralelo habría mantenido dos formas de decir lo mismo para ningún emisor. Del lado de los eventos es distinto — tienen consumidores en producción — y los tres eventos afectados publicaron cada uno una nueva versión documentada.
 
 ## Relacionado
 
@@ -622,7 +794,7 @@ El `202` solo encola el evento. Un worker en segundo plano lo toma — en ~2&nbs
     Ve dónde aterriza el estado fiscal dentro del snapshot V4 de la orden.
   </Card>
   <Card title="order.invoiced" icon="file-invoice" href="/es/events/order-invoiced">
-    Evento outbound BR-only disparado por este callback.
+    Evento outbound disparado por un callback `authorized`, para todos los países.
   </Card>
   <Card title="Inyectar orden" icon="paper-plane" href="/es/api-reference/orders">
     El endpoint de inyección que crea la orden que este callback actualiza.
