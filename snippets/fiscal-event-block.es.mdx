@@ -1,0 +1,167 @@
+## El bloque fiscal
+
+El bloque fiscal de `order.invoiced`, `order.cancelled` y `order.reversed` es **lo que Fire guardó en la orden**, con la misma forma. No se rearma por emisor: ya sea que el documento haya entrado por la integración nativa de tu proveedor fiscal o por el [callback fiscal](/es/api-reference/fiscal-callback), lees los mismos campos a la misma profundidad.
+
+### Dónde vive en cada evento
+
+| Evento | Ruta | Qué lleva |
+|---|---|---|
+| `order.invoiced` | `data.fiscal` | `status`, `countryCode`, `providerCode`, `occurredAt`, `authority`, `history`, `compensates` |
+| `order.cancelled` | `data.cancellation.fiscal` | **Solo** `status` y `authority` — sin `history`, sin `compensates` |
+| `order.reversed` | `data.cancellation.fiscal` | `status`, `countryCode`, `providerCode`, `occurredAt`, `authority`, `history`, `compensates` |
+
+<Warning>
+  **En una cancelación el bloque está en `cancellation.fiscal`, no en `cancellation.metadata.fiscal`.** Subió un nivel. Si tus flows o handlers leen `cancellation.metadata.fiscal.*`, leen `undefined` en el contrato actual.
+</Warning>
+
+### Campos del bloque
+
+<ResponseField name="status" type="string | null">
+  El estado fiscal de la **orden**: `authorized`, `cancelled`, `processing`, `cancelling`, `rejected`, `denied`, `error`. No es el estado de un documento.
+</ResponseField>
+
+<ResponseField name="countryCode" type="string | null">
+  Código ISO 3166-1 alfa-2 del régimen que emitió el documento (`BR`, `CO`, `EC`, `CL`, `AR`, `VE`). El país ya no vive en el nombre del evento: filtra por este campo.
+</ResponseField>
+
+<ResponseField name="providerCode" type="string | null">
+  Identificador de Fire para el adaptador que procesó el documento (`plugnotas`, `generic`). Es nuestro, no el nombre del proveedor.
+</ResponseField>
+
+<ResponseField name="occurredAt" type="string | null">
+  Timestamp ISO 8601 UTC del hecho fiscal que disparó el evento, tal como lo reportó el proveedor.
+</ResponseField>
+
+<ResponseField name="authority" type="object | null">
+  **El veredicto del ente sobre el documento vigente.** Los campos que significan lo mismo en todo país van arriba; los identificadores propios del ente van en `countryData`, con el vocabulario de ese país.
+
+  <Expandable title="authority">
+    <ResponseField name="documentType" type="&quot;SALE_INVOICE&quot; | &quot;CREDIT_NOTE&quot; | null">
+      Qué es el documento. Mismo vocabulario que la numeración fiscal. Reemplaza al viejo `docType: "invoice" | "cancellation"`, que **ya no se emite**.
+
+      En Brasil una cancelación no emite un documento nuevo: el mismo documento cambia de estado, así que después de `order.reversed` este campo dice `CREDIT_NOTE` con el **mismo** `documentNumber` y la misma clave de acceso.
+    </ResponseField>
+    <ResponseField name="docSubtype" type="string | null">
+      El instrumento del régimen: `nfce`, `nfe`, `factura`, `boleta`, `factura_a`. Abierto y referencial — nunca ramifiques por él.
+    </ResponseField>
+    <ResponseField name="documentNumber" type="string | null">
+      El número visible del documento, tal como lo compone el ente (`12388`, `001-020-000000123`, `C012001`).
+    </ResponseField>
+    <ResponseField name="issuedAt" type="string | null">
+      Cuándo se **emitió** el documento. Presente en los documentos guardados con este contrato; `null` cuando se desconoce.
+    </ResponseField>
+    <ResponseField name="authorizedAt" type="string | null">
+      Cuándo el ente lo **aprobó** — un hecho distinto de `issuedAt`. Presente en los documentos guardados con este contrato; `null` cuando el ente no lo reportó.
+
+      <Warning>
+        **En Brasil el día es exacto y la hora es una convención.** SEFAZ reporta la autorización como una fecha sin hora (`15/09/2026`) en prácticamente todos los documentos. Fire la completa con **la medianoche en la zona horaria de la tienda**, así que `authorizedAt` puede quedar **antes que `issuedAt`** (`2026-09-15T03:00:00Z` contra `2026-09-15T05:00:48Z`). No lo uses para ningún cálculo que necesite precisión de hora.
+      </Warning>
+    </ResponseField>
+    <ResponseField name="cancelledAt" type="string | null">
+      Cuándo el ente **aprobó la cancelación**. Presente en los documentos guardados con este contrato; `null` mientras el documento no esté cancelado.
+    </ResponseField>
+    <ResponseField name="authorizationMode" type="&quot;ONLINE&quot; | &quot;OFFLINE&quot; | &quot;BATCH&quot; | null">
+      Cómo se emitió. `OFFLINE` es contingencia. No todos los proveedores tienen la noción.
+    </ResponseField>
+    <ResponseField name="pdfUrl" type="string | null">
+      Link a la representación legible (DANFE, RIDE…). Descárgalo y guárdalo: los proveedores pueden expirarlo.
+    </ResponseField>
+    <ResponseField name="xmlUrl" type="string | null">
+      Link al XML legal del ente. Mismo hosting que `pdfUrl`.
+    </ResponseField>
+    <ResponseField name="providerDocId" type="string | null">
+      El id del documento en el sistema de tu proveedor fiscal. Es con lo que se piden el PDF, el XML y una cancelación.
+    </ResponseField>
+    <ResponseField name="amounts" type="object">
+      Los montos del documento, en **decimales reales** (no escalados). En los documentos guardados con este contrato las tres claves están presentes, en `null` cuando el ente no reportó el valor. Las órdenes guardadas antes pueden no traer alguna clave — trata una clave ausente como `null`.
+
+      <Expandable title="amounts">
+        <ResponseField name="total" type="number | null">Total bruto.</ResponseField>
+        <ResponseField name="tax" type="number | null">Impuesto total.</ResponseField>
+        <ResponseField name="currencyCode" type="string | null">ISO 4217 (`BRL`, `COP`, `USD`).</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="countryData" type="object | null">
+      **Los identificadores propios del ente, textuales, con los nombres del país** — y solo los de ese país. Ver [`countryData` y el callback fiscal](#countrydata-y-el-callback-fiscal) más abajo.
+    </ResponseField>
+    <ResponseField name="graphic" type="object | null">
+      Lo que se imprime: clave → string exacto a codificar (`qr`, `ted`). La clave nombra el propósito; la simbología la elige tu plantilla. `null` cuando no hay.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="history" type="object[]">
+  **Cada parada del recorrido fiscal de la orden que describe un documento, de la más vieja a la más nueva — incluida la vigente.** En `order.invoiced` suele tener una entrada, igual a `authority`; en `order.reversed` tiene la factura y después la cancelación. Las transiciones que no describen un documento (`processing`, `cancelling`) no aparecen.
+
+  <Expandable title="history[]">
+    <ResponseField name="status" type="string | null">El estado fiscal de la orden en esa parada.</ResponseField>
+    <ResponseField name="occurredAt" type="string | null">Cuándo ocurrió esa parada.</ResponseField>
+    <ResponseField name="providerCode" type="string | null">Adaptador que la procesó.</ResponseField>
+    <ResponseField name="authority" type="object">El documento en esa parada, exactamente con la forma de `authority` de arriba.</ResponseField>
+  </Expandable>
+
+  <Note>
+    No es `fiscalRepresentation.history`. Ese lista solo los documentos **anteriores** de la numeración; este es el recorrido completo y termina con el documento vigente.
+  </Note>
+</ResponseField>
+
+<ResponseField name="compensates" type="object | null">
+  **Un puntero al documento que el vigente reemplaza.** Presente cuando el estado fiscal de la orden es `cancelled`; `null` en otro caso. Apunta a la última parada de `history` que no es a su vez una cancelación — busca su `documentNumber` ahí para tener el documento entero.
+
+  <Expandable title="compensates">
+    <ResponseField name="documentNumber" type="string | null">Número visible del documento reemplazado.</ResponseField>
+    <ResponseField name="issuedAt" type="string | null">Cuándo se emitió ese documento.</ResponseField>
+  </Expandable>
+
+  <Note>
+    **No lleva `reason`, a diferencia de `fiscalRepresentation.compensates`.** El motivo ya viaja en el mismo evento, con más detalle: `cancellation.cancellationType`, `cancellationGroup`, `cancellationReason`, `cancellationNote` y `cancellationSource`. Fire no emite `order.reversed` sin un registro operativo de cancelación, así que ese bloque siempre está cuando está `compensates`. Un código fijo `ORDER_CANCELLATION` acá diría lo mismo con menos información. El bloque de numeración sí lleva `reason`: es donde el código canónico se resuelve al texto que se imprime en la nota de crédito, que necesita la redacción propia de la empresa.
+  </Note>
+
+  <Note>
+    **En Brasil el puntero se refiere al mismo número.** SEFAZ no numera un documento nuevo para cancelar uno, así que `compensates.documentNumber` es igual a `authority.documentNumber`. Es correcto, no un bug.
+  </Note>
+</ResponseField>
+
+### `countryData` y el callback fiscal
+
+`countryData` es **un bloque con tres nombres**, según de qué lado de Fire lo mires:
+
+| Dónde | Nombre | Dirección |
+|---|---|---|
+| [Numeración fiscal](/es/api-reference/fiscal-documents) | `countryData` | Fire → punto de venta |
+| [Callback fiscal](/es/api-reference/fiscal-callback) | `document` | Tu proveedor → Fire |
+| Eventos de orden | `authority.countryData` | Fire → tú |
+
+Lo que tu proveedor manda en el `document` del callback es lo que recibes en `authority.countryData`, **con los mismos nombres de clave**. La regla que separa a los dos es la **exclusión**: toda clave del callback que no sea un campo canónico cae intacta en `countryData`. Por eso un identificador nuevo de un país viaja sin ningún cambio del lado de Fire.
+
+Los campos raíz del callback pasan a ser los campos de primer nivel de `authority`:
+
+| Callback fiscal (body) | Evento (`authority`) |
+|---|---|
+| `documentType`, `docSubtype`, `documentNumber` | mismos nombres |
+| `issuedAt`, `authorizedAt`, `cancelledAt`, `authorizationMode` | mismos nombres |
+| `pdfUrl`, `xmlUrl`, `providerDocId` | mismos nombres |
+| `totalAmount`, `taxAmount`, `currencyCode` | `amounts.total`, `amounts.tax`, `amounts.currencyCode` |
+| `graphic` | `graphic` |
+| `document.*` | `countryData.*` |
+| `provider`, `metadata`, `failure` | no se trasladan a `authority` |
+
+<Note>
+  **El `protocolo` de Brasil vive en `countryData`, no arriba.** Solo SEFAZ lo tiene — Chile tiene `trackId`, Argentina el `cae` — así que es vocabulario del ente, no un campo canónico. Las órdenes guardadas antes de este contrato lo tenían arriba como `authorizationProtocol`; Fire también lo emite como `countryData.protocolo` para esas.
+</Note>
+
+### Rutas que cambian respecto del contrato anterior
+
+| Ruta anterior | Ruta actual |
+|---|---|
+| `fiscal.docType` (`invoice` / `cancellation`) | `fiscal.authority.documentType` (`SALE_INVOICE` / `CREDIT_NOTE`) |
+| `fiscal.docSubtype`, `.documentNumber`, `.providerDocId`, `.pdfUrl`, `.xmlUrl`, `.issuedAt`, `.cancelledAt`, `.authorizationMode` | `fiscal.authority.<mismo nombre>` |
+| `fiscal.dataAutorizacao` | `fiscal.authority.authorizedAt` |
+| `fiscal.emittedAt` | `fiscal.authority.issuedAt` |
+| `fiscal.totalAmount` / `.taxAmount` / `.currencyCode` | `fiscal.authority.amounts.total` / `.tax` / `.currencyCode` |
+| `fiscal.protocolo` | `fiscal.authority.countryData.protocolo` |
+| `fiscal.chaveAcesso`, `.numero`, `.serie`, `.modelo` (BR) · `.claveAcceso`, `.establecimiento`, `.puntoEmision`, `.secuencial`, `.ambiente` (EC) · `.cufe`, `.prefijo`, `.numeroDian` (CO) · `.folio`, `.ted`, `.tipoDte`, `.trackId` (CL) · `.cae`, `.fechaVtoCae`, `.puntoVenta`, `.tipoComprobante` (AR) · `.numeroControl`, `.numeroFactura` (VE) | `fiscal.authority.countryData.<mismo nombre>` |
+| `cancellation.metadata.fiscal.*` | `cancellation.fiscal.*` (mismas reglas que arriba) |
+| `fiscal.cStat`, `cancellation.metadata.fiscal.sefazCancellation.*` | no se emite |
+
+Cada ruta anterior tiene exactamente una ruta actual. El payload no lleva número de versión: la versión pertenece a este contrato documentado.
