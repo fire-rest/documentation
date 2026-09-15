@@ -26,6 +26,8 @@ flowchart LR
 
 After an `authorized` callback is processed, Fire emits [`order.invoiced`](/en/events/order-invoiced); after a `cancelled` one, [`order.reversed`](/en/events/order-reversed). Both fire **for every country** — the country travels in the event's fiscal block, not in its name. Later order events for the same `orderId` also reflect the new status in `data.lastKnown.fiscal`.
 
+For the whole fiscal picture — numbering, callback and events, and how they fit together — see the [fiscal overview](/en/fiscal/overview).
+
 ## Authentication
 
 This endpoint requires an **API key with the `webhooks:fiscal` scope**, vendor-scoped to the account that owns the order. Unscoped or account-only keys are rejected with `403 Forbidden`.
@@ -148,7 +150,7 @@ They mean the same thing in all six countries, so they live at the **root** of t
 </ParamField>
 
 <ParamField body="provider" type="object">
-  Who issued it and with what version.
+  Who issued it and with what version. It reaches the order and the events as `authority.providerIdentity` — the same name as in the fiscal numbering — with the three keys always present. If you do not send `provider`, or send it empty, `providerIdentity` is `null`.
 
   <Expandable title="provider">
     <ParamField body="name" type="string">Provider name (`hio.fiscalization`, `plugnotas`).</ParamField>
@@ -179,7 +181,7 @@ They mean the same thing in all six countries, so they live at the **root** of t
 </ParamField>
 
 <ParamField body="metadata" type="object">
-  Free-form bag for provider-specific extras (raw response, internal IDs, etc.). Not validated; it reaches the audit log and is **not** stored alongside the document.
+  Free-form bag for provider-specific extras (raw response, internal IDs, etc.). Not validated. It reaches the order and the events as `authority.providerMetadata`, as is and opaque — just like in the fiscal numbering. Absent or `{}` becomes `null`.
 
   **Formerly named `providerSpecific`.**
 </ParamField>
@@ -190,7 +192,7 @@ They mean the same thing in all six countries, so they live at the **root** of t
 
 ### What is required, per event
 
-| Field | **Not part of the contract.** Accepted and carried into `countryData` untouched; Fire never reads it |
+| Field | `authorized` | `cancelled` | `fiscal_graphic` | `rejected` · `denied` · `error` |
 |---|---|---|---|---|
 | `document` | required | required | required | — |
 | `documentType` | `SALE_INVOICE` | `CREDIT_NOTE` | — | — |
@@ -237,7 +239,6 @@ The required shape of `document` depends on `country`. **`document` carries ONLY
     | `numero` | int / string | ✓ | Document number |
     | `serie` | int / string \| null | | Document series (encoded in chave) |
     | `modelo` | `55` / `65` \| null | | `55` = NF-e, `65` = NFC-e |
-    | `cnpjEmitente` | string \| null | | **Not part of the contract.** Accepted and carried into `countryData` untouched; Fire never reads it |
 
     The example below is a complete `authorized` payload: every root field it shows is **required** for that event — see [What is required, per event](#what-is-required-per-event).
 
@@ -516,12 +517,29 @@ The required shape of `document` depends on `country`. **`document` carries ONLY
   "occurredAt": "2026-04-26T14:32:05.000Z",
   "orderId": "550e8400-e29b-41d4-a716-446655440000",
   "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "documentType": "SALE_INVOICE",
+  "docSubtype": "factura",
+  "documentNumber": "001-020-000000123",
+  "issuedAt": "2026-04-26T14:32:04.000Z",
+  "providerDocId": "AUT-EC-001",
   "document": {
+    "numeroComprobante": "001-020-000000123",
     "claveAcceso": "0102030405060708091011121314151617181920212223242",
-    "numeroComprobante": "001-020-000000123"
+    "establecimiento": "001",
+    "puntoEmision": "020",
+    "secuencial": "000000123",
+    "ambiente": "2"
   },
   "graphic": {
     "qr": "0102030405060708091011121314151617181920212223242"
+  },
+  "provider": {
+    "name": "hio.fiscalization",
+    "version": "2026.09.1",
+    "reference": "HIO-EC-GRAPHIC-001"
+  },
+  "metadata": {
+    "providerTraceId": "ec-graphic-trace-001"
   }
 }
 ```
@@ -717,6 +735,15 @@ Status transitions on `fiscal_documents` use **optimistic locking**. If two call
 
 ## What happens after the 202
 
+<CardGroup cols={2}>
+  <Card title="From the callback to the events" icon="arrow-right-arrow-left" href="/en/fiscal/callback-to-events">
+    How each field you send here reaches `order.invoiced` and `order.reversed`.
+  </Card>
+  <Card title="Fiscal overview" icon="file-invoice" href="/en/fiscal/overview">
+    Numbering, callback and events in one picture.
+  </Card>
+</CardGroup>
+
 The `202` only enqueues the event. A background worker then picks it up — within ~2&nbsp;seconds via the instant wake-up, or on the next poll cycle as a fallback — and:
 
 1. **The fiscal document is updated** with the new status and the authority's identifiers.
@@ -727,17 +754,7 @@ The `202` only enqueues the event. A background worker then picks it up — with
 
 Whoever consumes `order.invoiced` or `order.reversed` reads **exactly what you sent here**, reorganized into the event's fiscal block. The full reference of that block is in [`order.invoiced`](/en/events/order-invoiced#the-fiscal-block).
 
-| Callback body | Event: `fiscal.authority` (or `cancellation.fiscal.authority`) |
-|---|---|
-| `documentType`, `docSubtype`, `documentNumber` | same names |
-| `issuedAt`, `authorizedAt`, `cancelledAt`, `authorizationMode` | same names |
-| `pdfUrl`, `xmlUrl`, `providerDocId` | same names |
-| `totalAmount`, `taxAmount`, `currencyCode` | `amounts.total`, `amounts.tax`, `amounts.currencyCode` |
-| `graphic` | `graphic` |
-| `document.<key>` | `countryData.<key>` — same key, same value |
-| `country` | `fiscal.countryCode` (outside `authority`); if the order already had a fiscal country, the stored one is kept |
-| `occurredAt` | `fiscal.occurredAt` (outside `authority`) |
-| `provider`, `metadata`, `failure`, `providerEventId` | not carried into the event |
+The root fields land in `fiscal.authority` (or `cancellation.fiscal.authority`) with the same names, except the three amounts, which are grouped in `authority.amounts`. `document` becomes `authority.countryData`, and `provider` and `metadata` become `providerIdentity` and `providerMetadata` (`null` when absent or empty). The field-by-field table is in [From the callback to the events](/en/fiscal/callback-to-events#where-each-field-of-the-callback-lands).
 
 **`document` and `countryData` are the same block.** Fire does not keep a list of each country's keys: anything in `document` that is not a canonical field reaches `countryData` untouched. A new identifier your authority starts requiring travels to the events with no change on Fire's side.
 

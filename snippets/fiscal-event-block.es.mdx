@@ -1,5 +1,7 @@
 ## El bloque fiscal
 
+Para ver cómo llega acá cada campo del callback fiscal, consulta [Del callback a los eventos](/es/fiscal/callback-to-events).
+
 El bloque fiscal de `order.invoiced`, `order.cancelled` y `order.reversed` es **lo que Fire guardó en la orden**, con la misma forma. No se rearma por emisor: ya sea que el documento haya entrado por la integración nativa de tu proveedor fiscal o por el [callback fiscal](/es/api-reference/fiscal-callback), lees los mismos campos a la misma profundidad.
 
 ### Dónde vive en cada evento
@@ -7,7 +9,7 @@ El bloque fiscal de `order.invoiced`, `order.cancelled` y `order.reversed` es **
 | Evento | Ruta | Qué lleva |
 |---|---|---|
 | `order.invoiced` | `data.fiscal` | `status`, `countryCode`, `providerCode`, `occurredAt`, `authority`, `history`, `compensates` |
-| `order.cancelled` | `data.cancellation.fiscal` | **Solo** `status` y `authority` — sin `history`, sin `compensates` |
+| `order.cancelled` | `data.cancellation.fiscal` | **Solo** `status` y `authority` — sin `history`, sin `compensates`. Presente solo si la orden tenía un documento `authorized` o `cancelling` con `providerDocId`; si no, la clave no está |
 | `order.reversed` | `data.cancellation.fiscal` | `status`, `countryCode`, `providerCode`, `occurredAt`, `authority`, `history`, `compensates` |
 
 <Warning>
@@ -17,7 +19,7 @@ El bloque fiscal de `order.invoiced`, `order.cancelled` y `order.reversed` es **
 ### Campos del bloque
 
 <ResponseField name="status" type="string | null">
-  El estado fiscal de la **orden**: `authorized`, `cancelled`, `processing`, `cancelling`, `rejected`, `denied`, `error`. No es el estado de un documento.
+  El estado fiscal de la **orden**, no de un documento: `awaiting_payment`, `not_issued`, `pending`, `processing`, `fiscal_graphic`, `authorized`, `cancelling`, `cancelled`, `rejected`, `denied`, `error`. En la práctica `order.invoiced` lleva `authorized`, `order.reversed` lleva `cancelled` y `order.cancelled` lleva `authorized` o `cancelling`.
 </ResponseField>
 
 <ResponseField name="countryCode" type="string | null">
@@ -87,6 +89,22 @@ El bloque fiscal de `order.invoiced`, `order.cancelled` y `order.reversed` es **
     <ResponseField name="graphic" type="object | null">
       Lo que se imprime: clave → string exacto a codificar (`qr`, `ted`). La clave nombra el propósito; la simbología la elige tu plantilla. `null` cuando no hay.
     </ResponseField>
+    <ResponseField name="providerIdentity" type="object | null">
+      Quién emitió el documento, tal como lo reportó el proveedor (`provider` en el callback fiscal). Cuando está presente, sus tres claves siempre están. `null` cuando el proveedor no se identificó.
+
+      <Expandable title="providerIdentity">
+        <ResponseField name="name" type="string | null">Nombre del proveedor (`hio.fiscalization`).</ResponseField>
+        <ResponseField name="version" type="string | null">Versión del emisor.</ResponseField>
+        <ResponseField name="reference" type="string | null">La referencia propia del proveedor para este documento — lo que le citas al proveedor cuando preguntas por él.</ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="providerMetadata" type="object | null">
+      Los extras free-form del proveedor (`metadata` en el callback fiscal), tal cual y opacos: Fire no los interpreta, así que no ramifiques por ellos. `null` cuando están ausentes o vacíos.
+    </ResponseField>
+
+    <Note>
+      **PlugNotas (Brasil) nunca envía `providerIdentity` ni `providerMetadata`, así que quedan en `null`.** En una anulación el bloque conserva los valores del documento previo.
+    </Note>
   </Expandable>
 </ResponseField>
 
@@ -134,17 +152,7 @@ El bloque fiscal de `order.invoiced`, `order.cancelled` y `order.reversed` es **
 
 Lo que tu proveedor manda en el `document` del callback es lo que recibes en `authority.countryData`, **con los mismos nombres de clave**. La regla que separa a los dos es la **exclusión**: toda clave del callback que no sea un campo canónico cae intacta en `countryData`. Por eso un identificador nuevo de un país viaja sin ningún cambio del lado de Fire.
 
-Los campos raíz del callback pasan a ser los campos de primer nivel de `authority`:
-
-| Callback fiscal (body) | Evento (`authority`) |
-|---|---|
-| `documentType`, `docSubtype`, `documentNumber` | mismos nombres |
-| `issuedAt`, `authorizedAt`, `cancelledAt`, `authorizationMode` | mismos nombres |
-| `pdfUrl`, `xmlUrl`, `providerDocId` | mismos nombres |
-| `totalAmount`, `taxAmount`, `currencyCode` | `amounts.total`, `amounts.tax`, `amounts.currencyCode` |
-| `graphic` | `graphic` |
-| `document.*` | `countryData.*` |
-| `provider`, `metadata`, `failure` | no se trasladan a `authority` |
+Los campos raíz del callback pasan a ser los campos de primer nivel de `authority` con los mismos nombres, salvo los tres importes, que se agrupan en `amounts`. `provider` y `metadata` pasan a ser `providerIdentity` y `providerMetadata` (`null` si están ausentes o vacíos). La tabla campo por campo está en [Del callback a los eventos](/es/fiscal/callback-to-events#dónde-cae-cada-campo-del-callback).
 
 <Note>
   **El `protocolo` de Brasil vive en `countryData`, no arriba.** Solo SEFAZ lo tiene — Chile tiene `trackId`, Argentina el `cae` — así que es vocabulario del ente, no un campo canónico. Las órdenes guardadas antes de este contrato lo tenían arriba como `authorizationProtocol`; Fire también lo emite como `countryData.protocolo` para esas.

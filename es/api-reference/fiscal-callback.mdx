@@ -26,6 +26,8 @@ flowchart LR
 
 Después de procesar un callback `authorized`, Fire emite [`order.invoiced`](/es/events/order-invoiced); después de uno `cancelled`, [`order.reversed`](/es/events/order-reversed). Ambos salen **para todos los países** — el país viaja en el bloque fiscal del evento, no en su nombre. Los eventos posteriores de la orden para el mismo `orderId` también reflejan el nuevo estado en `data.lastKnown.fiscal`.
 
+Para el panorama fiscal completo — numeración, callback y eventos, y cómo encajan — ver el [panorama fiscal](/es/fiscal/overview).
+
 ## Autenticación
 
 Este endpoint requiere una **API key con scope `webhooks:fiscal`**, vendor-scoped al account dueño de la orden. Las keys sin scope o solo a nivel account se rechazan con `403 Forbidden`.
@@ -148,7 +150,7 @@ Significan lo mismo en los seis países, así que viven en la **raíz** del payl
 </ParamField>
 
 <ParamField body="provider" type="object">
-  Quién emitió y con qué versión.
+  Quién emitió y con qué versión. Llega a la orden y a los eventos como `authority.providerIdentity` — el mismo nombre que en la numeración fiscal — con las tres claves siempre presentes. Si no mandás `provider`, o lo mandás vacío, `providerIdentity` es `null`.
 
   <Expandable title="provider">
     <ParamField body="name" type="string">Nombre del proveedor (`hio.fiscalization`, `plugnotas`).</ParamField>
@@ -179,7 +181,7 @@ Significan lo mismo en los seis países, así que viven en la **raíz** del payl
 </ParamField>
 
 <ParamField body="metadata" type="object">
-  Bag free-form para extras específicos del proveedor (respuesta raw, IDs internos, etc.). No validado; pasa al log de auditoría y **no** se guarda junto al documento.
+  Bag free-form para extras específicos del proveedor (respuesta raw, IDs internos, etc.). No validado. Llega a la orden y a los eventos como `authority.providerMetadata`, tal cual y opaco — igual que en la numeración fiscal. Ausente o `{}` queda en `null`.
 
   **Antes se llamaba `providerSpecific`.**
 </ParamField>
@@ -237,7 +239,6 @@ La forma requerida del campo `document` depende de `country`. **`document` lleva
     | `numero` | int / string | ✓ | Número de documento |
     | `serie` | int / string \| null | | Serie del documento (codificada en chave) |
     | `modelo` | `55` / `65` \| null | | `55` = NF-e, `65` = NFC-e |
-    | `cnpjEmitente` | string \| null | | **No es parte del contrato.** Se acepta y pasa intacto a `countryData`; Fire nunca lo lee |
 
     El ejemplo de abajo es un payload `authorized` completo: cada campo de raíz que muestra es **requerido** para ese evento — ver [Qué es requerido, por evento](#qué-es-requerido-por-evento).
 
@@ -515,12 +516,29 @@ La forma requerida del campo `document` depende de `country`. **`document` lleva
   "occurredAt": "2026-04-26T14:32:05.000Z",
   "orderId": "550e8400-e29b-41d4-a716-446655440000",
   "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "documentType": "SALE_INVOICE",
+  "docSubtype": "factura",
+  "documentNumber": "001-020-000000123",
+  "issuedAt": "2026-04-26T14:32:04.000Z",
+  "providerDocId": "AUT-EC-001",
   "document": {
+    "numeroComprobante": "001-020-000000123",
     "claveAcceso": "0102030405060708091011121314151617181920212223242",
-    "numeroComprobante": "001-020-000000123"
+    "establecimiento": "001",
+    "puntoEmision": "020",
+    "secuencial": "000000123",
+    "ambiente": "2"
   },
   "graphic": {
     "qr": "0102030405060708091011121314151617181920212223242"
+  },
+  "provider": {
+    "name": "hio.fiscalization",
+    "version": "2026.09.1",
+    "reference": "HIO-EC-GRAPHIC-001"
+  },
+  "metadata": {
+    "providerTraceId": "ec-graphic-trace-001"
   }
 }
 ```
@@ -713,6 +731,15 @@ Las transiciones de estado en `fiscal_documents` usan **locking optimista**. Si 
 
 ## Qué pasa después del 202
 
+<CardGroup cols={2}>
+  <Card title="Del callback a los eventos" icon="arrow-right-arrow-left" href="/es/fiscal/callback-to-events">
+    Cómo llega cada campo que mandás acá a `order.invoiced` y `order.reversed`.
+  </Card>
+  <Card title="Panorama fiscal" icon="file-invoice" href="/es/fiscal/overview">
+    Numeración, callback y eventos en una sola imagen.
+  </Card>
+</CardGroup>
+
 El `202` solo encola el evento. Un worker en segundo plano lo toma — en ~2&nbsp;segundos vía el wake-up instantáneo, o en el próximo ciclo de polling como fallback — y:
 
 1. **Se actualiza el documento fiscal** con el nuevo status y los identificadores del ente.
@@ -723,17 +750,7 @@ El `202` solo encola el evento. Un worker en segundo plano lo toma — en ~2&nbs
 
 Quien consume `order.invoiced` u `order.reversed` lee **exactamente lo que mandaste acá**, reorganizado en el bloque fiscal del evento. La referencia completa de ese bloque está en [`order.invoiced`](/es/events/order-invoiced#el-bloque-fiscal).
 
-| Body del callback | Evento: `fiscal.authority` (o `cancellation.fiscal.authority`) |
-|---|---|
-| `documentType`, `docSubtype`, `documentNumber` | mismos nombres |
-| `issuedAt`, `authorizedAt`, `cancelledAt`, `authorizationMode` | mismos nombres |
-| `pdfUrl`, `xmlUrl`, `providerDocId` | mismos nombres |
-| `totalAmount`, `taxAmount`, `currencyCode` | `amounts.total`, `amounts.tax`, `amounts.currencyCode` |
-| `graphic` | `graphic` |
-| `document.<clave>` | `countryData.<clave>` — misma clave, mismo valor |
-| `country` | `fiscal.countryCode` (fuera de `authority`); si la orden ya tenía país fiscal, se conserva el guardado |
-| `occurredAt` | `fiscal.occurredAt` (fuera de `authority`) |
-| `provider`, `metadata`, `failure`, `providerEventId` | no pasan al evento |
+Los campos raíz caen en `fiscal.authority` (o `cancellation.fiscal.authority`) con los mismos nombres, salvo los tres importes, que se agrupan en `authority.amounts`. `document` pasa a ser `authority.countryData`, y `provider` y `metadata` pasan a ser `providerIdentity` y `providerMetadata` (`null` si están ausentes o vacíos). La tabla campo por campo está en [Del callback a los eventos](/es/fiscal/callback-to-events#dónde-cae-cada-campo-del-callback).
 
 **`document` y `countryData` son el mismo bloque.** Fire no guarda una lista de las claves de cada país: todo lo que venga en `document` que no sea un campo canónico llega intacto a `countryData`. Un identificador nuevo que tu ente empiece a exigir viaja a los eventos sin ningún cambio del lado de Fire.
 
