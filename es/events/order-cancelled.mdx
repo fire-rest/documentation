@@ -40,11 +40,14 @@ Fire emite `order.cancelled` una vez cuando una orden transiciona a `CANCELLED`,
 
 ## Qué hay en `trigger.data`
 
-El mismo snapshot V4 de orden que [`order.completed`](/es/events/order-completed), con tres diferencias:
+El mismo snapshot V4 de orden que [`order.completed`](/es/events/order-completed), con cuatro diferencias:
 
 1. `status` es **`"CANCELLED"`**.
 2. `paymentStatus` queda igual (típicamente `"SUCCEEDED"` si la orden había sido pagada).
 3. Un bloque top-level **`cancellation`** lleva la metadata de auditoría y, cuando aplica, el documento fiscal.
+4. **No hay `data.fiscal` en la raíz.** En este evento el documento del ente vive solo en `cancellation.fiscal`.
+
+`policy`, `lastKnown` y `fiscalRepresentation` viajan exactamente igual que en `order.completed`. En Brasil (PlugNotas) `fiscalRepresentation` es `null`: no hay paso de numeración.
 
 ## Ejemplo — Brasil, con un documento autorizado (sanitizado)
 
@@ -58,6 +61,9 @@ El mismo snapshot V4 de orden que [`order.completed`](/es/events/order-completed
     "paymentStatus": "SUCCEEDED",
     "store": { /* igual que order.completed */ },
     "orderLines": [ /* igual que order.completed */ ],
+    "policy": { "deferredPayment": { "eligible": false, "resolvedAt": "2026-09-15T05:00:45.760Z", "configVersion": "fnv1a:a0c02d27", "resolvedFrom": { "channelCode": "KIOSK", "fulfillmentCode": "DINE-IN", "paymentMethod": null } } },
+    "lastKnown": { "kds": { "status": "preparing", "sourceEvent": "order.status_updated" }, "fiscal": { "status": "authorized", "sourceEvent": "order.invoiced" } },
+    "fiscalRepresentation": null,
 
     "cancellation": {
       "cancellationId": "6fcb0a30-cfde-4ffe-96ef-545dde3fa87c",
@@ -103,20 +109,39 @@ El mismo snapshot V4 de orden que [`order.completed`](/es/events/order-completed
 
 ## Ejemplo — sin un documento autorizado
 
-Cuando la orden no tenía un documento autorizado (se canceló antes de que la autoridad respondiera, la tienda no emite documentos, o el documento no tiene id de proveedor), **la clave `fiscal` está ausente** — no en `null`:
+Cuando la orden no tenía un documento autorizado (se canceló antes de que la autoridad respondiera, la tienda no emite documentos, o el documento no tiene id de proveedor), **la clave `fiscal` está ausente** — no en `null`. Acá, una orden de Ecuador numerada en la caja y cancelada antes de que el ente respondiera: `fiscalRepresentation` lleva la factura que se imprimió, `lastKnown.fiscal` todavía dice `processing` y `cancellation` no tiene `fiscal`. No sigue ningún `order.reversed`.
 
 ```json
 {
-  "cancellation": {
-    "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
-    "cancelledAt": "2026-05-05T23:06:08.883Z",
-    "cancelledBy": "00000000-0000-0000-0000-000000000000",
-    "cancellationType": "CUSTOMER_REQUESTED",
-    "cancellationGroup": "Customer",
-    "cancellationReason": "Customer requested cancellation",
-    "cancellationNote": null,
-    "cancellationSource": "backoffice"
-  }
+  "event": { "id": "…", "type": "order.cancelled", "createdAt": "2026-09-15T14:12:03.114Z" },
+  "data": {
+    "orderId": "…",
+    "orderCode": "OC-ec-001",
+    "status": "CANCELLED",
+    "paymentStatus": "SUCCEEDED",
+    "store": { /* igual que order.completed */ },
+    "orderLines": [ /* igual que order.completed */ ],
+    "policy": { /* igual que order.completed */ },
+    "lastKnown": { "kds": null, "fiscal": { "status": "processing", "sourceEvent": "order.injected" } },
+    "fiscalRepresentation": {
+      "numberingStatus": "GENERATED",
+      "documentType": "SALE_INVOICE",
+      "documentNumber": "005-004-000000042",
+      /* resto del bloque — ver data.fiscalRepresentation abajo */
+    },
+
+    "cancellation": {
+      "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
+      "cancelledAt": "2026-09-15T14:12:02.870Z",
+      "cancelledBy": "4fadc5f3-d9da-4756-978d-5a8cffc25d40",
+      "cancellationType": "CUSTOMER_REQUESTED",
+      "cancellationGroup": "Cliente",
+      "cancellationReason": "El cliente pidió cancelar",
+      "cancellationNote": null,
+      "cancellationSource": "backoffice"
+    }
+  },
+  "_meta": { "executionId": "…", "flowId": "…", "attempt": "1" }
 }
 ```
 
@@ -155,7 +180,7 @@ Compruébalo con `if (data.cancellation.fiscal)`.
       Dónde se originó la cancelación: `backoffice`, `adapter`, `api`.
     </ResponseField>
     <ResponseField name="fiscal" type="object">
-      **Presente solo cuando la orden tenía un documento autorizado** con id de proveedor. Lleva `status` y `authority` — ver [El bloque fiscal](#el-bloque-fiscal). En este evento **no** lleva `history`, `compensates`, `countryCode`, `providerCode` ni `occurredAt`; esos llegan con `order.reversed`.
+      **Presente solo cuando la orden tenía un documento autorizado** con id de proveedor. Lleva `status` (`authorized`, o `cancelling` si ya había una anulación en curso) y `authority` — ver [El bloque fiscal](#el-bloque-fiscal). En este evento **no** lleva `history`, `compensates`, `countryCode`, `providerCode` ni `occurredAt`; esos llegan con `order.reversed`.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -227,4 +252,8 @@ async function onOrderCancelled(data) {
 
 ## `data.fiscalRepresentation`
 
-Sin cambios en v3. Es la numeración fiscal impresa en la caja, un bloque distinto de `cancellation.fiscal`. Cuando una cancelación numera una nota de crédito, esa nota queda arriba y la factura baja a `fiscalRepresentation.history`. La referencia de campos está en la [página v2.2](/es/events-v2/order-cancelled#data-fiscalrepresentation).
+Sin cambios en v3. Es la numeración fiscal impresa en la caja, un bloque distinto de `cancellation.fiscal`: nunca dice que el documento esté autorizado. Cuando una cancelación numera una nota de crédito, esa nota queda arriba y la factura baja a `fiscalRepresentation.history`. Es el mismo bloque que en `order.completed` — referencia de campos en [`order.completed` → `data.fiscalRepresentation`](/es/events/order-completed#data-fiscalrepresentation).
+
+## `data.policy` y `data.lastKnown`
+
+Sin cambios en v3 e iguales en todos los eventos de orden. `lastKnown.fiscal.status` es el estado fiscal actual de la orden y es orientativo — nunca condiciones una acción irreversible a él. Referencia en [`order.completed` → `data.policy` y `data.lastKnown`](/es/events/order-completed#data-policy-y-data-lastknown).

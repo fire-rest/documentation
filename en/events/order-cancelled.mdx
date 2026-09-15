@@ -40,11 +40,14 @@ Fire emits `order.cancelled` once when an order transitions to `CANCELLED`, rega
 
 ## What's in `trigger.data`
 
-The same V4 order snapshot as [`order.completed`](/en/events/order-completed), with three differences:
+The same V4 order snapshot as [`order.completed`](/en/events/order-completed), with four differences:
 
 1. `status` is **`"CANCELLED"`**.
 2. `paymentStatus` is unchanged (typically `"SUCCEEDED"` if the order had been paid).
 3. A top-level **`cancellation`** block carries the audit metadata and, when applicable, the fiscal document.
+4. There is **no top-level `data.fiscal`**. On this event the authority's document lives only in `cancellation.fiscal`.
+
+`policy`, `lastKnown` and `fiscalRepresentation` travel exactly as on `order.completed`. In Brazil (PlugNotas) `fiscalRepresentation` is `null`: there is no numbering step.
 
 ## Example — Brazil, with an authorized document (sanitized)
 
@@ -58,6 +61,9 @@ The same V4 order snapshot as [`order.completed`](/en/events/order-completed), w
     "paymentStatus": "SUCCEEDED",
     "store": { /* same as order.completed */ },
     "orderLines": [ /* same as order.completed */ ],
+    "policy": { "deferredPayment": { "eligible": false, "resolvedAt": "2026-09-15T05:00:45.760Z", "configVersion": "fnv1a:a0c02d27", "resolvedFrom": { "channelCode": "KIOSK", "fulfillmentCode": "DINE-IN", "paymentMethod": null } } },
+    "lastKnown": { "kds": { "status": "preparing", "sourceEvent": "order.status_updated" }, "fiscal": { "status": "authorized", "sourceEvent": "order.invoiced" } },
+    "fiscalRepresentation": null,
 
     "cancellation": {
       "cancellationId": "6fcb0a30-cfde-4ffe-96ef-545dde3fa87c",
@@ -103,20 +109,39 @@ The same V4 order snapshot as [`order.completed`](/en/events/order-completed), w
 
 ## Example — without an authorized document
 
-When the order had no authorized document (it was cancelled before the authority answered, the store does not issue documents, or the document has no provider id), the **`fiscal` key is absent** — not `null`:
+When the order had no authorized document (it was cancelled before the authority answered, the store does not issue documents, or the document has no provider id), the **`fiscal` key is absent** — not `null`. Here, an Ecuador order numbered at the till and cancelled before the authority answered: `fiscalRepresentation` carries the invoice that was printed, `lastKnown.fiscal` still says `processing`, and `cancellation` has no `fiscal`. No `order.reversed` follows.
 
 ```json
 {
-  "cancellation": {
-    "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
-    "cancelledAt": "2026-05-05T23:06:08.883Z",
-    "cancelledBy": "00000000-0000-0000-0000-000000000000",
-    "cancellationType": "CUSTOMER_REQUESTED",
-    "cancellationGroup": "Customer",
-    "cancellationReason": "Customer requested cancellation",
-    "cancellationNote": null,
-    "cancellationSource": "backoffice"
-  }
+  "event": { "id": "…", "type": "order.cancelled", "createdAt": "2026-09-15T14:12:03.114Z" },
+  "data": {
+    "orderId": "…",
+    "orderCode": "OC-ec-001",
+    "status": "CANCELLED",
+    "paymentStatus": "SUCCEEDED",
+    "store": { /* same as order.completed */ },
+    "orderLines": [ /* same as order.completed */ ],
+    "policy": { /* same as order.completed */ },
+    "lastKnown": { "kds": null, "fiscal": { "status": "processing", "sourceEvent": "order.injected" } },
+    "fiscalRepresentation": {
+      "numberingStatus": "GENERATED",
+      "documentType": "SALE_INVOICE",
+      "documentNumber": "005-004-000000042",
+      /* rest of the block — see data.fiscalRepresentation below */
+    },
+
+    "cancellation": {
+      "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
+      "cancelledAt": "2026-09-15T14:12:02.870Z",
+      "cancelledBy": "4fadc5f3-d9da-4756-978d-5a8cffc25d40",
+      "cancellationType": "CUSTOMER_REQUESTED",
+      "cancellationGroup": "Customer",
+      "cancellationReason": "Customer requested cancellation",
+      "cancellationNote": null,
+      "cancellationSource": "backoffice"
+    }
+  },
+  "_meta": { "executionId": "…", "flowId": "…", "attempt": "1" }
 }
 ```
 
@@ -155,7 +180,7 @@ Check it with `if (data.cancellation.fiscal)`.
       Where the cancellation originated: `backoffice`, `adapter`, `api`.
     </ResponseField>
     <ResponseField name="fiscal" type="object">
-      **Present only when the order had an authorized document** with a provider id. Carries `status` and `authority` — see [The fiscal block](#the-fiscal-block). On this event it does **not** carry `history`, `compensates`, `countryCode`, `providerCode` or `occurredAt`; those arrive with `order.reversed`.
+      **Present only when the order had an authorized document** with a provider id. Carries `status` (`authorized`, or `cancelling` if an annulment was already in flight) and `authority` — see [The fiscal block](#the-fiscal-block). On this event it does **not** carry `history`, `compensates`, `countryCode`, `providerCode` or `occurredAt`; those arrive with `order.reversed`.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -227,4 +252,8 @@ async function onOrderCancelled(data) {
 
 ## `data.fiscalRepresentation`
 
-Unchanged in v3. It is the fiscal numbering printed at the till, a different block from `cancellation.fiscal`. When a cancellation numbers a credit note, that note sits on top and the invoice moves into `fiscalRepresentation.history`. The field reference is in the [v2.2 page](/en/events-v2/order-cancelled#data-fiscalrepresentation).
+Unchanged in v3. It is the fiscal numbering printed at the till, a different block from `cancellation.fiscal`: it never says the document was authorized. When a cancellation numbers a credit note, that note sits on top and the invoice moves into `fiscalRepresentation.history`. It is the same block as on `order.completed` — field reference in [`order.completed` → `data.fiscalRepresentation`](/en/events/order-completed#data-fiscalrepresentation).
+
+## `data.policy` and `data.lastKnown`
+
+Unchanged in v3 and identical to every order event. `lastKnown.fiscal.status` is the order's current fiscal state and is advisory — never gate an irreversible action on it. Reference in [`order.completed` → `data.policy` and `data.lastKnown`](/en/events/order-completed#data-policy-and-data-lastknown).
