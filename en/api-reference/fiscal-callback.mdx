@@ -37,7 +37,7 @@ This endpoint requires an **API key with the `webhooks:fiscal` scope**, vendor-s
 </ParamField>
 
 <ParamField header="Authorization" type="string">
-  Optional `Bearer <token>`. Not currently required for this endpoint, but reserved for future provider-issued tokens.
+  Legacy alias: the same Fire API key, as `Bearer pk_live_...`. Prefer `x-api-key`; if both are sent, `x-api-key` is used.
 </ParamField>
 
 ## Request body
@@ -63,7 +63,7 @@ The body is a JSON object with these top-level fields. **Everything canonical li
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  Your provider's own id for this delivery. Stored for audit/forensics — **it is not the idempotency key**. Fire deduplicates on `(orderId, eventId)`, so you may safely send a fresh `providerEventId` on every retry without creating duplicates. Use the provider's native event id if available; otherwise a UUID.
+  Your provider's own id for this delivery. Stored for audit/forensics — **it is not the idempotency key**. Fire deduplicates on `(orderId, eventId)` — a different `eventType` on the same pair returns `409`, except `fiscal_graphic` — so you may safely send a fresh `providerEventId` on every retry without creating duplicates. Use the provider's native event id if available; otherwise a UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -190,13 +190,13 @@ What each regime calls its document goes in `docSubtype`, and that one is **open
       Human-readable message. At least 1 character.
     </ParamField>
     <ParamField body="details" type="array">
-      Field-by-field detail, when the authority provides it.
+      Field-by-field detail, when the authority provides it: a list of `{ "field": "…", "issue": "…" }`, both optional.
     </ParamField>
   </Expandable>
 </ParamField>
 
 <ParamField body="metadata" type="object">
-  Free-form bag for provider-specific extras (raw response, internal IDs, etc.). Not validated. It reaches the order and the events as `authority.providerMetadata`, as is and opaque — just like in the fiscal numbering. Absent or `{}` becomes `null`.
+  Free-form bag for provider-specific extras (raw response, internal IDs, etc.). Not validated. It reaches the order and the events as `authority.providerMetadata`, as is and opaque — just like in the fiscal numbering. Absent or `{}` becomes `null`. Do not send `null`: omit it or send `{}` — `null` returns `400`.
 
   **Formerly named `providerSpecific`.**
 </ParamField>
@@ -573,7 +573,7 @@ The required shape of `document` depends on `country`. **`document` carries ONLY
 
 ### Negative outcomes (`rejected`, `denied`, `error`)
 
-For non-authorized states, omit `document` and provide `failure`. `country` still applies (it validates routing); the document itself is not required because there is no authorized artifact — and neither are `documentType`/`docSubtype`, since there is no document to type.
+For non-authorized states, omit `document` (or send it as `null`) and provide `failure`. `country` still applies (it validates routing); the document itself is not required because there is no authorized artifact — and neither are `documentType`/`docSubtype`, since there is no document to type.
 
 ```json Rejected
 {
@@ -604,7 +604,7 @@ The body carries **two distinct ids** so there is no ambiguity: `eventId` is the
 </ResponseField>
 
 <ResponseField name="duplicate" type="boolean">
-  `true` when this `(orderId, eventId)` was already ingested **with the same `eventType`** — the existing record is returned and nothing is re-enqueued. `false` for a fresh event.
+  `true` when this `(orderId, eventId)` was already ingested **with the same `eventType`** — the existing record is returned and nothing is re-enqueued. `false` for a fresh event. A different `eventType` on the same pair never reaches this field: it returns `409`, except `fiscal_graphic`.
 </ResponseField>
 
 <ResponseField name="eventId" type="string">
@@ -732,7 +732,7 @@ A `404` is returned for unknown ids — or ids that belong to another tenant —
 
 ## Idempotency & scenarios
 
-Fire deduplicates callbacks on **`(orderId, eventId, eventType)`** — *not* on `providerEventId` (which you may regenerate freely). The same `(orderId, eventId)` resent with the **same** `eventType` is a benign replay; the same `(orderId, eventId)` with a **different** terminal `eventType` is an attempt to ride one action on another's event, which Fire rejects.
+Fire deduplicates callbacks on **`(orderId, eventId)`** — *not* on `providerEventId` (which you may regenerate freely). The same pair resent with the **same** `eventType` is a benign replay; the same pair with a **different** `eventType` returns `409` — an attempt to ride one action on another's event — except `fiscal_graphic`, which may share the `eventId` with its outcome.
 
 **`fiscal_graphic` is the exception.** It is a step of the *same* action, not a competing outcome, so it may share the `eventId` with the terminal state that follows it — that combination is accepted, never a `409`.
 
@@ -741,7 +741,7 @@ This is the full behavior matrix — every combination you can send:
 | Scenario | Result |
 |---|---|
 | New `(orderId, eventId)` | **`202`** · `duplicate: false` — enqueued |
-| Same `(orderId, eventId, eventType)` resent (any `providerEventId`) | **`202`** · `duplicate: true` — existing record returned, **not** re-enqueued |
+| Same `(orderId, eventId)` with the same `eventType` resent (any `providerEventId`) | **`202`** · `duplicate: true` — existing record returned, **not** re-enqueued |
 | `fiscal_graphic` then a terminal state on the **same `eventId`** | **`202`** both times — the graphic is a step of the same action, not a conflict |
 | Same `(orderId, eventId)` but **different terminal `eventType`** (e.g. `cancelled` echoing the `authorized`'s `eventId`) | **`409`** — rejected. Use the event that belongs to *this* action |
 | `eventId` not emitted by Fire for this `orderId` | **`400`** — wrong/invented `eventId` |

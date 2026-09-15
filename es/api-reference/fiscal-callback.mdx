@@ -37,7 +37,7 @@ Este endpoint requiere una **API key con scope `webhooks:fiscal`**, vendor-scope
 </ParamField>
 
 <ParamField header="Authorization" type="string">
-  Opcional `Bearer <token>`. No se requiere para este endpoint hoy, pero está reservado para futuros tokens emitidos por proveedor.
+  Alias legado: la misma API key de Fire, como `Bearer pk_live_...`. Prefiere `x-api-key`; si llegan los dos, se usa `x-api-key`.
 </ParamField>
 
 ## Body de la petición
@@ -63,7 +63,7 @@ El body es un objeto JSON con estos campos top-level. **Todo lo canónico vive a
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  El id propio de tu proveedor para esta entrega. Se guarda para auditoría/forense — **no es la llave de idempotencia**. Fire deduplica por `(orderId, eventId)`, así que podés enviar un `providerEventId` nuevo en cada reintento sin crear duplicados. Usa el ID nativo del evento del proveedor si está disponible; si no, un UUID.
+  El id propio de tu proveedor para esta entrega. Se guarda para auditoría/forense — **no es la llave de idempotencia**. Fire deduplica por `(orderId, eventId)` — un `eventType` distinto sobre el mismo par devuelve `409`, salvo `fiscal_graphic` — así que podés enviar un `providerEventId` nuevo en cada reintento sin crear duplicados. Usa el ID nativo del evento del proveedor si está disponible; si no, un UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -190,13 +190,13 @@ Cómo llama cada régimen a su documento va en `docSubtype`, y ese campo es **ab
       Mensaje legible. Mínimo 1 carácter.
     </ParamField>
     <ParamField body="details" type="array">
-      Detalle campo por campo, cuando el ente lo da.
+      Detalle campo por campo, cuando el ente lo da: una lista de `{ "field": "…", "issue": "…" }`, ambos opcionales.
     </ParamField>
   </Expandable>
 </ParamField>
 
 <ParamField body="metadata" type="object">
-  Bag free-form para extras específicos del proveedor (respuesta raw, IDs internos, etc.). No validado. Llega a la orden y a los eventos como `authority.providerMetadata`, tal cual y opaco — igual que en la numeración fiscal. Ausente o `{}` queda en `null`.
+  Bag free-form para extras específicos del proveedor (respuesta raw, IDs internos, etc.). No validado. Llega a la orden y a los eventos como `authority.providerMetadata`, tal cual y opaco — igual que en la numeración fiscal. Ausente o `{}` queda en `null`. No mandes `null`: omítelo o manda `{}` — `null` devuelve `400`.
 
   **Antes se llamaba `providerSpecific`.**
 </ParamField>
@@ -572,7 +572,7 @@ La forma requerida del campo `document` depende de `country`. **`document` lleva
 
 ### Resultados negativos (`rejected`, `denied`, `error`)
 
-Para estados no autorizados, omite `document` y provee `failure`. El `country` sigue aplicando (valida el routing); el documento no se requiere porque no hay artefacto autorizado — y `documentType`/`docSubtype` tampoco, porque no hay comprobante que tipificar.
+Para estados no autorizados, omite `document` (o mándalo en `null`) y provee `failure`. El `country` sigue aplicando (valida el routing); el documento no se requiere porque no hay artefacto autorizado — y `documentType`/`docSubtype` tampoco, porque no hay comprobante que tipificar.
 
 ```json Rechazado
 {
@@ -603,7 +603,7 @@ El body trae **dos ids distintos** para que no haya ambigüedad: `eventId` es el
 </ResponseField>
 
 <ResponseField name="duplicate" type="boolean">
-  `true` cuando este `(orderId, eventId)` ya se ingresó **con el mismo `eventType`** — se devuelve el registro existente y no se re-encola nada. `false` para un evento nuevo.
+  `true` cuando este `(orderId, eventId)` ya se ingresó **con el mismo `eventType`** — se devuelve el registro existente y no se re-encola nada. `false` para un evento nuevo. Un `eventType` distinto sobre el mismo par nunca llega a este campo: devuelve `409`, salvo `fiscal_graphic`.
 </ResponseField>
 
 <ResponseField name="eventId" type="string">
@@ -727,7 +727,7 @@ Un `404` se devuelve para ids desconocidos — o ids de otro tenant — sin filt
 
 ## Idempotencia y escenarios
 
-Fire deduplica callbacks por **`(orderId, eventId)`** — *no* por `providerEventId` (que podés regenerar libremente). Un evento es único con su orden: el mismo `(orderId, eventId)` reenviado con el **mismo** `eventType` es un replay benigno; el mismo `(orderId, eventId)` con un `eventType` **distinto** es un intento de colgar una acción sobre el evento de otra, y Fire lo rechaza.
+Fire deduplica callbacks por **`(orderId, eventId)`** — *no* por `providerEventId` (que podés regenerar libremente). El mismo par reenviado con el **mismo** `eventType` es un replay benigno; el mismo par con un `eventType` **distinto** devuelve `409` — un intento de colgar una acción sobre el evento de otra — salvo `fiscal_graphic`, que puede compartir el `eventId` con su resultado.
 
 
 **`fiscal_graphic` es la excepción.** Es un paso de la *misma* acción, no un desenlace que compita, así que puede compartir el `eventId` con el estado terminal que llega después — esa combinación se acepta, nunca da `409`.
@@ -737,7 +737,7 @@ Esta es la matriz completa de comportamiento — cada combinación que podés en
 | Escenario | Resultado |
 |---|---|
 | `(orderId, eventId)` nuevo | **`202`** · `duplicate: false` — encolado |
-| Mismo `(orderId, eventId, eventType)` reenviado (cualquier `providerEventId`) | **`202`** · `duplicate: true` — se devuelve el registro existente, **no** se re-encola |
+| Mismo `(orderId, eventId)` con el mismo `eventType` reenviado (cualquier `providerEventId`) | **`202`** · `duplicate: true` — se devuelve el registro existente, **no** se re-encola |
 | `fiscal_graphic` y luego un estado terminal con el **mismo `eventId`** | **`202`** ambas veces — la gráfica es un paso de la misma acción, no un conflicto |
 | Mismo `(orderId, eventId)` pero **`eventType` distinto** (ej. `cancelled` con el `eventId` del `authorized`) | **`409`** — rechazado. Usá el evento que pertenece a *esta* acción |
 | `eventId` no emitido por Fire para ese `orderId` | **`400`** — `eventId` incorrecto/inventado |

@@ -20,7 +20,7 @@ import FiscalEventBlock from '/snippets/fiscal-event-block.pt.mdx';
   </Tab>
 </Tabs>
 
-`order.cancelled` dispara quando um pedido previamente injetado é cancelado — pelo backoffice do Fire, um adaptador externo ou a API de cancelamento. **Não** retrai um `order.completed` anterior do mesmo pedido; ambos os eventos são emitidos independentes.
+`order.cancelled` dispara quando um pedido previamente injetado é cancelado — pelo backoffice do Fire (`cancellationSource: backoffice`), ou por um adaptador ou a API de cancelamento (`cancellationSource: adapter`). **Não** retrai um `order.completed` anterior do mesmo pedido; ambos os eventos são emitidos independentes.
 
 <Warning>
   **Este evento não significa que o documento fiscal foi anulado.** Ele é emitido quando o **pedido** é cancelado, antes de consultar o órgão. Quando o pedido tinha um documento autorizado, `cancellation.fiscal` descreve esse documento **como estava naquele momento** — ainda `SALE_INVOICE`, com `cancelledAt: null`. A confirmação do órgão chega depois em [`order.reversed`](/pt/events/order-reversed).
@@ -47,7 +47,7 @@ O mesmo snapshot V4 do pedido que [`order.completed`](/pt/events/order-completed
 3. Um bloco top-level **`cancellation`** carrega a metadata de auditoria e, quando aplicável, o documento fiscal.
 4. **Não há `data.fiscal` na raiz.** Neste evento o documento do órgão vive só em `cancellation.fiscal`.
 
-`policy`, `lastKnown` e `fiscalRepresentation` viajam exatamente como em `order.completed`. No Brasil (PlugNotas) `fiscalRepresentation` é `null`: não há etapa de numeração.
+`policy` e `lastKnown` viajam exatamente como em `order.completed`. `fiscalRepresentation` tem a mesma forma, mas se para o cancelamento foi numerada uma nota de crédito, traz essa nota no topo e a fatura em `history`. No Brasil (PlugNotas) `fiscalRepresentation` é `null`: não há etapa de numeração. `authority.providerIdentity` e `authority.providerMetadata` aparecem nos documentos guardados sob este contrato; em pedidos anteriores as chaves podem faltar — trate a chave ausente como `null`.
 
 ## Exemplo — Brasil, com documento autorizado (sanitizado)
 
@@ -109,26 +109,23 @@ O mesmo snapshot V4 do pedido que [`order.completed`](/pt/events/order-completed
 
 ## Exemplo — sem documento autorizado
 
-Quando o pedido não tinha documento autorizado (foi cancelado antes de o órgão responder, a loja não emite documentos, ou o documento não tem id do provedor), a **chave `fiscal` está ausente** — não `null`. Aqui, um pedido do Equador numerado no caixa e cancelado antes de o órgão responder: `fiscalRepresentation` traz a fatura que foi impressa, `lastKnown.fiscal` ainda diz `processing` e `cancellation` não tem `fiscal`. Nenhum `order.reversed` vem depois.
+Quando o pedido não tinha documento autorizado (o órgão ainda não tinha respondido, a loja não emite documentos, ou o documento não tem id do provedor), a **chave `fiscal` está ausente** — não `null`. Aqui, uma loja que não numera no caixa, cancelada antes de o órgão responder: `fiscalRepresentation` é `null`, `lastKnown.fiscal` ainda diz `processing` e `cancellation` não tem `fiscal`. Nenhum `order.reversed` vem depois.
+
+Nos países que numeram no caixa, um pedido não pode ser cancelado enquanto a sua fatura estiver vigente: o Fire responde `409` (`FISCAL_REPRESENTATION_NOT_VOIDED`) até que a nota de crédito seja pedida. Depois disso, o evento traz `fiscalRepresentation` com a `CREDIT_NOTE` no topo e a fatura em `history`.
 
 ```json
 {
   "event": { "id": "…", "type": "order.cancelled", "createdAt": "2026-09-15T14:12:03.114Z" },
   "data": {
     "orderId": "…",
-    "orderCode": "OC-ec-001",
+    "orderCode": "OC-cl-001",
     "status": "CANCELLED",
     "paymentStatus": "SUCCEEDED",
     "store": { /* igual a order.completed */ },
     "orderLines": [ /* igual a order.completed */ ],
     "policy": { /* igual a order.completed */ },
     "lastKnown": { "kds": null, "fiscal": { "status": "processing", "sourceEvent": "order.injected" } },
-    "fiscalRepresentation": {
-      "numberingStatus": "GENERATED",
-      "documentType": "SALE_INVOICE",
-      "documentNumber": "005-004-000000042",
-      /* resto do bloco — veja data.fiscalRepresentation abaixo */
-    },
+    "fiscalRepresentation": null,
 
     "cancellation": {
       "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
@@ -161,8 +158,8 @@ Verifique com `if (data.cancellation.fiscal)`.
     <ResponseField name="cancelledAt" type="string">
       Timestamp ISO 8601 UTC do cancelamento do pedido no Fire. Não é o `authority.cancelledAt` do órgão.
     </ResponseField>
-    <ResponseField name="cancelledBy" type="string | null">
-      UUID do usuário que cancelou o pedido. `null` para cancelamentos iniciados pelo sistema.
+    <ResponseField name="cancelledBy" type="string">
+      UUID do usuário que cancelou o pedido.
     </ResponseField>
     <ResponseField name="cancellationType" type="string | null">
       Código estável do motivo: catálogo interno (`ITEM_OUT_OF_STOCK`, `OTHER`) ou código do agregador (`1010`). **Sempre presente** — `null` quando não foi definido um motivo estruturado.
@@ -170,14 +167,14 @@ Verifique com `if (data.cancellation.fiscal)`.
     <ResponseField name="cancellationGroup" type="string | null">
       Categoria do motivo, interna ou do agregador (`SAG (IFOOD)`). **Sempre presente** — `null` quando não definida.
     </ResponseField>
-    <ResponseField name="cancellationReason" type="string | null">
+    <ResponseField name="cancellationReason" type="string">
       Motivo em texto livre capturado no momento do cancelamento.
     </ResponseField>
     <ResponseField name="cancellationNote" type="string | null">
       Nota opcional em texto livre. **Sempre presente** — `null` quando não há.
     </ResponseField>
     <ResponseField name="cancellationSource" type="string">
-      Onde o cancelamento se originou: `backoffice`, `adapter`, `api`.
+      Onde o cancelamento se originou: `backoffice` ou `adapter`.
     </ResponseField>
     <ResponseField name="fiscal" type="object">
       **Presente apenas quando o pedido tinha um documento autorizado** com id do provedor. Carrega `status` (`authorized`, ou `cancelling` se já havia uma anulação em andamento) e `authority` — veja [O bloco fiscal](#o-bloco-fiscal). Neste evento **não** carrega `history`, `compensates`, `countryCode`, `providerCode` nem `occurredAt`; esses chegam com `order.reversed`.

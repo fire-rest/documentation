@@ -20,7 +20,7 @@ import FiscalEventBlock from '/snippets/fiscal-event-block.mdx';
   </Tab>
 </Tabs>
 
-`order.cancelled` fires when a previously injected order is cancelled — from the Fire backoffice, an external adapter, or the cancellation API. It does **not** retract a prior `order.completed` for the same order; both events are emitted independently.
+`order.cancelled` fires when a previously injected order is cancelled — from the Fire backoffice (`cancellationSource: backoffice`), or through an adapter or the cancellation API (`cancellationSource: adapter`). It does **not** retract a prior `order.completed` for the same order; both events are emitted independently.
 
 <Warning>
   **This event does not mean the fiscal document is annulled.** It is emitted when the **order** is cancelled, before the authority is asked. When the order had an authorized document, `cancellation.fiscal` describes that document **as it was at that moment** — still `SALE_INVOICE`, with `cancelledAt: null`. The authority's confirmation arrives later in [`order.reversed`](/en/events/order-reversed).
@@ -47,7 +47,7 @@ The same V4 order snapshot as [`order.completed`](/en/events/order-completed), w
 3. A top-level **`cancellation`** block carries the audit metadata and, when applicable, the fiscal document.
 4. There is **no top-level `data.fiscal`**. On this event the authority's document lives only in `cancellation.fiscal`.
 
-`policy`, `lastKnown` and `fiscalRepresentation` travel exactly as on `order.completed`. In Brazil (PlugNotas) `fiscalRepresentation` is `null`: there is no numbering step.
+`policy` and `lastKnown` travel exactly as on `order.completed`. `fiscalRepresentation` has the same shape, but when a credit note was numbered for the cancellation it carries that note on top and the invoice in `history`. In Brazil (PlugNotas) `fiscalRepresentation` is `null`: there is no numbering step. `authority.providerIdentity` and `authority.providerMetadata` appear on documents stored under this contract; on earlier orders the keys may be missing — treat a missing key like `null`.
 
 ## Example — Brazil, with an authorized document (sanitized)
 
@@ -109,26 +109,23 @@ The same V4 order snapshot as [`order.completed`](/en/events/order-completed), w
 
 ## Example — without an authorized document
 
-When the order had no authorized document (it was cancelled before the authority answered, the store does not issue documents, or the document has no provider id), the **`fiscal` key is absent** — not `null`. Here, an Ecuador order numbered at the till and cancelled before the authority answered: `fiscalRepresentation` carries the invoice that was printed, `lastKnown.fiscal` still says `processing`, and `cancellation` has no `fiscal`. No `order.reversed` follows.
+When the order had no authorized document (the authority had not answered yet, the store does not issue documents, or the document has no provider id), the **`fiscal` key is absent** — not `null`. Here, a store that does not number at the till, cancelled before the authority answered: `fiscalRepresentation` is `null`, `lastKnown.fiscal` still says `processing`, and `cancellation` has no `fiscal`. No `order.reversed` follows.
+
+In countries that number at the till, an order cannot be cancelled while its invoice is still in force: Fire answers `409` (`FISCAL_REPRESENTATION_NOT_VOIDED`) until the credit note is requested. Once it is, the event carries `fiscalRepresentation` with the `CREDIT_NOTE` on top and the invoice in `history`.
 
 ```json
 {
   "event": { "id": "…", "type": "order.cancelled", "createdAt": "2026-09-15T14:12:03.114Z" },
   "data": {
     "orderId": "…",
-    "orderCode": "OC-ec-001",
+    "orderCode": "OC-cl-001",
     "status": "CANCELLED",
     "paymentStatus": "SUCCEEDED",
     "store": { /* same as order.completed */ },
     "orderLines": [ /* same as order.completed */ ],
     "policy": { /* same as order.completed */ },
     "lastKnown": { "kds": null, "fiscal": { "status": "processing", "sourceEvent": "order.injected" } },
-    "fiscalRepresentation": {
-      "numberingStatus": "GENERATED",
-      "documentType": "SALE_INVOICE",
-      "documentNumber": "005-004-000000042",
-      /* rest of the block — see data.fiscalRepresentation below */
-    },
+    "fiscalRepresentation": null,
 
     "cancellation": {
       "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
@@ -161,8 +158,8 @@ Check it with `if (data.cancellation.fiscal)`.
     <ResponseField name="cancelledAt" type="string">
       ISO 8601 UTC timestamp of the order cancellation in Fire. It is not the authority's `authority.cancelledAt`.
     </ResponseField>
-    <ResponseField name="cancelledBy" type="string | null">
-      UUID of the user who cancelled the order. `null` for system-initiated cancellations.
+    <ResponseField name="cancelledBy" type="string">
+      UUID of the user who cancelled the order.
     </ResponseField>
     <ResponseField name="cancellationType" type="string | null">
       Stable motive code: internal catalog (`ITEM_OUT_OF_STOCK`, `OTHER`) or aggregator code (`1010`). **Always present** — `null` when no structured motive was set.
@@ -170,14 +167,14 @@ Check it with `if (data.cancellation.fiscal)`.
     <ResponseField name="cancellationGroup" type="string | null">
       Motive category, internal or aggregator (`SAG (IFOOD)`). **Always present** — `null` when not set.
     </ResponseField>
-    <ResponseField name="cancellationReason" type="string | null">
+    <ResponseField name="cancellationReason" type="string">
       Free-text reason captured at cancellation time.
     </ResponseField>
     <ResponseField name="cancellationNote" type="string | null">
       Optional free-text note. **Always present** — `null` when none.
     </ResponseField>
     <ResponseField name="cancellationSource" type="string">
-      Where the cancellation originated: `backoffice`, `adapter`, `api`.
+      Where the cancellation originated: `backoffice` or `adapter`.
     </ResponseField>
     <ResponseField name="fiscal" type="object">
       **Present only when the order had an authorized document** with a provider id. Carries `status` (`authorized`, or `cancelling` if an annulment was already in flight) and `authority` — see [The fiscal block](#the-fiscal-block). On this event it does **not** carry `history`, `compensates`, `countryCode`, `providerCode` or `occurredAt`; those arrive with `order.reversed`.

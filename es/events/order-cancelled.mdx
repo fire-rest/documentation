@@ -20,7 +20,7 @@ import FiscalEventBlock from '/snippets/fiscal-event-block.es.mdx';
   </Tab>
 </Tabs>
 
-`order.cancelled` dispara cuando se cancela una orden previamente inyectada — desde el backoffice de Fire, un adaptador externo o la API de cancelación. **No** retrae un `order.completed` previo de la misma orden; ambos eventos se emiten independientes.
+`order.cancelled` dispara cuando se cancela una orden previamente inyectada — desde el backoffice de Fire (`cancellationSource: backoffice`), o por un adaptador o la API de cancelación (`cancellationSource: adapter`). **No** retrae un `order.completed` previo de la misma orden; ambos eventos se emiten independientes.
 
 <Warning>
   **Este evento no significa que el documento fiscal esté anulado.** Se emite cuando se cancela la **orden**, antes de consultar a la autoridad. Cuando la orden tenía un documento autorizado, `cancellation.fiscal` describe ese documento **tal como estaba en ese momento** — todavía `SALE_INVOICE`, con `cancelledAt: null`. La confirmación de la autoridad llega después en [`order.reversed`](/es/events/order-reversed).
@@ -47,7 +47,7 @@ El mismo snapshot V4 de orden que [`order.completed`](/es/events/order-completed
 3. Un bloque top-level **`cancellation`** lleva la metadata de auditoría y, cuando aplica, el documento fiscal.
 4. **No hay `data.fiscal` en la raíz.** En este evento el documento del ente vive solo en `cancellation.fiscal`.
 
-`policy`, `lastKnown` y `fiscalRepresentation` viajan exactamente igual que en `order.completed`. En Brasil (PlugNotas) `fiscalRepresentation` es `null`: no hay paso de numeración.
+`policy` y `lastKnown` viajan exactamente igual que en `order.completed`. `fiscalRepresentation` tiene la misma forma, pero si para la cancelación se numeró una nota de crédito, trae esa nota arriba y la factura en `history`. En Brasil (PlugNotas) `fiscalRepresentation` es `null`: no hay paso de numeración. `authority.providerIdentity` y `authority.providerMetadata` aparecen en los documentos guardados bajo este contrato; en órdenes anteriores las claves pueden faltar — trata la clave ausente como `null`.
 
 ## Ejemplo — Brasil, con un documento autorizado (sanitizado)
 
@@ -109,26 +109,23 @@ El mismo snapshot V4 de orden que [`order.completed`](/es/events/order-completed
 
 ## Ejemplo — sin un documento autorizado
 
-Cuando la orden no tenía un documento autorizado (se canceló antes de que la autoridad respondiera, la tienda no emite documentos, o el documento no tiene id de proveedor), **la clave `fiscal` está ausente** — no en `null`. Acá, una orden de Ecuador numerada en la caja y cancelada antes de que el ente respondiera: `fiscalRepresentation` lleva la factura que se imprimió, `lastKnown.fiscal` todavía dice `processing` y `cancellation` no tiene `fiscal`. No sigue ningún `order.reversed`.
+Cuando la orden no tenía un documento autorizado (el ente todavía no había respondido, la tienda no emite documentos, o el documento no tiene id de proveedor), **la clave `fiscal` está ausente** — no en `null`. Acá, una tienda que no numera en la caja, cancelada antes de que el ente respondiera: `fiscalRepresentation` es `null`, `lastKnown.fiscal` todavía dice `processing` y `cancellation` no tiene `fiscal`. No sigue ningún `order.reversed`.
+
+En los países que numeran en la caja, una orden no se puede cancelar mientras su factura siga vigente: Fire responde `409` (`FISCAL_REPRESENTATION_NOT_VOIDED`) hasta que se pida la nota de crédito. Una vez pedida, el evento trae `fiscalRepresentation` con la `CREDIT_NOTE` arriba y la factura en `history`.
 
 ```json
 {
   "event": { "id": "…", "type": "order.cancelled", "createdAt": "2026-09-15T14:12:03.114Z" },
   "data": {
     "orderId": "…",
-    "orderCode": "OC-ec-001",
+    "orderCode": "OC-cl-001",
     "status": "CANCELLED",
     "paymentStatus": "SUCCEEDED",
     "store": { /* igual que order.completed */ },
     "orderLines": [ /* igual que order.completed */ ],
     "policy": { /* igual que order.completed */ },
     "lastKnown": { "kds": null, "fiscal": { "status": "processing", "sourceEvent": "order.injected" } },
-    "fiscalRepresentation": {
-      "numberingStatus": "GENERATED",
-      "documentType": "SALE_INVOICE",
-      "documentNumber": "005-004-000000042",
-      /* resto del bloque — ver data.fiscalRepresentation abajo */
-    },
+    "fiscalRepresentation": null,
 
     "cancellation": {
       "cancellationId": "abcf3781-c327-4df1-84ef-5efbacc1d387",
@@ -161,8 +158,8 @@ Compruébalo con `if (data.cancellation.fiscal)`.
     <ResponseField name="cancelledAt" type="string">
       Timestamp ISO 8601 UTC de la cancelación de la orden en Fire. No es el `authority.cancelledAt` de la autoridad.
     </ResponseField>
-    <ResponseField name="cancelledBy" type="string | null">
-      UUID del usuario que canceló la orden. `null` para cancelaciones iniciadas por el sistema.
+    <ResponseField name="cancelledBy" type="string">
+      UUID del usuario que canceló la orden.
     </ResponseField>
     <ResponseField name="cancellationType" type="string | null">
       Código estable del motivo: catálogo interno (`ITEM_OUT_OF_STOCK`, `OTHER`) o código de agregador (`1010`). **Siempre presente** — `null` si no se fijó un motivo estructurado.
@@ -170,14 +167,14 @@ Compruébalo con `if (data.cancellation.fiscal)`.
     <ResponseField name="cancellationGroup" type="string | null">
       Categoría del motivo, interna o de agregador (`SAG (IFOOD)`). **Siempre presente** — `null` si no se fijó.
     </ResponseField>
-    <ResponseField name="cancellationReason" type="string | null">
+    <ResponseField name="cancellationReason" type="string">
       Razón en texto libre capturada al cancelar.
     </ResponseField>
     <ResponseField name="cancellationNote" type="string | null">
       Nota opcional en texto libre. **Siempre presente** — `null` si no hay.
     </ResponseField>
     <ResponseField name="cancellationSource" type="string">
-      Dónde se originó la cancelación: `backoffice`, `adapter`, `api`.
+      Dónde se originó la cancelación: `backoffice` o `adapter`.
     </ResponseField>
     <ResponseField name="fiscal" type="object">
       **Presente solo cuando la orden tenía un documento autorizado** con id de proveedor. Lleva `status` (`authorized`, o `cancelling` si ya había una anulación en curso) y `authority` — ver [El bloque fiscal](#el-bloque-fiscal). En este evento **no** lleva `history`, `compensates`, `countryCode`, `providerCode` ni `occurredAt`; esos llegan con `order.reversed`.
