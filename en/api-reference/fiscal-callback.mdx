@@ -125,7 +125,7 @@ What each regime calls its document goes in `docSubtype`, and that one is **open
 </ParamField>
 
 <ParamField body="authorizedAt" type="string">
-  UTC date/time (ISO 8601) the authority **approved** the document — a different fact from `issuedAt`. They can be seconds apart (online authorization) or hours apart (contingency authorized when the connection returns). Optional; when absent, event consumers see `authority.authorizedAt: null`. On a cancellation use `cancelledAt` instead.
+  UTC date/time (ISO 8601) the authority **approved** the document — a different fact from `issuedAt`. They can be seconds apart (online authorization) or hours apart (contingency authorized when the connection returns). Optional; when absent, event consumers see `authority.authorizedAt: null`. On a cancellation use `cancelledAt` instead: a `cancelled` callback **keeps the `issuedAt` and `authorizedAt` the document already had** — they are the invoice's — and only uses the ones you send if Fire had none.
 </ParamField>
 
 <ParamField body="cancelledAt" type="string">
@@ -575,6 +575,8 @@ The required shape of `document` depends on `country`. **`document` carries ONLY
 
 For non-authorized states, omit `document` (or send it as `null`) and provide `failure`. `country` still applies (it validates routing); the document itself is not required because there is no authorized artifact — and neither are `documentType`/`docSubtype`, since there is no document to type.
 
+**A negative outcome stores no receipt data.** If you send `documentNumber`, `providerDocId`, `issuedAt`, `authorizedAt`, amounts, `pdfUrl`, `xmlUrl` or `graphic` with `rejected`, `denied` or `error`, Fire ignores them: only `documentType`, `docSubtype`, the country's `document` keys, `failure`, `provider` and `metadata` are kept. A document that already had receipt data keeps it.
+
 ```json Rejected
 {
   "country": "CO",
@@ -761,6 +763,8 @@ This is the full behavior matrix — every combination you can send:
 ## Concurrency
 
 Status transitions on `fiscal_documents` use **optimistic locking**. If two callbacks for the same document arrive concurrently, one succeeds and the other resolves to `idempotent` or `regression` depending on the order. The `orders.fiscal` JSONB merge is atomic.
+
+When the order already has a document, a callback is matched to it by `eventId`. A callback with a different valid `eventId` ends in `notFound`, not `regression`; resending the document's own `eventId` with an earlier state is a same-pair replay. Neither changes the document.
 
 ## What happens after the 202
 
