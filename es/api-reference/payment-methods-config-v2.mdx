@@ -1,0 +1,323 @@
+---
+title: "Configuración de métodos de pago (v2)"
+api: "GET https://api.fire.rest/api/v2/external/payment-methods/config"
+description: "Lee la configuración de métodos de pago del vendor de tu API key, resuelta por tienda: qué métodos hay, dónde cobra cada uno y con qué valores."
+authMethod: "bearer"
+---
+
+Devuelve la configuración de pagos que Fire tiene cargada para el vendor de tu API key, resuelta
+tienda por tienda: qué métodos ofrece cada una, dónde cobra cada uno y con qué valores. Cada
+entrada se basta a sí misma — no hay catálogo aparte contra el cual cruzar.
+
+Sin filtros trae todas las tiendas del vendor, paginadas. Con `storeId` o `storeCode`, una sola.
+
+<Warning>
+  **La respuesta incluye los valores de configuración, también los marcados como secretos**
+  (llaves de comercio, credenciales de datáfono). Trata esta respuesta como material sensible:
+  no la registres en logs, no la caches en el navegador y no la reenvíes a terceros.
+</Warning>
+
+<Info>
+  Esta es la v2. La [v1](/es/api-reference/payment-methods-config) devuelve país → vendor →
+  métodos con un `enabled` y **sigue disponible, sin fecha de baja**. La v2 cambia la fuente de
+  los datos y agrega los niveles de tienda, canal, fulfillment y terminal.
+</Info>
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con el scope `payment-methods:read`. La key **debe ser vendor-scoped**
+  (binding account + vendor) — las keys sin `vendorId` se rechazan con `403`. El account y el
+  vendor se resuelven desde la key: no se aceptan como query params.
+</ParamField>
+
+## Parámetros
+
+<ParamField query="storeId" type="string">
+  UUID de la tienda en Fire. Excluyente con `storeCode`: mandar los dos devuelve `400`.
+</ParamField>
+
+<ParamField query="storeCode" type="string">
+  El código externo de la tienda (`EXTERNAL CODE` en el backoffice). Es el identificador que
+  probablemente ya tengas en tu propio maestro. No es ambiguo porque la API key fija el vendor.
+</ParamField>
+
+<ParamField query="channel" type="string">
+  Acota `availability` a un canal (por ejemplo `KIOSK`). Se compara en mayúsculas. Las tiendas
+  que se quedan sin combinaciones para ese canal siguen apareciendo, sin métodos.
+</ParamField>
+
+<ParamField query="page" type="integer" default="1">
+  Página de `stores`.
+</ParamField>
+
+<ParamField query="size" type="integer" default="20">
+  Tiendas por página. Máximo `100`.
+</ParamField>
+
+## Petición
+
+<RequestExample>
+```http Todo el vendor
+GET https://api.fire.rest/api/v2/external/payment-methods/config
+x-api-key: <tu_api_key>
+```
+
+```http Una tienda
+GET https://api.fire.rest/api/v2/external/payment-methods/config?storeCode=K008
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+## Respuesta
+
+<ResponseField name="success" type="boolean">Siempre `true` en un `200`.</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="accountId" type="string">UUID del account de la API key.</ResponseField>
+    <ResponseField name="vendorId" type="string">Vendor de la API key.</ResponseField>
+    <ResponseField name="generatedAt" type="string">ISO 8601 del momento en que se resolvió.</ResponseField>
+
+    <ResponseField name="stores" type="object[]">
+      <Expandable title="store">
+        <ResponseField name="storeId" type="string">UUID de la tienda.</ResponseField>
+        <ResponseField name="storeCode" type="string | null">Código externo.</ResponseField>
+        <ResponseField name="storeNumber" type="integer">Numeración de la tienda en Fire.</ResponseField>
+        <ResponseField name="name" type="string | null">Nombre de la tienda.</ResponseField>
+        <ResponseField name="countryCode" type="string | null">`null` si la tienda no tiene país cargado; en ese caso aparece en `warnings` y `methods` viene vacío.</ResponseField>
+        <ResponseField name="active" type="string">`ACTIVE`, `INACTIVE` o `SUSPENDED`.</ResponseField>
+        <ResponseField name="status" type="string">`DRAFT`, `PUBLISHED`, `PARTIALLY_PUBLISHED` o `ARCHIVED`.</ResponseField>
+        <ResponseField name="methods" type="object[]">
+          <Expandable title="storeMethod">
+            <ResponseField name="methodId" type="string">UUID del método. **Es el identificador**, y el único estable.</ResponseField>
+            <ResponseField name="code" type="string">Código, por comodidad. Solo es único dentro de un país, así que para identificar un método usa `methodId`.</ResponseField>
+            <ResponseField name="name" type="string">Nombre visible.</ResponseField>
+            <ResponseField name="description" type="string | null">Descripción opcional.</ResponseField>
+            <ResponseField name="logoUrl" type="string | null">URL del logo.</ResponseField>
+            <ResponseField name="cardBrands" type="string[]">Marcas aceptadas. Vacío = no es un método con tarjeta.</ResponseField>
+            <ResponseField name="active" type="boolean">Si el método está activo en la cuenta. En `false` no cobra en ninguna tienda.</ResponseField>
+            <ResponseField name="position" type="integer">Orden sugerido.</ResponseField>
+            <ResponseField name="configFields" type="object[]">
+              Los campos que el método declara. Qué significan los valores de `config`.
+              <Expandable title="configField">
+                <ResponseField name="key" type="string">La clave con la que aparece en `config`.</ResponseField>
+                <ResponseField name="label" type="string">Etiqueta.</ResponseField>
+                <ResponseField name="required" type="boolean">Si es obligatorio.</ResponseField>
+                <ResponseField name="scopeLevel" type="string">`account`, `store` o `device`. Los de `device` **no** aparecen en el `config` de la tienda, solo en `devices[].config`.</ResponseField>
+                <ResponseField name="secret" type="boolean">Si el valor es sensible.</ResponseField>
+                <ResponseField name="helpText" type="string | null">Texto de ayuda opcional.</ResponseField>
+              </Expandable>
+            </ResponseField>
+            <ResponseField name="charging" type="boolean">Derivado: el método está activo **y** cobra en alguna combinación. Con `?channel=`, queda acotado a ese canal.</ResponseField>
+            <ResponseField name="availability" type="object[]">
+              Es la verdad; `charging` es un resumen de esto.
+              <Expandable title="availability">
+                <ResponseField name="channelCode" type="string">Canal (`KIOSK`, `POS`, `WEB`…).</ResponseField>
+                <ResponseField name="fulfillmentCode" type="string">Fulfillment (`DINE_IN`, `TAKEAWAY`, `DELIVERY`…).</ResponseField>
+                <ResponseField name="enabled" type="boolean">`false` = configurada pero pausada. No es lo mismo que no ofrecerse: lo que no se ofrece no aparece.</ResponseField>
+              </Expandable>
+            </ResponseField>
+            <ResponseField name="config" type="object">Valores efectivos a nivel tienda: los de la cuenta con los de la tienda encima. Solo campos `account` y `store`.</ResponseField>
+            <ResponseField name="missingRequiredKeys" type="string[]">Campos obligatorios de cuenta o tienda sin cargar. Si no está vacío, la tienda no está lista para cobrar con ese método.</ResponseField>
+            <ResponseField name="devices" type="object[]">
+              Terminales con configuración o postura propia. Vacío es lo normal.
+              <Expandable title="device">
+                <ResponseField name="deviceType" type="string">`KIOSK` o `POS`.</ResponseField>
+                <ResponseField name="deviceId" type="string">Identificador del terminal en Fire.</ResponseField>
+                <ResponseField name="charging" type="boolean">Si ese equipo cobra, ya resuelto contra lo que dice su tienda.</ResponseField>
+                <ResponseField name="availability" type="object[]">Igual que la de la tienda, con lo propio del equipo aplicado encima.</ResponseField>
+                <ResponseField name="config" type="object">**Solo** los valores cargados en ese terminal, sin volver a mezclar los de la tienda: así se distingue la excepción de la herencia.</ResponseField>
+              </Expandable>
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+
+    <ResponseField name="warnings" type="object[]">
+      Lo que quedó a medias sin que la respuesta falle. Hoy solo
+      `STORE_COUNTRY_MISSING`: la tienda no tiene país cargado, así que no se pudo resolver su
+      catálogo.
+    </ResponseField>
+
+    <ResponseField name="total" type="integer">Tiendas del vendor que matchean el filtro.</ResponseField>
+    <ResponseField name="page" type="integer">Página devuelta.</ResponseField>
+    <ResponseField name="size" type="integer">Tamaño de página.</ResponseField>
+    <ResponseField name="totalPages" type="integer">Páginas totales.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "accountId": "550e8400-e29b-41d4-a716-446655440000",
+    "vendorId": "100.1.10",
+    "generatedAt": "2026-09-04T13:00:00.000Z",
+    "stores": [
+      {
+        "storeId": "aa11bb22-0000-4000-8000-000000000002",
+        "storeCode": "K008",
+        "storeNumber": 812,
+        "name": "Quicentro",
+        "countryCode": "EC",
+        "active": "ACTIVE",
+        "status": "PUBLISHED",
+        "methods": [
+          {
+            "methodId": "9f3a1c2e-0000-4000-8000-000000000001",
+            "code": "datafast",
+            "name": "Datafast",
+            "description": null,
+            "logoUrl": "https://cdn.fire.rest/logos/datafast.webp",
+            "cardBrands": ["visa", "mastercard"],
+            "active": true,
+            "position": 0,
+            "configFields": [
+              {
+                "key": "merchant_id",
+                "label": "Merchant ID",
+                "required": true,
+                "scopeLevel": "account",
+                "secret": false,
+                "helpText": null
+              },
+              {
+                "key": "terminal_key",
+                "label": "Llave del terminal",
+                "required": true,
+                "scopeLevel": "store",
+                "secret": true,
+                "helpText": null
+              },
+              {
+                "key": "terminal_ip",
+                "label": "IP del datáfono",
+                "required": false,
+                "scopeLevel": "device",
+                "secret": false,
+                "helpText": null
+              }
+            ],
+            "charging": true,
+            "availability": [
+              {"channelCode": "KIOSK", "fulfillmentCode": "DINE_IN", "enabled": true},
+              {"channelCode": "KIOSK", "fulfillmentCode": "TAKEAWAY", "enabled": false}
+            ],
+            "config": {"merchant_id": "M-000123", "terminal_key": "sk_live_..."},
+            "missingRequiredKeys": [],
+            "devices": [
+              {
+                "deviceType": "KIOSK",
+                "deviceId": "cc33dd44-0000-4000-8000-000000000003",
+                "charging": false,
+                "availability": [
+                  {"channelCode": "KIOSK", "fulfillmentCode": "DINE_IN", "enabled": false},
+                  {"channelCode": "KIOSK", "fulfillmentCode": "TAKEAWAY", "enabled": false}
+                ],
+                "config": {"terminal_ip": "10.20.0.9"}
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "warnings": [],
+    "total": 1,
+    "page": 1,
+    "size": 20,
+    "totalPages": 1
+  }
+}
+```
+
+```json 400 — storeId y storeCode juntos
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "code": "custom",
+      "path": ["storeCode"],
+      "message": "Use either storeId or storeCode, not both"
+    }
+  ]
+}
+```
+
+```json 401 — API key inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "API key required. Use x-api-key: pk_live_... header"
+}
+```
+
+```json 403 — key sin el scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have required scope: payment-methods:read. Available: store:read"
+}
+```
+
+```json 403 — key no vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
+}
+```
+
+```json 404 — la tienda no es de tu vendor
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "Store not found"
+}
+```
+</ResponseExample>
+
+## Cómo leer la respuesta
+
+**Para saber si mostrar un método en una tienda**, mira `charging`. Es `true` cuando el método
+está activo en la cuenta y cobra en al menos una combinación de esa tienda.
+
+**Para saber en qué canal y fulfillment cobra**, mira `availability`. Una entrada con
+`enabled: false` significa "está configurada aquí, pero apagada ahora" —por ejemplo, el proveedor
+se cayó—. Es distinto de que no aparezca: lo que no aparece no se ofrece en esa tienda.
+Confundirlos se paga más adelante: si descartas las entradas pausadas, el día que el método se
+reanude tu lado lo va a leer como una combinación que nunca se configuró y va a reconfigurar lo
+que ya estaba puesto.
+
+**Antes de intentar cobrar**, mira `missingRequiredKeys`. Si trae algo, faltan datos obligatorios
+y el cobro va a fallar del lado del proveedor.
+
+**`devices` casi siempre viene vacío.** Aparece cuando un terminal puntual tiene una excepción
+—se rompió el datáfono de un kiosco y se apagó solo ese equipo, sin tocar los demás del local—.
+Si tu integración no distingue terminales, puedes ignorarlo: el nivel de tienda es la respuesta
+correcta para un canal de venta.
+
+## Notas
+
+- **Identifica los métodos por `methodId`, nunca por `code`.** Un código solo es único dentro de un
+  país, y un vendor con tiendas en dos países puede definir el mismo código dos veces, con `id`
+  distinto.
+- `fulfillmentCode` se devuelve tal como está guardado, sin normalizar contra el catálogo global.
+- Los métodos con `active: false` viajan igual, para que puedas mostrarlos como "no disponible" o
+  esconderlos — es tu decisión.
+- Pedir una tienda que no pertenece al vendor de tu key devuelve `404`, no `403`.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Configuración de métodos de pago (v1)" icon="clock-rotate-left" href="/es/api-reference/payment-methods-config">
+    La versión anterior, sin niveles de tienda. Sigue disponible.
+  </Card>
+  <Card title="Configuración de canales" icon="grid-2" href="/es/api-reference/channels-config">
+    Qué canales y fulfillments tiene habilitados tu vendor.
+  </Card>
+</CardGroup>
