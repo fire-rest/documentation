@@ -73,7 +73,7 @@ Cada evento que o Fire envia é assinado para que seu sistema possa confirmar qu
 
 Quando você registra seu endpoint no dashboard do Fire, o Fire gera um **secret de webhook** — uma string aleatória que apenas você e o Fire conhecem. Ele nunca trafega em nenhuma requisição.
 
-Cada vez que o Fire envia um evento, usa esse secret para calcular uma assinatura do corpo da requisição e a anexa como header `X-Fire-Signature`. Seu sistema faz o mesmo cálculo sobre o body recebido e compara o resultado:
+Cada vez que o Fire envia um evento, usa esse secret para calcular uma assinatura do corpo da requisição e a anexa como header `X-Fire-Signature`, junto com um header `X-Fire-Timestamp`. Seu sistema faz o mesmo cálculo sobre o body recebido e compara o resultado:
 
 ```
 Fire:         secret + body  →  assinatura  →  envia no header X-Fire-Signature
@@ -81,6 +81,12 @@ Seu sistema:  secret + body recebido  →  recalcula  →  compara
 ```
 
 Se as assinaturas coincidirem, a requisição é autêntica. Se não, descarte-a.
+
+<Note>
+  O header que leva a assinatura é `X-Fire-Signature` por padrão, mas é configurável
+  por integração — se o dashboard mostrar um nome diferente para sua integração, use
+  esse.
+</Note>
 
 <Warning>
   Sempre verifique a assinatura antes de processar um evento. Pular essa etapa expõe seu endpoint a requisições falsificadas por qualquer um que conheça sua URL.
@@ -94,27 +100,27 @@ Ao adicionar um endpoint de webhook em uma [integração de agregadores](/pt/con
 
 <Steps>
   <Step title="Leia o header de assinatura">
-    Extraia o valor do header `X-Fire-Signature` da requisição recebida.
+    Extraia o valor do header `X-Fire-Signature` da requisição recebida. Tem a forma
+    `sha256=<hex digest>` — é um prefixo, não um hex puro.
   </Step>
   <Step title="Recalcule a assinatura">
-    Usando seu secret de webhook, calcule HMAC-SHA256 do **body bruto** da requisição (antes de qualquer parse de JSON).
+    Usando seu secret de webhook, calcule HMAC-SHA256 do **body bruto** da requisição (antes de qualquer parse de JSON), e adicione `sha256=` antes do hex resultante.
   </Step>
   <Step title="Compare">
-    Compare o valor calculado com o valor do header usando uma comparação de tempo constante. Se coincidirem, processe o evento. Se não, retorne `400` e descarte.
+    Compare o valor calculado (com o prefixo `sha256=`) com o valor completo do header usando uma comparação de tempo constante. Se coincidirem, processe o evento. Se não, retorne `400` e descarte.
   </Step>
 </Steps>
 
 ```js
 const crypto = require("crypto");
 
-function verifySignature(rawBody, signature, secret) {
-  const expected = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody)
-    .digest("hex");
+function verifySignature(rawBody, signatureHeader, secret) {
+  const expected =
+    "sha256=" +
+    crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
   return crypto.timingSafeEqual(
     Buffer.from(expected),
-    Buffer.from(signature)
+    Buffer.from(signatureHeader)
   );
 }
 ```
@@ -123,4 +129,10 @@ function verifySignature(rawBody, signature, secret) {
   Use os **bytes brutos do body** para o cálculo HMAC — não uma versão parseada ou re-serializada do JSON. Parsear e re-serializar pode alterar espaços ou a ordem das chaves e fazer com que assinaturas válidas falhem na verificação.
 </Note>
 
-{/* TODO: Confirm X-Fire-Signature format and algorithm with the Fire team */}
+### Proteção contra replay
+
+Cada entrega também traz um header `X-Fire-Timestamp` (Unix seconds — momento em que o
+Fire assinou a requisição). O Fire não impõe hoje uma janela de tolerância do lado
+servidor: se você quiser proteção contra uma requisição capturada e reenviada depois,
+valide que o timestamp está dentro de uma tolerância que você escolher (ex.: 5
+minutos) antes de aceitar o evento.
