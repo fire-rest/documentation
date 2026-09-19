@@ -1,0 +1,194 @@
+---
+title: "Imprimir el cierre de día"
+api: "POST https://app.fire.rest/api/v1/restaurant-os/printing/stores/{storeId}/days/{businessDayDate}"
+description: "Obtené el reporte de fin de día ya maquetado para una impresora de punto de venta: ventas, impuestos, métodos de pago, canales y cancelaciones del día de negocio de una tienda."
+authMethod: "bearer"
+---
+
+<Warning>
+  **API de partner.** Este endpoint está pensado para integradores de plataforma. Los clientes estándar de Fire no tienen acceso directo — contactá a tu account manager si necesitás esta integración.
+</Warning>
+
+Devuelve el reporte de fin de día de una tienda, ya maquetado al ancho de papel que pidas. Su sujeto es un **día de negocio**, no una venta, y por eso tiene su propio endpoint y su propia ruta.
+
+Es el mismo contrato que [Imprimir un documento de orden](/es/api-reference/print-order-document) — el mismo vocabulario de `paper.lines`, el mismo bloque `template`, el mismo bloque `freshness`. Leé esa página para los tipos de línea; esta solo cubre lo que es distinto.
+
+```
+POST /api/v1/restaurant-os/printing/stores/{storeId}/days/{businessDayDate}
+```
+
+El reporte se arma con el snapshot de cierre del día: totales, impuestos desglosados, una fila por método de pago, una fila por canal, transacciones, ticket promedio, hora pico, y las cancelaciones del día.
+
+<Note>
+  **Esto es el cierre de día, no el arqueo de caja.** Los valores declarados, el fondo fijo y la firma del cajero pertenecen a la conciliación de efectivo, que es otro documento con otra fuente — mirá [conciliaciones de efectivo](/es/api-reference/cash-reconciliations).
+</Note>
+
+## El día tiene que estar cerrado
+
+Si la tienda no cerró ese día de negocio, la llamada falla con `409 PRINT_DAY_NOT_CLOSED`. Imprimir un cierre que no ocurrió sería inventarlo.
+
+La pantalla de previsualización de Fire tolera un día abierto — dibuja placeholders para que se pueda diseñar la plantilla — pero una caja no.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `printing:read`. La key **debe ser vendor-scoped** — las keys system-only se rechazan con `403`.
+</ParamField>
+
+<Note>
+  `printing:read` es un scope nuevo. Las keys existentes **no** lo tienen — otorgalo en el dashboard de Fire antes de tu primera llamada.
+</Note>
+
+## Path parameters
+
+<ParamField path="storeId" type="string" required>
+  UUID de la tienda. A diferencia del endpoint de orden — donde la tienda viene con la orden — acá viene de vos, así que Fire verifica que pertenezca al account **y** al vendor de tu key antes de leer nada. Una tienda fuera de tu scope responde `403`.
+</ParamField>
+
+<ParamField path="businessDayDate" type="string" required>
+  `YYYY-MM-DD`. El día **operacional**, que no es el día calendario: un día que abre el 2 y cierra a las 3 de la mañana del 3 sigue siendo el 2.
+</ParamField>
+
+## Cuerpo
+
+<ParamField body="printer" type="object" required>
+  <Expandable title="printer">
+    <ParamField body="printer.width" type="number" required>
+      Columnas del papel: `32`, `42` o `48`.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="keyWidth" type="number">
+  Ancho de la columna de etiquetas, entre `6` y `24`.
+</ParamField>
+
+<ParamField body="copies" type="number">
+  De `1` a `5`. Default `1`.
+</ParamField>
+
+<ParamField body="templateVersion" type="number">
+  Reimprimí con una versión específica de plantilla. Mandá `templateId` junto con ella.
+</ParamField>
+
+<ParamField body="templateId" type="string">
+  A qué plantilla pertenece esa versión. Mirá la [nota sobre reimpresión](/es/api-reference/print-order-document#cuerpo) en el endpoint de orden.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://app.fire.rest/api/v1/restaurant-os/printing/stores/550e8400-e29b-41d4-a716-446655440000/days/2026-05-25
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "printer": { "width": 42 }
+}
+```
+</RequestExample>
+
+## Qué es distinto en la respuesta
+
+El sobre es idéntico. Estos bloques traen valores distintos:
+
+<ResponseField name="subject" type="object">
+  <Expandable title="subject">
+    <ResponseField name="kind" type="string">`storeDay`.</ResponseField>
+    <ResponseField name="countryCode" type="string">El país cuyas reglas e idioma se aplicaron.</ResponseField>
+    <ResponseField name="storeId" type="string">La tienda.</ResponseField>
+    <ResponseField name="businessDayDate" type="string">El día operacional, `YYYY-MM-DD`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="warnings" type="string[]">
+  El mismo bloque que en el endpoint de órdenes, con los mismos códigos — ver [su tabla](/es/api-reference/print-order-document#respuesta). Los de plantilla aplican acá (`TEMPLATE_FELL_BACK_TO_SEED`, `TEMPLATE_UNREADABLE`, `TEMPLATE_VERSION_AMBIGUOUS`); los fiscales nunca, porque un cierre de día no pasa por el ente.
+</ResponseField>
+
+<ResponseField name="freshness" type="object">
+  <Expandable title="freshness">
+    <ResponseField name="fiscal" type="string">
+      Siempre `none`. Un cierre de día no va al fisco, así que no hay nada que esperar ni nada que reintentar.
+    </ResponseField>
+    <ResponseField name="isCancelled" type="boolean">Siempre `false`.</ResponseField>
+    <ResponseField name="asOf" type="string | null">Cuándo se cerró el día.</ResponseField>
+    <ResponseField name="fingerprint" type="string">Cambia si cambia el reporte — un día reabierto y vuelto a cerrar, una plantilla recién publicada.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "contract": "print.v1",
+    "jobId": "ba880df8-651b-4971-90d3-be3ae1a49223",
+    "document": "day_close",
+    "subject": {
+      "kind": "storeDay",
+      "countryCode": "BR",
+      "storeId": "550e8400-e29b-41d4-a716-446655440000",
+      "businessDayDate": "2026-05-25"
+    },
+    "template": {
+      "source": "seed",
+      "templateId": null,
+      "version": 0,
+      "contentHash": null
+    },
+    "paper": {
+      "width": 42,
+      "charset": "utf-8",
+      "copies": 1,
+      "lines": [
+        { "t": "text", "s": "             Dev company                  " },
+        { "t": "text", "s": "        RELATÓRIO - FIM DO DIA            " },
+        { "t": "rule", "ch": "-", "s": "------------------------------------------" },
+        { "t": "text", "s": "Data          25/05/2026                  " },
+        { "t": "text", "s": "Fechamento    02/09/2026 16:09            " },
+        { "t": "text", "s": "Transações    105                         " },
+        { "t": "text", "s": "Ticket médio  R$ 34,89                    " },
+        { "t": "text", "s": "Horário de pico 17:00                     " },
+        { "t": "rule", "ch": "=", "s": "==========================================" },
+        { "t": "text", "s": "TOTAL                          R$ 3.825,42", "bold": true },
+        { "t": "text", "s": "FORMA DE PAGAMENTO                        " },
+        { "t": "text", "s": "26 CREDIT_CARD                 R$ 1.142,90" },
+        { "t": "cut" }
+      ],
+      "plainText": "Dev company\nRELATÓRIO - FIM DO DIA\n..."
+    },
+    "freshness": {
+      "fiscal": "none",
+      "isCancelled": false,
+      "asOf": "2026-09-02T16:09:00.000Z",
+      "fingerprint": "de32c6c5bfe9a1d70b4c2e8f6a3d5091"
+    },
+    "warnings": ["TEMPLATE_FELL_BACK_TO_SEED"]
+  }
+}
+```
+
+```json 409 — el día no está cerrado
+{
+  "success": false,
+  "error": "PRINT_DAY_NOT_CLOSED",
+  "message": "That store did not close that day"
+}
+```
+
+```json 403 — la tienda no está en tu scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "That store does not belong to this account"
+}
+```
+</ResponseExample>
+
+## Errores
+
+| Estado | Código | Cuándo |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | `businessDayDate` no es `YYYY-MM-DD`, o un `printer.width` que no es 32/42/48. |
+| `401` | `UNAUTHORIZED` | API key ausente o inválida. |
+| `403` | `FORBIDDEN` | La key no tiene `printing:read`, no es vendor-scoped, o la tienda pertenece a otro account/vendor. |
+| `409` | `PRINT_DAY_NOT_CLOSED` | La tienda no cerró ese día de negocio. |

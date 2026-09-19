@@ -1,0 +1,316 @@
+---
+title: "Imprimir un documento de orden"
+api: "POST https://app.fire.rest/api/v1/restaurant-os/printing/orders/{orderRef}/documents/{document}"
+description: "Obtené un recibo ya maquetado para una impresora de punto de venta — factura, nota de crédito o comanda de cocina. Fire resuelve la plantilla, las reglas fiscales del país, el formato de moneda y el ancho de columnas; tu caja solo dibuja las líneas que recibe."
+authMethod: "bearer"
+---
+
+<Warning>
+  **API de partner.** Este endpoint está pensado para integradores de plataforma. Los clientes estándar de Fire no tienen acceso directo — contactá a tu account manager si necesitás esta integración.
+</Warning>
+
+Devuelve un recibo que ya viene **maquetado**: cada línea llega rellenada al ancho del papel, con las etiquetas, el formato de moneda, las fechas en la zona horaria de la tienda y lo que exija el fisco del país, todo resuelto del lado de Fire.
+
+Tu caja no interpreta reglas de negocio. Recibe una lista de tipos de línea — texto, separador, banda invertida, código, corte — y los dibuja. Eso es deliberado: hay muchas cajas distintas en la calle, y una regla que vive en cada una de ellas es una regla que se desincroniza.
+
+```
+POST /api/v1/restaurant-os/printing/orders/{orderRef}/documents/invoice
+POST /api/v1/restaurant-os/printing/orders/{orderRef}/documents/credit_note
+POST /api/v1/restaurant-os/printing/orders/{orderRef}/documents/kitchen
+```
+
+El reporte de fin de día tiene su propio endpoint, porque su sujeto es un día de negocio y no una venta: mirá [Imprimir el cierre de día](/es/api-reference/print-day-close).
+
+## Si hay orden, hay papel
+
+El endpoint no va a dejar a un cajero sin recibo por algo que Fire puede resolver solo:
+
+- **¿No hay plantilla configurada?** Cae a la plantilla del account, y después a la genérica de Fire. Te llega `template.source: "seed"` y un warning `TEMPLATE_FELL_BACK_TO_SEED`, no un error.
+- **¿La plantilla no se puede leer?** El mismo fallback, más `TEMPLATE_UNREADABLE`.
+- **¿El fisco todavía no contestó?** El papel se imprime sin el número fiscal, y `freshness.fiscal` te dice que sigue en `pending`.
+
+Lo que *sí* falla es no encontrar el sujeto, o pedir un documento que no aplica — imprimir esos sería inventarlos.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `printing:read`. La key **debe ser vendor-scoped** — las keys system-only se rechazan con `403`.
+
+  `printing:read` está separado de `orders:read` a propósito: una key que inyecta órdenes no tiene motivo para bajar recibos, y las dos necesitan poder revocarse por separado.
+</ParamField>
+
+<Note>
+  `printing:read` es un scope nuevo. Las keys existentes **no** lo tienen — otorgalo en el dashboard de Fire antes de tu primera llamada, o cada request vuelve `403` con la lista de scopes que la key sí tiene.
+</Note>
+
+## Path parameters
+
+<ParamField path="orderRef" type="string" required>
+  El UUID de la orden o su código de orden. La orden se busca **dentro del vendor de tu key**, así que una orden de otro vendor sencillamente no existe para vos.
+</ParamField>
+
+<ParamField path="document" type="string" required>
+  `invoice`, `credit_note` o `kitchen`.
+
+  `day_close` se rechaza acá con `PRINT_WRONG_SUBJECT`: un cierre de día no sale de una venta.
+</ParamField>
+
+## Cuerpo
+
+<ParamField body="printer" type="object" required>
+  El papel que la caja tiene adelante.
+
+  <Expandable title="printer">
+    <ParamField body="printer.width" type="number" required>
+      Columnas del papel: `32`, `42` o `48`. Es contra esto que se calcula la maqueta, así que no es cosmético — un recibo armado para 42 columnas impreso en 32 se corta de línea y se desalinea.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="keyWidth" type="number">
+  Ancho de la columna de etiquetas en las filas etiqueta/valor, entre `6` y `24`. Omitilo y el motor elige uno según el contenido.
+</ParamField>
+
+<ParamField body="copies" type="number">
+  Cuántas copias idénticas imprimir, de `1` a `5`. Default `1`. Fire no repite las líneas — te dice cuántas veces mandarlas.
+</ParamField>
+
+<ParamField body="templateVersion" type="number">
+  Reimprimí con la versión de plantilla con la que el recibo salió originalmente, en vez de la que está publicada hoy.
+</ParamField>
+
+<ParamField body="templateId" type="string">
+  A qué plantilla pertenece esa versión. Mandalo junto con `templateVersion`.
+
+  "Versión 3" no identifica un recibo por sí sola: la plantilla asignada a la tienda puede haber cambiado desde que se imprimió, y la versión 3 de *otra* plantilla es un recibo que nunca existió. Tomalo de `template.templateId` en la respuesta original. Si mandás `templateVersion` sin él, el papel igual sale, con un warning `TEMPLATE_VERSION_AMBIGUOUS`.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://app.fire.rest/api/v1/restaurant-os/printing/orders/8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62/documents/invoice
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "printer": { "width": 42 },
+  "copies": 1
+}
+```
+</RequestExample>
+
+## Respuesta
+
+<ResponseField name="contract" type="string">
+  Siempre `print.v1`. Solo cambia si algo rompe cajas que ya están en la calle — los tipos de línea nuevos y los campos nuevos son aditivos y no lo mueven.
+</ResponseField>
+
+<ResponseField name="jobId" type="string">
+  Identifica **esta entrega**. Hoy no se te pide nada con él: existe porque pedir un recibo e imprimirlo no son el mismo evento — una impresora con cola contesta "listo" antes de que haya tinta en el papel — y el día que haya que confirmar la impresión, no hay forma de correlacionar nada sin un identificador que haya venido del origen.
+</ResponseField>
+
+<ResponseField name="document" type="string">
+  `invoice`, `credit_note` o `kitchen`, repitiendo lo que pediste.
+</ResponseField>
+
+<ResponseField name="subject" type="object">
+  De qué se trata el papel.
+
+  <Expandable title="subject">
+    <ResponseField name="kind" type="string">`order`.</ResponseField>
+    <ResponseField name="countryCode" type="string">El país cuyas reglas se aplicaron, y en cuyo idioma está escrito el recibo.</ResponseField>
+    <ResponseField name="orderId" type="string">UUID de la orden.</ResponseField>
+    <ResponseField name="orderCode" type="string | null">El código de la orden.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="template" type="object">
+  Qué plantilla produjo este papel. Guardalo: es lo que te permite reimprimir el mismo recibo después, y lo que le permite a soporte contestar "por qué este salió distinto".
+
+  <Expandable title="template">
+    <ResponseField name="source" type="string">`store`, `account` o `seed` — hasta dónde tuvo que caer el resolver.</ResponseField>
+    <ResponseField name="templateId" type="string | null">`null` cuando `source` es `seed`: la plantilla genérica de Fire vive en el código, no en el account.</ResponseField>
+    <ResponseField name="version" type="number">`0` es la plantilla genérica.</ResponseField>
+    <ResponseField name="contentHash" type="string | null">Hash del contenido publicado de la plantilla.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="paper" type="object">
+  El recibo propiamente dicho.
+
+  <Expandable title="paper">
+    <ResponseField name="width" type="number">Las columnas que pediste, devueltas.</ResponseField>
+    <ResponseField name="charset" type="string">
+      Siempre `utf-8`, **con acentos incluidos** — `Ação`, `Teléfono`. Sacarlos es una decisión del perfil de la impresora, nunca del documento: el mismo recibo va a impresoras con distintos code pages, y degradar el texto en el origen sería irreversible. Mapealos al code page de tu impresora cuando traduzcas a ESC/POS.
+    </ResponseField>
+    <ResponseField name="copies" type="number">Cuántas veces mandar las líneas.</ResponseField>
+    <ResponseField name="lines" type="object[]">El recibo como lista de líneas tipadas — ver abajo.</ResponseField>
+    <ResponseField name="plainText" type="string">El mismo recibo como texto plano, para tus logs y para soporte. No imprimas este: no tiene corte, ni cajón, ni códigos.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="freshness" type="object">
+  Si este papel es definitivo, y si cambió desde la última vez que preguntaste.
+
+  <Expandable title="freshness">
+    <ResponseField name="fiscal" type="string">
+      Lo que dijo el **fisco**, que no es lo mismo que el estado de la orden:
+
+      - `authorized` — confirmado. El papel es definitivo.
+      - `pending` — todavía no hay respuesta. El recibo se imprime sin número fiscal; volvé a preguntar más tarde.
+      - `rejected` — el fisco lo rechazó. **Terminal: no reintentes.**
+      - `cancelled` — la venta se anuló.
+      - `none` — no aplica. Una comanda de cocina nunca va al fisco.
+
+      En Ecuador y Colombia el recibo lleva número **antes** de que el fisco conteste, porque la numeración es nuestra. No leas la presencia de un número como autorización.
+    </ResponseField>
+    <ResponseField name="isCancelled" type="boolean">Si la venta está anulada.</ResponseField>
+    <ResponseField name="asOf" type="string | null">Cuándo se supo lo que dice este papel — la autorización, la anulación, o la creación de la orden.</ResponseField>
+    <ResponseField name="fingerprint" type="string">
+      **Si cambia, el papel cambió.** Guardalo al lado del recibo. Cuando vuelvas a preguntar, compará: el mismo fingerprint significa que el cliente ya tiene exactamente este papel, uno distinto significa que algo se movió — el fisco contestó, la venta se anuló, la empresa publicó una plantilla nueva.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="warnings" type="string[]">
+  Cosas que vale la pena loguear y que **no** impidieron que el recibo se imprimiera. Ignorá cualquier código que no reconozcas — la lista crece.
+
+  | Código | Qué pasó |
+  |---|---|
+  | `TEMPLATE_FELL_BACK_TO_SEED` | No hay plantilla configurada; se usó la genérica de Fire. |
+  | `TEMPLATE_UNREADABLE` | La plantilla configurada no se pudo leer; se usó la genérica. |
+  | `TEMPLATE_VERSION_AMBIGUOUS` | `templateVersion` sin `templateId`. |
+  | `FISCAL_PENDING` | El fisco todavía no contestó. |
+  | `FISCAL_REJECTED` | El fisco rechazó el documento. |
+</ResponseField>
+
+## El vocabulario de líneas
+
+`paper.lines` es el recibo entero. Cada entrada tiene una `t` y dibuja una cosa. **Ignorá una `t` que no conozcas** — eso es lo que le permite a Fire agregar tipos de línea sin romper cajas ya desplegadas.
+
+<ResponseField name="text" type='{ "t": "text", "s": string, "bold"?: true }'>
+  Una línea de texto, ya rellenada al ancho del papel. Imprimí `s` tal cual; no la recortes, ni la alinees, ni la vuelvas a rellenar.
+</ResponseField>
+
+<ResponseField name="rule" type='{ "t": "rule", "ch": string, "s": string }'>
+  Un separador. `s` ya viene **expandido** al ancho completo — no hay nada que calcular. `ch` es el carácter con el que se armó, si lo necesitás.
+</ResponseField>
+
+<ResponseField name="band" type='{ "t": "band", "lines": [{ "text": string, "big": boolean }], "plain"?: true }'>
+  El bloque que se lee desde el otro lado del mostrador — el número de retiro. Imprimilo en blanco sobre negro (`GS B 1`) y con las entradas `"big": true` a doble tamaño (`GS ! 0x11`), **salvo** que `plain` sea `true`, en cuyo caso imprimilo sin invertir. Ese flag viene de la plantilla: el estilo es una decisión del documento, no de la caja.
+</ResponseField>
+
+<ResponseField name="code" type='{ "t": "code", "content": string, "symbology": string, "key": string, "ecLevel"?: "l" | "m" | "q" | "h" }'>
+  Un código para imprimir — el QR de una NFC-e, la clave de acceso de una factura ecuatoriana. Fire manda el **contenido y la simbología**, no una imagen: el tamaño depende del dispositivo, así que lo dibuja la impresora. `ecLevel` es el nivel de corrección de errores del QR que eligió la plantilla.
+</ResponseField>
+
+<ResponseField name="blank" type='{ "t": "blank" }'>
+  Una línea vacía.
+</ResponseField>
+
+<ResponseField name="cut" type='{ "t": "cut", "partial"?: boolean }'>
+  Cortá el papel (`GS V`). Viene **del documento**, no de tu caja: dónde termina un recibo es parte del recibo.
+</ResponseField>
+
+<ResponseField name="drawer" type='{ "t": "drawer" }'>
+  Abrí el cajón de dinero (`ESC p`). El mismo razonamiento.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "contract": "print.v1",
+    "jobId": "ba880df8-651b-4971-90d3-be3ae1a49223",
+    "document": "invoice",
+    "subject": {
+      "kind": "order",
+      "countryCode": "BR",
+      "orderId": "8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62",
+      "orderCode": "FUEL-495A3063-0CD"
+    },
+    "template": {
+      "source": "account",
+      "templateId": "649f10d4-e781-4460-9dc9-a41fd0888b41",
+      "version": 3,
+      "contentHash": "9b1c7e0a4d2f8b6c1e5a0d3f7b2c9e4a"
+    },
+    "paper": {
+      "width": 42,
+      "charset": "utf-8",
+      "copies": 1,
+      "lines": [
+        { "t": "band", "lines": [{ "text": "Maria", "big": false }, { "text": "46K", "big": true }] },
+        { "t": "rule", "ch": "-", "s": "------------------------------------------" },
+        { "t": "text", "s": "               Dev company                " },
+        { "t": "text", "s": "          CNPJ 50080000000600             " },
+        { "t": "blank" },
+        { "t": "text", "s": "QTD. DESCRIÇÃO             UNITÁRIO  TOTAL" },
+        { "t": "text", "s": "1 Batata Grande            R$211,90 R$211,90" },
+        { "t": "rule", "ch": "=", "s": "==========================================" },
+        { "t": "text", "s": "TOTAL                            R$211,90", "bold": true },
+        { "t": "code", "content": "https://www.nfce.fazenda.sp.gov.br/qrcode?p=3525...", "symbology": "qr", "key": "qr", "ecLevel": "m" },
+        { "t": "cut" }
+      ],
+      "plainText": "Maria\n46K\n---..."
+    },
+    "freshness": {
+      "fiscal": "authorized",
+      "isCancelled": false,
+      "asOf": "2026-09-14T17:17:04.000Z",
+      "fingerprint": "10d4a90ded6e2f7b8c3a1e5d0f4b9c62"
+    },
+    "warnings": []
+  }
+}
+```
+
+```json 403 — la key no tiene el scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have required scope: printing:read. Available: orders:read, orders:write, store:read"
+}
+```
+
+```json 404 — la orden no existe en tu vendor
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "Order not found with ID 8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62"
+}
+```
+
+```json 409 — una nota de crédito para una venta que nadie anuló
+{
+  "success": false,
+  "error": "PRINT_DOCUMENT_NOT_APPLICABLE",
+  "message": "This order is not cancelled: there is nothing to compensate"
+}
+```
+</ResponseExample>
+
+## Errores
+
+| Estado | Código | Cuándo |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | `document` desconocido, o un `printer.width` que no es 32/42/48. |
+| `401` | `UNAUTHORIZED` | API key ausente o inválida. |
+| `403` | `FORBIDDEN` | La key no tiene `printing:read`, o no es vendor-scoped. |
+| `404` | `NOT_FOUND` | La orden no existe dentro de tu vendor. |
+| `409` | `PRINT_DOCUMENT_NOT_APPLICABLE` | Se pidió una nota de crédito sobre una venta que no está anulada. |
+| `409` | `PRINT_WRONG_SUBJECT` | Se pidió `day_close` en este endpoint. |
+
+## Notas
+
+<Info>
+  **¿Por qué `POST` para algo de solo lectura?** El request lleva el papel de la impresora, y el recibo depende del estado fiscal. Un `GET` lo cachearía alguien por URL en el camino, y un recibo cacheado es un recibo que puede estar mintiendo sobre si el fisco lo autorizó. Esta llamada no persiste nada.
+</Info>
+
+<Info>
+  **El modelo de impresora no es parte del request.** Fire necesita el **ancho**, porque la maqueta se calcula en columnas. Todo lo demás del dispositivo — code page, si puede dibujar un QR nativamente, si hay que transliterar los acentos — es el perfil de tu caja y se queda de tu lado. Por eso `charset` siempre vuelve `utf-8`.
+</Info>
+
+<Tip>
+  **Reimprimir honestamente.** Guardá `freshness.fingerprint` y `template.templateId` / `template.version` junto a cada recibo impreso. Para reimprimir exactamente lo que recibió el cliente, mandá `templateId` y `templateVersion`. Para averiguar si hay algo *nuevo* para imprimir, volvé a preguntar y compará fingerprints.
+</Tip>
