@@ -1,0 +1,312 @@
+---
+title: "Print an order document"
+api: "POST https://api.fire.rest/api/v1/fire/external/printing/orders/{orderRef}/documents/{document}"
+description: "Get a receipt already laid out for a POS printer — invoice, credit note or kitchen ticket. Fire resolves the template, the country's fiscal rules, the currency and the column widths; your register only draws the lines it receives."
+authMethod: "bearer"
+---
+
+Returns a receipt that is **already laid out**: every line comes padded to the paper width, with the labels, the currency format, the dates in the store's timezone and whatever the country's tax authority requires, all resolved on Fire's side.
+
+Your register does not interpret business rules. It receives a list of line types — text, separator, inverted band, code, cut — and draws them. That is deliberate: there are many different registers in the field, and a rule that lives in each of them is a rule that drifts.
+
+```
+POST /api/v1/fire/external/printing/orders/{orderRef}/documents/invoice
+POST /api/v1/fire/external/printing/orders/{orderRef}/documents/credit_note
+POST /api/v1/fire/external/printing/orders/{orderRef}/documents/kitchen
+```
+
+The day-end report has its own endpoint, because its subject is a business day and not a sale: see [Print the day close](/en/api-reference/print-day-close).
+
+## If there is an order, there is paper
+
+The endpoint will not leave a cashier without a receipt for something Fire can resolve on its own:
+
+- **No template configured?** It falls back to the account's template, and then to Fire's generic one. You get `template.source: "seed"` and a `TEMPLATE_FELL_BACK_TO_SEED` warning, not an error.
+- **Template unreadable?** Same fallback, plus `TEMPLATE_UNREADABLE`.
+- **Tax authority has not answered yet?** The paper prints without the fiscal number, and `freshness.fiscal` tells you it is still `pending`.
+
+What *does* fail is not finding the subject, or asking for a document that does not apply — printing those would mean inventing them.
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `printing:read` scope. The key **must be vendor-scoped** — system-only keys are rejected with `403`.
+
+  `printing:read` is separate from `orders:read` on purpose: a key that injects orders has no reason to pull receipts, and the two need to be revocable independently.
+</ParamField>
+
+<Note>
+  `printing:read` is a new scope. Existing keys do **not** have it — grant it in the Fire dashboard before your first call, or every request comes back `403` with the list of scopes the key does carry.
+</Note>
+
+## Path parameters
+
+<ParamField path="orderRef" type="string" required>
+  The order's UUID or its order code. The order is looked up **within your key's vendor**, so an order from another vendor simply does not exist for you.
+</ParamField>
+
+<ParamField path="document" type="string" required>
+  `invoice`, `credit_note` or `kitchen`.
+
+  `day_close` is rejected here with `PRINT_WRONG_SUBJECT`: a day close does not come from a sale.
+</ParamField>
+
+## Body
+
+<ParamField body="printer" type="object" required>
+  The paper the register has in front of it.
+
+  <Expandable title="printer">
+    <ParamField body="printer.width" type="number" required>
+      Columns of the paper: `32`, `42` or `48`. This is what the layout is computed against, so it is not cosmetic — a receipt built for 42 columns printed on 32 will wrap and misalign.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="keyWidth" type="number">
+  Width of the label column in label/value rows, between `6` and `24`. Omit it and the engine picks one from the content.
+</ParamField>
+
+<ParamField body="copies" type="number">
+  How many identical copies to print, `1` to `5`. Default `1`. Fire does not repeat the lines — it tells you how many times to send them.
+</ParamField>
+
+<ParamField body="templateVersion" type="number">
+  Reprint with the template version the receipt originally came out with, instead of the one published today.
+</ParamField>
+
+<ParamField body="templateId" type="string">
+  Which template that version belongs to. Send it together with `templateVersion`.
+
+  "Version 3" does not identify a receipt on its own: the store's template assignment may have changed since it was printed, and version 3 of a *different* template is a receipt that never existed. Take it from `template.templateId` in the original response. If you send `templateVersion` without it, the paper still comes out, with a `TEMPLATE_VERSION_AMBIGUOUS` warning.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/api/v1/fire/external/printing/orders/8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62/documents/invoice
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "printer": { "width": 42 },
+  "copies": 1
+}
+```
+</RequestExample>
+
+## Response
+
+<ResponseField name="contract" type="string">
+  Always `print.v1`. It only changes if something breaks registers already in the field — new line types and new fields are additive and do not move it.
+</ResponseField>
+
+<ResponseField name="jobId" type="string">
+  Identifies **this delivery**. Nothing is required of you today: it exists because asking for a receipt and printing it are not the same event — a spooled printer answers "done" before any ink is on the paper — and on the day printing has to be confirmed, there is no way to correlate anything without an identifier that came from the origin.
+</ResponseField>
+
+<ResponseField name="document" type="string">
+  `invoice`, `credit_note` or `kitchen`, echoing what you asked for.
+</ResponseField>
+
+<ResponseField name="subject" type="object">
+  What the paper is about.
+
+  <Expandable title="subject">
+    <ResponseField name="kind" type="string">`order`.</ResponseField>
+    <ResponseField name="countryCode" type="string">The country whose rules were applied, and whose language the receipt is written in.</ResponseField>
+    <ResponseField name="orderId" type="string">UUID of the order.</ResponseField>
+    <ResponseField name="orderCode" type="string | null">The order code.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="template" type="object">
+  Which template produced this paper. Keep it: it is what lets you reprint the same receipt later, and what lets support answer "why did this one come out different".
+
+  <Expandable title="template">
+    <ResponseField name="source" type="string">`store`, `account` or `seed` — how far the resolver had to fall back.</ResponseField>
+    <ResponseField name="templateId" type="string | null">`null` when `source` is `seed`: Fire's generic template lives in code, not in the account.</ResponseField>
+    <ResponseField name="version" type="number">`0` is the generic template.</ResponseField>
+    <ResponseField name="contentHash" type="string | null">Hash of the published template content.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="paper" type="object">
+  The receipt itself.
+
+  <Expandable title="paper">
+    <ResponseField name="width" type="number">The columns you asked for, echoed.</ResponseField>
+    <ResponseField name="charset" type="string">
+      Always `utf-8`, **accents included** — `Ação`, `Teléfono`. Stripping them is a decision of the printer profile, never of the document: the same receipt goes to printers with different code pages, and degrading the text at the source would be irreversible. Map to your printer's code page when you translate to ESC/POS.
+    </ResponseField>
+    <ResponseField name="copies" type="number">How many times to send the lines.</ResponseField>
+    <ResponseField name="lines" type="object[]">The receipt as a list of typed lines — see below.</ResponseField>
+    <ResponseField name="plainText" type="string">The same receipt as plain text, for your logs and for support. Do not print this one: it has no cut, no drawer and no codes.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="freshness" type="object">
+  Whether this paper is final, and whether it changed since you last asked.
+
+  <Expandable title="freshness">
+    <ResponseField name="fiscal" type="string">
+      What the **tax authority** has said, which is not the same as the order's status:
+
+      - `authorized` — confirmed. The paper is final.
+      - `pending` — no answer yet. The receipt prints without a fiscal number; ask again later.
+      - `rejected` — the authority turned it down. **Terminal: do not retry.**
+      - `cancelled` — the sale was voided.
+      - `none` — does not apply. A kitchen ticket never goes to the authority.
+
+      In Ecuador and Colombia the receipt carries a number **before** the authority answers, because the numbering is ours. Do not read the presence of a number as authorization.
+    </ResponseField>
+    <ResponseField name="isCancelled" type="boolean">Whether the sale is voided.</ResponseField>
+    <ResponseField name="asOf" type="string | null">When what this paper says became known — the authorization, the cancellation, or the order's creation.</ResponseField>
+    <ResponseField name="fingerprint" type="string">
+      **If it changes, the paper changed.** Store it next to the receipt. When you ask again, compare: same fingerprint means the customer already has this exact paper, a different one means something moved — the authority answered, the sale was voided, the company published a new template.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="warnings" type="string[]">
+  Things worth logging that did **not** stop the receipt from printing. Ignore any code you do not recognise — the list grows.
+
+  | Code | What happened |
+  |---|---|
+  | `TEMPLATE_FELL_BACK_TO_SEED` | No template configured; Fire's generic one was used. |
+  | `TEMPLATE_UNREADABLE` | The configured template could not be read; the generic one was used. |
+  | `TEMPLATE_VERSION_AMBIGUOUS` | `templateVersion` without `templateId`. |
+  | `FISCAL_PENDING` | The authority has not answered yet. |
+  | `FISCAL_REJECTED` | The authority turned the document down. |
+</ResponseField>
+
+## The line vocabulary
+
+`paper.lines` is the whole receipt. Each entry has a `t` and draws one thing. **Ignore a `t` you do not know** — that is what lets Fire add line types without breaking registers already deployed.
+
+<ResponseField name="text" type='{ "t": "text", "s": string, "bold"?: true }'>
+  A line of text, already padded to the paper width. Print `s` as it is; do not trim, align or re-pad it.
+</ResponseField>
+
+<ResponseField name="rule" type='{ "t": "rule", "ch": string, "s": string }'>
+  A separator. `s` is **already expanded** to the full width — there is nothing to compute. `ch` is the character it was built from, if you need it.
+</ResponseField>
+
+<ResponseField name="band" type='{ "t": "band", "lines": [{ "text": string, "big": boolean }], "plain"?: true }'>
+  The block that is read from across the counter — the pickup number. Print it white-on-black (`GS B 1`) and double-size the entries with `"big": true` (`GS ! 0x11`), **unless** `plain` is `true`, in which case print it without inverting. That flag comes from the template: the styling is the document's decision, not the register's.
+</ResponseField>
+
+<ResponseField name="code" type='{ "t": "code", "content": string, "symbology": string, "key": string, "ecLevel"?: "l" | "m" | "q" | "h" }'>
+  A code to print — the QR of an NFC-e, the access key of an Ecuadorian invoice. Fire sends the **content and the symbology**, not an image: the size depends on the device, so the printer draws it. `ecLevel` is the QR error-correction level the template chose.
+</ResponseField>
+
+<ResponseField name="blank" type='{ "t": "blank" }'>
+  An empty line.
+</ResponseField>
+
+<ResponseField name="cut" type='{ "t": "cut", "partial"?: boolean }'>
+  Cut the paper (`GS V`). It comes **from the document**, not from your register: where a receipt ends is part of the receipt.
+</ResponseField>
+
+<ResponseField name="drawer" type='{ "t": "drawer" }'>
+  Open the cash drawer (`ESC p`). Same reasoning.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "contract": "print.v1",
+    "jobId": "ba880df8-651b-4971-90d3-be3ae1a49223",
+    "document": "invoice",
+    "subject": {
+      "kind": "order",
+      "countryCode": "BR",
+      "orderId": "8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62",
+      "orderCode": "FUEL-495A3063-0CD"
+    },
+    "template": {
+      "source": "account",
+      "templateId": "649f10d4-e781-4460-9dc9-a41fd0888b41",
+      "version": 3,
+      "contentHash": "9b1c7e0a4d2f8b6c1e5a0d3f7b2c9e4a"
+    },
+    "paper": {
+      "width": 42,
+      "charset": "utf-8",
+      "copies": 1,
+      "lines": [
+        { "t": "band", "lines": [{ "text": "Maria", "big": false }, { "text": "46K", "big": true }] },
+        { "t": "rule", "ch": "-", "s": "------------------------------------------" },
+        { "t": "text", "s": "               Dev company                " },
+        { "t": "text", "s": "          CNPJ 50080000000600             " },
+        { "t": "blank" },
+        { "t": "text", "s": "QTD. DESCRIÇÃO             UNITÁRIO  TOTAL" },
+        { "t": "text", "s": "1 Batata Grande            R$211,90 R$211,90" },
+        { "t": "rule", "ch": "=", "s": "==========================================" },
+        { "t": "text", "s": "TOTAL                            R$211,90", "bold": true },
+        { "t": "code", "content": "https://www.nfce.fazenda.sp.gov.br/qrcode?p=3525...", "symbology": "qr", "key": "qr", "ecLevel": "m" },
+        { "t": "cut" }
+      ],
+      "plainText": "Maria\n46K\n---..."
+    },
+    "freshness": {
+      "fiscal": "authorized",
+      "isCancelled": false,
+      "asOf": "2026-09-14T17:17:04.000Z",
+      "fingerprint": "10d4a90ded6e2f7b8c3a1e5d0f4b9c62"
+    },
+    "warnings": []
+  }
+}
+```
+
+```json 403 — the key does not carry the scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have required scope: printing:read. Available: orders:read, orders:write, store:read"
+}
+```
+
+```json 404 — the order does not exist in your vendor
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "Order not found with ID 8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62"
+}
+```
+
+```json 409 — a credit note for a sale nobody voided
+{
+  "success": false,
+  "error": "PRINT_DOCUMENT_NOT_APPLICABLE",
+  "message": "This order is not cancelled: there is nothing to compensate"
+}
+```
+</ResponseExample>
+
+## Errors
+
+| Status | Code | When |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Unknown `document`, or a `printer.width` that is not 32/42/48. |
+| `401` | `UNAUTHORIZED` | Missing or invalid API key. |
+| `403` | `FORBIDDEN` | The key lacks `printing:read`, or is not vendor-scoped. |
+| `404` | `NOT_FOUND` | The order does not exist within your vendor. |
+| `409` | `PRINT_DOCUMENT_NOT_APPLICABLE` | A credit note was asked for on a sale that is not voided. |
+| `409` | `PRINT_WRONG_SUBJECT` | `day_close` asked for on this endpoint. |
+
+## Notes
+
+<Info>
+  **Why `POST` for something read-only?** The request carries the printer's paper, and the receipt depends on the fiscal state. A `GET` would be cached by URL somewhere along the way, and a cached receipt is a receipt that may be lying about whether the authority has authorized it. Nothing is persisted by this call.
+</Info>
+
+<Info>
+  **The printer model is not part of the request.** Fire needs the **width**, because the layout is computed in columns. Everything else about the device — code page, whether it can draw a QR natively, whether accents have to be transliterated — is your register's profile and stays on your side. That is why `charset` always comes back `utf-8`.
+</Info>
+
+<Tip>
+  **Reprinting honestly.** Store `freshness.fingerprint` and `template.templateId` / `template.version` alongside each printed receipt. To reprint exactly what the customer got, send both `templateId` and `templateVersion`. To find out whether there is something *new* to print, ask again and compare fingerprints.
+</Tip>
