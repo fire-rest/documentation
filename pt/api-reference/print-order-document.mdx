@@ -1,0 +1,312 @@
+---
+title: "Imprimir um documento de pedido"
+api: "POST https://api.fire.rest/api/v1/fire/external/printing/orders/{orderRef}/documents/{document}"
+description: "Obtenha um cupom já diagramado para uma impressora de PDV — nota, nota de crédito ou comanda de cozinha. O Fire resolve o template, as regras fiscais do país, o formato da moeda e a largura das colunas; seu caixa apenas desenha as linhas que recebe."
+authMethod: "bearer"
+---
+
+Retorna um cupom que já vem **diagramado**: cada linha chega preenchida até a largura do papel, com os rótulos, o formato da moeda, as datas no fuso horário da loja e o que o fisco do país exigir, tudo resolvido do lado do Fire.
+
+Seu caixa não interpreta regras de negócio. Ele recebe uma lista de tipos de linha — texto, separador, faixa invertida, código, corte — e os desenha. Isso é deliberado: existem muitos caixas diferentes em campo, e uma regra que mora dentro de cada um deles é uma regra que sai de sincronia.
+
+```
+POST /api/v1/fire/external/printing/orders/{orderRef}/documents/invoice
+POST /api/v1/fire/external/printing/orders/{orderRef}/documents/credit_note
+POST /api/v1/fire/external/printing/orders/{orderRef}/documents/kitchen
+```
+
+O relatório de fim do dia tem seu próprio endpoint, porque o assunto dele é um dia de negócio e não uma venda: veja [Imprimir o fechamento do dia](/pt/api-reference/print-day-close).
+
+## Se existe pedido, existe papel
+
+O endpoint não vai deixar um operador de caixa sem cupom por algo que o Fire consegue resolver sozinho:
+
+- **Nenhum template configurado?** Ele cai para o template do account, e depois para o genérico do Fire. Você recebe `template.source: "seed"` e um aviso `TEMPLATE_FELL_BACK_TO_SEED`, não um erro.
+- **Template ilegível?** O mesmo fallback, mais `TEMPLATE_UNREADABLE`.
+- **O fisco ainda não respondeu?** O papel é impresso sem o número fiscal, e `freshness.fiscal` informa que ele continua `pending`.
+
+O que *de fato* falha é não encontrar o assunto, ou pedir um documento que não se aplica — imprimir esses seria inventá-los.
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `printing:read`. A key **deve ser vendor-scoped** — keys system-only são rejeitadas com `403`.
+
+  `printing:read` é separado de `orders:read` de propósito: uma key que injeta pedidos não tem motivo para baixar cupons, e as duas precisam poder ser revogadas de forma independente.
+</ParamField>
+
+<Note>
+  `printing:read` é um scope novo. As keys existentes **não** o possuem — conceda-o no dashboard do Fire antes da sua primeira chamada, ou toda requisição volta `403` com a lista de scopes que a key de fato carrega.
+</Note>
+
+## Path parameters
+
+<ParamField path="orderRef" type="string" required>
+  O UUID do pedido ou seu código de pedido. O pedido é buscado **dentro do vendor da sua key**, então um pedido de outro vendor simplesmente não existe para você.
+</ParamField>
+
+<ParamField path="document" type="string" required>
+  `invoice`, `credit_note` ou `kitchen`.
+
+  `day_close` é rejeitado aqui com `PRINT_WRONG_SUBJECT`: um fechamento do dia não nasce de uma venda.
+</ParamField>
+
+## Corpo
+
+<ParamField body="printer" type="object" required>
+  O papel que o caixa tem na frente.
+
+  <Expandable title="printer">
+    <ParamField body="printer.width" type="number" required>
+      Colunas do papel: `32`, `42` ou `48`. É contra isso que a diagramação é calculada, então não é cosmético — um cupom montado para 42 colunas impresso em 32 quebra linha e desalinha.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="keyWidth" type="number">
+  Largura da coluna de rótulos nas linhas rótulo/valor, entre `6` e `24`. Omita e o motor escolhe uma com base no conteúdo.
+</ParamField>
+
+<ParamField body="copies" type="number">
+  Quantas cópias idênticas imprimir, de `1` a `5`. Default `1`. O Fire não repete as linhas — ele diz quantas vezes enviá-las.
+</ParamField>
+
+<ParamField body="templateVersion" type="number">
+  Reimprima com a versão de template com que o cupom saiu originalmente, em vez da publicada hoje.
+</ParamField>
+
+<ParamField body="templateId" type="string">
+  A qual template aquela versão pertence. Envie junto com `templateVersion`.
+
+  "Versão 3" não identifica um cupom sozinha: o template atribuído à loja pode ter mudado desde que ele foi impresso, e a versão 3 de *outro* template é um cupom que nunca existiu. Pegue de `template.templateId` na resposta original. Se você enviar `templateVersion` sem ele, o papel sai mesmo assim, com um aviso `TEMPLATE_VERSION_AMBIGUOUS`.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://api.fire.rest/api/v1/fire/external/printing/orders/8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62/documents/invoice
+x-api-key: <sua_api_key>
+Content-Type: application/json
+
+{
+  "printer": { "width": 42 },
+  "copies": 1
+}
+```
+</RequestExample>
+
+## Resposta
+
+<ResponseField name="contract" type="string">
+  Sempre `print.v1`. Só muda se algo quebrar caixas que já estão em campo — novos tipos de linha e novos campos são aditivos e não o movem.
+</ResponseField>
+
+<ResponseField name="jobId" type="string">
+  Identifica **esta entrega**. Hoje nada é exigido de você: ele existe porque pedir um cupom e imprimi-lo não são o mesmo evento — uma impressora com fila responde "pronto" antes de haver tinta no papel — e no dia em que a impressão tiver que ser confirmada, não há como correlacionar nada sem um identificador que tenha vindo da origem.
+</ResponseField>
+
+<ResponseField name="document" type="string">
+  `invoice`, `credit_note` ou `kitchen`, ecoando o que você pediu.
+</ResponseField>
+
+<ResponseField name="subject" type="object">
+  Do que o papel trata.
+
+  <Expandable title="subject">
+    <ResponseField name="kind" type="string">`order`.</ResponseField>
+    <ResponseField name="countryCode" type="string">O país cujas regras foram aplicadas, e em cujo idioma o cupom está escrito.</ResponseField>
+    <ResponseField name="orderId" type="string">UUID do pedido.</ResponseField>
+    <ResponseField name="orderCode" type="string | null">O código do pedido.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="template" type="object">
+  Qual template produziu este papel. Guarde: é o que permite reimprimir o mesmo cupom depois, e o que permite ao suporte responder "por que este saiu diferente".
+
+  <Expandable title="template">
+    <ResponseField name="source" type="string">`store`, `account` ou `seed` — até onde o resolver teve que cair.</ResponseField>
+    <ResponseField name="templateId" type="string | null">`null` quando `source` é `seed`: o template genérico do Fire mora no código, não no account.</ResponseField>
+    <ResponseField name="version" type="number">`0` é o template genérico.</ResponseField>
+    <ResponseField name="contentHash" type="string | null">Hash do conteúdo publicado do template.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="paper" type="object">
+  O cupom em si.
+
+  <Expandable title="paper">
+    <ResponseField name="width" type="number">As colunas que você pediu, ecoadas.</ResponseField>
+    <ResponseField name="charset" type="string">
+      Sempre `utf-8`, **com acentos** — `Ação`, `Teléfono`. Removê-los é uma decisão do perfil da impressora, nunca do documento: o mesmo cupom vai para impressoras com code pages diferentes, e degradar o texto na origem seria irreversível. Mapeie para o code page da sua impressora quando traduzir para ESC/POS.
+    </ResponseField>
+    <ResponseField name="copies" type="number">Quantas vezes enviar as linhas.</ResponseField>
+    <ResponseField name="lines" type="object[]">O cupom como uma lista de linhas tipadas — veja abaixo.</ResponseField>
+    <ResponseField name="plainText" type="string">O mesmo cupom como texto puro, para seus logs e para o suporte. Não imprima este: ele não tem corte, nem gaveta, nem códigos.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="freshness" type="object">
+  Se este papel é definitivo, e se mudou desde a última vez que você perguntou.
+
+  <Expandable title="freshness">
+    <ResponseField name="fiscal" type="string">
+      O que o **fisco** disse, que não é a mesma coisa que o status do pedido:
+
+      - `authorized` — confirmado. O papel é definitivo.
+      - `pending` — ainda sem resposta. O cupom é impresso sem número fiscal; pergunte de novo mais tarde.
+      - `rejected` — o fisco recusou. **Terminal: não tente de novo.**
+      - `cancelled` — a venda foi cancelada.
+      - `none` — não se aplica. Uma comanda de cozinha nunca vai ao fisco.
+
+      No Equador e na Colômbia o cupom leva número **antes** de o fisco responder, porque a numeração é nossa. Não leia a presença de um número como autorização.
+    </ResponseField>
+    <ResponseField name="isCancelled" type="boolean">Se a venda está cancelada.</ResponseField>
+    <ResponseField name="asOf" type="string | null">Quando o que este papel diz passou a ser conhecido — a autorização, o cancelamento, ou a criação do pedido.</ResponseField>
+    <ResponseField name="fingerprint" type="string">
+      **Se mudar, o papel mudou.** Guarde ao lado do cupom. Quando perguntar de novo, compare: o mesmo fingerprint significa que o cliente já tem exatamente este papel, um diferente significa que algo se moveu — o fisco respondeu, a venda foi cancelada, a empresa publicou um template novo.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="warnings" type="string[]">
+  Coisas que vale a pena logar e que **não** impediram o cupom de ser impresso. Ignore qualquer código que você não reconheça — a lista cresce.
+
+  | Código | O que aconteceu |
+  |---|---|
+  | `TEMPLATE_FELL_BACK_TO_SEED` | Nenhum template configurado; o genérico do Fire foi usado. |
+  | `TEMPLATE_UNREADABLE` | O template configurado não pôde ser lido; o genérico foi usado. |
+  | `TEMPLATE_VERSION_AMBIGUOUS` | `templateVersion` sem `templateId`. |
+  | `FISCAL_PENDING` | O fisco ainda não respondeu. |
+  | `FISCAL_REJECTED` | O fisco recusou o documento. |
+</ResponseField>
+
+## O vocabulário de linhas
+
+`paper.lines` é o cupom inteiro. Cada entrada tem um `t` e desenha uma coisa. **Ignore um `t` que você não conheça** — é isso que permite ao Fire adicionar tipos de linha sem quebrar caixas já instalados.
+
+<ResponseField name="text" type='{ "t": "text", "s": string, "bold"?: true }'>
+  Uma linha de texto, já preenchida até a largura do papel. Imprima `s` como está; não corte, não alinhe e não preencha de novo.
+</ResponseField>
+
+<ResponseField name="rule" type='{ "t": "rule", "ch": string, "s": string }'>
+  Um separador. `s` já vem **expandido** até a largura completa — não há nada a calcular. `ch` é o caractere com que foi montado, se você precisar.
+</ResponseField>
+
+<ResponseField name="band" type='{ "t": "band", "lines": [{ "text": string, "big": boolean }], "plain"?: true }'>
+  O bloco que é lido do outro lado do balcão — o número de retirada. Imprima em branco sobre preto (`GS B 1`) e em tamanho dobrado as entradas com `"big": true` (`GS ! 0x11`), **exceto** quando `plain` for `true`, caso em que imprima sem inverter. Esse flag vem do template: o estilo é uma decisão do documento, não do caixa.
+</ResponseField>
+
+<ResponseField name="code" type='{ "t": "code", "content": string, "symbology": string, "key": string, "ecLevel"?: "l" | "m" | "q" | "h" }'>
+  Um código para imprimir — o QR de uma NFC-e, a chave de acesso de uma nota equatoriana. O Fire envia o **conteúdo e a simbologia**, não uma imagem: o tamanho depende do dispositivo, então quem desenha é a impressora. `ecLevel` é o nível de correção de erros do QR que o template escolheu.
+</ResponseField>
+
+<ResponseField name="blank" type='{ "t": "blank" }'>
+  Uma linha em branco.
+</ResponseField>
+
+<ResponseField name="cut" type='{ "t": "cut", "partial"?: boolean }'>
+  Corte o papel (`GS V`). Vem **do documento**, não do seu caixa: onde um cupom termina faz parte do cupom.
+</ResponseField>
+
+<ResponseField name="drawer" type='{ "t": "drawer" }'>
+  Abra a gaveta de dinheiro (`ESC p`). Mesmo raciocínio.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "contract": "print.v1",
+    "jobId": "ba880df8-651b-4971-90d3-be3ae1a49223",
+    "document": "invoice",
+    "subject": {
+      "kind": "order",
+      "countryCode": "BR",
+      "orderId": "8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62",
+      "orderCode": "FUEL-495A3063-0CD"
+    },
+    "template": {
+      "source": "account",
+      "templateId": "649f10d4-e781-4460-9dc9-a41fd0888b41",
+      "version": 3,
+      "contentHash": "9b1c7e0a4d2f8b6c1e5a0d3f7b2c9e4a"
+    },
+    "paper": {
+      "width": 42,
+      "charset": "utf-8",
+      "copies": 1,
+      "lines": [
+        { "t": "band", "lines": [{ "text": "Maria", "big": false }, { "text": "46K", "big": true }] },
+        { "t": "rule", "ch": "-", "s": "------------------------------------------" },
+        { "t": "text", "s": "               Dev company                " },
+        { "t": "text", "s": "          CNPJ 50080000000600             " },
+        { "t": "blank" },
+        { "t": "text", "s": "QTD. DESCRIÇÃO             UNITÁRIO  TOTAL" },
+        { "t": "text", "s": "1 Batata Grande            R$211,90 R$211,90" },
+        { "t": "rule", "ch": "=", "s": "==========================================" },
+        { "t": "text", "s": "TOTAL                            R$211,90", "bold": true },
+        { "t": "code", "content": "https://www.nfce.fazenda.sp.gov.br/qrcode?p=3525...", "symbology": "qr", "key": "qr", "ecLevel": "m" },
+        { "t": "cut" }
+      ],
+      "plainText": "Maria\n46K\n---..."
+    },
+    "freshness": {
+      "fiscal": "authorized",
+      "isCancelled": false,
+      "asOf": "2026-09-14T17:17:04.000Z",
+      "fingerprint": "10d4a90ded6e2f7b8c3a1e5d0f4b9c62"
+    },
+    "warnings": []
+  }
+}
+```
+
+```json 403 — a key não carrega o scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have required scope: printing:read. Available: orders:read, orders:write, store:read"
+}
+```
+
+```json 404 — o pedido não existe no seu vendor
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "Order not found with ID 8f3b21c4-90ab-4d1e-b7c2-1f5a9e0d4a62"
+}
+```
+
+```json 409 — uma nota de crédito para uma venda que ninguém cancelou
+{
+  "success": false,
+  "error": "PRINT_DOCUMENT_NOT_APPLICABLE",
+  "message": "This order is not cancelled: there is nothing to compensate"
+}
+```
+</ResponseExample>
+
+## Erros
+
+| Status | Código | Quando |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | `document` desconhecido, ou um `printer.width` que não é 32/42/48. |
+| `401` | `UNAUTHORIZED` | API key ausente ou inválida. |
+| `403` | `FORBIDDEN` | A key não tem `printing:read`, ou não é vendor-scoped. |
+| `404` | `NOT_FOUND` | O pedido não existe dentro do seu vendor. |
+| `409` | `PRINT_DOCUMENT_NOT_APPLICABLE` | Foi pedida uma nota de crédito sobre uma venda que não está cancelada. |
+| `409` | `PRINT_WRONG_SUBJECT` | `day_close` pedido neste endpoint. |
+
+## Notas
+
+<Info>
+  **Por que `POST` para algo somente de leitura?** A requisição carrega o papel da impressora, e o cupom depende do estado fiscal. Um `GET` seria cacheado por URL em algum ponto do caminho, e um cupom cacheado é um cupom que pode estar mentindo sobre se o fisco o autorizou. Esta chamada não persiste nada.
+</Info>
+
+<Info>
+  **O modelo da impressora não faz parte da requisição.** O Fire precisa da **largura**, porque a diagramação é calculada em colunas. Todo o resto do dispositivo — code page, se ele desenha um QR nativamente, se os acentos precisam ser transliterados — é o perfil do seu caixa e fica do seu lado. É por isso que `charset` sempre volta `utf-8`.
+</Info>
+
+<Tip>
+  **Reimprimir com honestidade.** Guarde `freshness.fingerprint` e `template.templateId` / `template.version` junto de cada cupom impresso. Para reimprimir exatamente o que o cliente recebeu, envie `templateId` e `templateVersion`. Para descobrir se há algo *novo* a imprimir, pergunte de novo e compare os fingerprints.
+</Tip>
