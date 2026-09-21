@@ -1,7 +1,7 @@
 ---
 title: "Get menu"
-api: "GET https://api.fire.rest/v1/menus/{listId}"
-description: "Returns the full menu for a listId received in a menu.list_ready notification."
+api: "GET https://api.fire.rest/v1/menus/{syncId}"
+description: "Returns the full menu for a syncId received in a menu.list_ready notification."
 authMethod: "bearer"
 tag: "Proposal"
 ---
@@ -40,19 +40,44 @@ only `x-api-key` is required, no login flow.
 
 ## Path parameters
 
-<ParamField path="listId" type="string" required>
-  The menu's identifier, received as `data.listId` in the
-  [`menu.list_ready`](/en/hybrid-delivery/menu-list-ready) event.
+<ParamField path="syncId" type="string" required>
+  The sync assignment's identifier, received as `data.syncId` in the
+  [`menu.list_ready`](/en/hybrid-delivery/menu-list-ready) event. This is the id of
+  the row that ties a store, channel, and fulfillment type to a menu and a price
+  list — the same three values `listId` summarizes as a string, but this is the one
+  guaranteed to be unique.
 </ParamField>
 
 ## Response
+
+<ResponseField name="source" type="object">
+  Which menu and price list this response was resolved from. Compare against your
+  last [`menu.list_ready`](/en/hybrid-delivery/menu-list-ready) to detect a
+  reassignment between the notify event and this fetch.
+
+  <Expandable title="source fields">
+    <ResponseField name="menuId" type="string">
+      UUID of the menu this response was flattened from.
+    </ResponseField>
+    <ResponseField name="priceListId" type="string">
+      UUID of the price list used to resolve every price in this response. A menu
+      has no price list of its own — each sync assignment (`syncId`) picks one, so
+      the same menu can price differently depending on which assignment fetched it.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
 
 <ResponseField name="list" type="object">
   Menu metadata and channel/store association.
 
   <Expandable title="list fields">
+    <ResponseField name="syncId" type="string">
+      The sync assignment's own id — same value as the path parameter, echoed back.
+    </ResponseField>
     <ResponseField name="listId" type="string">
-      Composite identifier: `{storeNumber}-{channelCode}-{fulfillmentType}`.
+      Legacy composite identifier: `{storeNumber}-{channelCode}-{fulfillmentType}`.
+      Kept for cross-reference with [`menu.updated`](/en/webhook-reference/menu-updated);
+      not guaranteed unique on its own.
     </ResponseField>
     <ResponseField name="listName" type="string">
       Auto-generated label `{channelCode} - Store {storeNumber}`.
@@ -74,6 +99,10 @@ only `x-api-key` is required, no login flow.
     </ResponseField>
     <ResponseField name="channelReferenceName" type="string">
       Fulfillment reference name (e.g. `delivery`, `pickup`).
+    </ResponseField>
+    <ResponseField name="fulfillmentType" type="string">
+      Fulfillment type code (e.g. `DELIVERY`, `DINE_IN`, `TAKEAWAY`). Part of the
+      assignment's real identity, alongside `storeId` and `channelId`.
     </ResponseField>
     <ResponseField name="schedules" type="object[]">
       Time windows when this channel is active for this store. Empty array means the
@@ -200,4 +229,4 @@ only `x-api-key` is required, no login flow.
   [`menu.updated`](/en/webhook-reference/menu-updated#fields) — refer to that page for
   full descriptions, edge cases, and the [Menu assignment
   date](/en/webhook-reference/menu-updated#menu-assignment-date) rules.
-- A `listId` that doesn't exist, or that has been removed, should return `404`.
+- A `syncId` that doesn't exist, or whose assignment has been removed, should return `404`.
