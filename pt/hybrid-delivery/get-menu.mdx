@@ -1,0 +1,204 @@
+---
+title: "Obter menu"
+api: "GET https://api.fire.rest/v1/menus/{listId}"
+description: "Retorna o menu completo para um listId recebido em uma notificação menu.list_ready."
+authMethod: "bearer"
+tag: "Proposta"
+---
+
+<Warning>
+  **Proposta — ainda não implementada no XMART_BACKOFFICE.** Veja [Entrega
+  híbrida](/pt/hybrid-delivery/overview) para contexto. Esta página mostra a forma
+  prevista do endpoint, não um contrato ao vivo.
+</Warning>
+
+A metade de busca da [entrega híbrida](/pt/hybrid-delivery/overview): chame após
+receber um evento [`menu.list_ready`](/pt/hybrid-delivery/menu-list-ready) para
+buscar o menu completo. A forma da resposta reflete exatamente `data.menu` em
+[`menu.updated`](/pt/webhook-reference/menu-updated) — mesmos campos, mesma
+semântica.
+
+<Info>
+  O webhook de notificação e este endpoint de busca se autenticam de forma
+  diferente. O Fire **empurra** `menu.list_ready` para o seu servidor, assinado com
+  HMAC — veja [Headers da requisição](/pt/hybrid-delivery/overview#headers-da-requisição).
+  Seu sistema **consulta** este endpoint, então precisa de uma credencial de API —
+  veja abaixo.
+</Info>
+
+## Autenticação
+
+É um endpoint `/v1/*` — veja [Autenticação](/pt/authentication#autenticação-da-api):
+só é necessário `x-api-key`, sem fluxo de login.
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire.
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <token>` opcional, aceito como alternativa legacy a `x-api-key`. Envie um ou outro.
+</ParamField>
+
+## Parâmetros de rota
+
+<ParamField path="listId" type="string" required>
+  Identificador do menu, recebido como `data.listId` no evento
+  [`menu.list_ready`](/pt/hybrid-delivery/menu-list-ready).
+</ParamField>
+
+## Resposta
+
+<ResponseField name="list" type="object">
+  Metadados do menu e associação canal/loja.
+
+  <Expandable title="campos de list">
+    <ResponseField name="listId" type="string">
+      Identificador composto: `{storeNumber}-{channelCode}-{fulfillmentType}`.
+    </ResponseField>
+    <ResponseField name="listName" type="string">
+      Rótulo autogerado `{channelCode} - Store {storeNumber}`.
+    </ResponseField>
+    <ResponseField name="vendorId" type="string | number">
+      Código da marca.
+    </ResponseField>
+    <ResponseField name="storeId" type="string">
+      UUID interno da loja (PK `stores.id`).
+    </ResponseField>
+    <ResponseField name="storeName" type="string">
+      Nome operacional da loja.
+    </ResponseField>
+    <ResponseField name="timezone" type="string | null">
+      Fuso horário IANA da loja (ex.: `America/Sao_Paulo`).
+    </ResponseField>
+    <ResponseField name="channelId" type="string">
+      UUID interno do canal de vendas (PK `channels.id`).
+    </ResponseField>
+    <ResponseField name="channelReferenceName" type="string">
+      Nome de referência do fulfillment (ex.: `delivery`, `pickup`).
+    </ResponseField>
+    <ResponseField name="schedules" type="object[]">
+      Janelas de tempo em que este canal está ativo para esta loja. Um array vazio
+      indica que o canal opera 24 horas.
+
+      <Expandable title="entrada de schedule">
+        <ResponseField name="day" type="string">
+          `MONDAY`, `TUESDAY`, `WEDNESDAY`, `THURSDAY`, `FRIDAY`, `SATURDAY`, `SUNDAY`.
+        </ResponseField>
+        <ResponseField name="startTime" type="string">
+          Horário de abertura no formato `HH:mm`.
+        </ResponseField>
+        <ResponseField name="endTime" type="string">
+          Horário de fechamento no formato `HH:mm`.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="categories" type="object[]">
+  Categorias do menu.
+
+  <Expandable title="campos de category">
+    <ResponseField name="productCategoryId" type="string">
+      Identificador da categoria.
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Nome de exibição.
+    </ResponseField>
+    <ResponseField name="displayInList" type="boolean">
+      Se a categoria está visível.
+    </ResponseField>
+    <ResponseField name="featured" type="boolean">
+      Se a categoria está em destaque.
+    </ResponseField>
+    <ResponseField name="position" type="number">
+      Ordem de exibição.
+    </ResponseField>
+    <ResponseField name="images" type="object[]">
+      Imagens da categoria — `{ imageCategoryId, fileUrl }`.
+    </ResponseField>
+    <ResponseField name="assignedAt" type="string | null">
+      Data em que a categoria entrou no menu, em ISO 8601 UTC. Mesma semântica que
+      [`menu.updated` → Data de atribuição ao menu](/pt/webhook-reference/menu-updated#data-de-atribuição-ao-menu).
+    </ResponseField>
+    <ResponseField name="productListing" type="object[]">
+      Produtos desta categoria com suas posições — `{ productId, position }`.
+    </ResponseField>
+    <ResponseField name="schedules" type="object[] | null">
+      Horário próprio da categoria. `null` se não houver horário configurado.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="products" type="object[]">
+  Catálogo de produtos.
+
+  <Expandable title="campos de product">
+    <ResponseField name="productId" type="string | number">
+      Identificador do produto (`externalId` ou UUID).
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Nome do produto.
+    </ResponseField>
+    <ResponseField name="description" type="string">
+      Descrição do produto.
+    </ResponseField>
+    <ResponseField name="active" type="boolean">
+      Visibilidade no menu (`visible`); não reflete estoque nem disponibilidade operacional.
+    </ResponseField>
+    <ResponseField name="type" type="string">
+      Tipo de item: `PRODUCTO`, `MODIFIER`, `COMPLEMENT`, `COMBO`.
+    </ResponseField>
+    <ResponseField name="priceInfo" type="object">
+      Preços resolvidos do produto — `{ pointPrice, price, referencePrice, suggestedPrice }`.
+    </ResponseField>
+    <ResponseField name="productModifiers" type="object[]">
+      Referências de grupos de modificadores — `{ modifierId, position, overrides? }`.
+    </ResponseField>
+    <ResponseField name="schedules" type="object[] | null">
+      Horário customizado do produto. `null` se usa horário da loja ou não tem horário customizado.
+    </ResponseField>
+    <ResponseField name="images" type="object[]">
+      Imagens do produto.
+    </ResponseField>
+    <ResponseField name="taxInfo" type="object[]">
+      Informação fiscal — `{ vatRatePercentage }`.
+    </ResponseField>
+    <ResponseField name="additionalInfo" type="object">
+      Metadados extras opcionais — `{ externalCode, ncm, assignedAt }`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="modifierGroups" type="object[]">
+  Grupos de modificadores e opções.
+
+  <Expandable title="campos de modifierGroups">
+    <ResponseField name="modifierId" type="string">
+      Identificador do grupo de modificadores.
+    </ResponseField>
+    <ResponseField name="modifier" type="string">
+      Nome de exibição do grupo.
+    </ResponseField>
+    <ResponseField name="minOptions" type="number">
+      Número mínimo de seleções obrigatórias.
+    </ResponseField>
+    <ResponseField name="maxOptions" type="number">
+      Número máximo de seleções permitidas.
+    </ResponseField>
+    <ResponseField name="type" type="string">
+      Tipo de seleção: `RADIO` (single) ou `CHECKBOX` (multiple).
+    </ResponseField>
+    <ResponseField name="modifierOptions" type="object[]">
+      Opções individuais — `{ optionId, productId, name, position }`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Notas
+
+- Este endpoint retorna a mesma forma documentada campo por campo em
+  [`menu.updated`](/pt/webhook-reference/menu-updated#campos) — consulte essa página
+  para descrições completas, casos extremos, e as regras de [Data de atribuição ao
+  menu](/pt/webhook-reference/menu-updated#data-de-atribuição-ao-menu).
+- Um `listId` que não existe, ou que foi removido, deveria retornar `404`.
