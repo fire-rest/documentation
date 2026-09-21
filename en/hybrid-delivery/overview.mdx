@@ -1,0 +1,69 @@
+---
+title: "Hybrid delivery"
+description: "A lighter alternative to full-payload menu webhooks: notify, then fetch on demand."
+tag: "Proposal"
+---
+
+<Warning>
+  **Proposal — not implemented in XMART_BACKOFFICE yet.** This tab documents a
+  design, not a live contract. Nothing here should be built against until it ships.
+  Today, [`menu.updated`](/en/webhook-reference/menu-updated) is the only way Fire
+  publishes menus, and it carries the full catalog on every event.
+</Warning>
+
+## Objective
+
+[`menu.updated`](/en/webhook-reference/menu-updated) sends the complete menu — every
+category, product, and modifier group — on every publish. That's simple to consume,
+but it means a store with a large catalog pays the same payload size for a one-line
+price change as for a full re-publish, and every subscriber gets data it may not have
+asked for.
+
+Hybrid delivery splits the same information into two steps:
+
+1. A **notify** webhook — [`menu.list_ready`](/en/hybrid-delivery/menu-list-ready) —
+   tells your system a menu is ready to be read, with just enough ids to identify it.
+   No catalog data.
+2. An on-demand **fetch** —
+   [`GET /v1/menus/{syncId}`](/en/hybrid-delivery/get-menu) — your system calls this
+   when it actually needs the menu, using the `syncId` from the notify event.
+
+## Scope
+
+This pattern is scoped to menus only. [`menu.updated`](/en/webhook-reference/menu-updated)
+keeps working exactly as it does today, indefinitely — this is an alternative, not a
+replacement. Pick whichever fits your integration:
+
+| | Full payload (`menu.updated`) | Hybrid delivery |
+|---|---|---|
+| Webhook body | Complete menu | Correlation ids only |
+| When you get the catalog | Pushed with every event | Pulled when you call the fetch endpoint |
+| Best for | Simple consumers, small catalogs | Large catalogs, rate-sensitive webhooks, consumers that don't need every publish |
+
+## Catalog of methods
+
+| # | Method | Description |
+|---|---|---|
+| 1 | [`menu.list_ready`](/en/hybrid-delivery/menu-list-ready) | Webhook. Notifies your system that a menu is ready to be fetched for one sync assignment (store/channel/fulfillment type). One event per assignment — not batched. |
+| 2 | [`GET /v1/menus/{syncId}`](/en/hybrid-delivery/get-menu) | API endpoint. Returns the full menu — same shape as `data.menu` in `menu.updated` — for the `syncId` you received in the notify event. |
+
+## Delivery
+
+`menu.list_ready` is delivered exactly like every other Fire webhook — same
+mechanism, just a lighter body. Fire posts it as `application/json` to the endpoint
+you configure per integration from the dashboard (Aggregators → Developer tools →
+Aggregator integrations), for example `https://yourapp.com/webhooks/menu-list-ready`.
+There's no new delivery channel here, just a new event type.
+
+### Request headers
+
+| Header | Description |
+|---|---|
+| `Content-Type` | `application/json` |
+| `X-Fire-Event` | `menu.list_ready` |
+| `X-Fire-Timestamp` | Unix timestamp (seconds) when Fire signed the request — see [Authentication](/en/authentication) |
+| `X-Fire-Signature` | HMAC-SHA256 signature (`sha256=<hex>`) — see [Authentication](/en/authentication) |
+
+[`GET /v1/menus/{syncId}`](/en/hybrid-delivery/get-menu) authenticates differently —
+your system calls Fire, so it needs an API credential instead of a signature. See
+[Authentication on that page](/en/hybrid-delivery/get-menu#authentication).

@@ -1,0 +1,88 @@
+---
+title: "menu.list_ready"
+description: "Notifica seu sistema que um menu está pronto para ser consultado, sem enviar o catálogo."
+tag: "Proposta"
+---
+
+<Warning>
+  **Proposta — ainda não implementada no XMART_BACKOFFICE.** Veja [Entrega
+  híbrida](/pt/hybrid-delivery/overview) para contexto. Esta página mostra a forma
+  prevista do evento, não um contrato ao vivo.
+</Warning>
+
+`menu.list_ready` é a metade de notificação da [entrega
+híbrida](/pt/hybrid-delivery/overview): avisa seu sistema que um menu está pronto
+para ser consultado, para uma loja e uma atribuição de sync, sem levar nenhum dado
+de catálogo. Um evento = uma lista — uma publicação que afeta várias lojas dispara
+um `menu.list_ready` por atribuição, não um array em lote. Chame
+[`GET /v1/menus/{syncId}`](/pt/hybrid-delivery/get-menu) com `syncId` para buscar o
+menu de fato.
+
+## Payload
+
+```json
+{
+  "event": {
+    "id": "evt_ghi789",
+    "type": "menu.list_ready",
+    "executionId": "exec_def456",
+    "createdAt": "2025-01-15T14:31:00.000Z"
+  },
+  "data": {
+    "account": "1",
+    "country": "EC",
+    "storeId": "b3d2a1f0-6e21-4c3a-9f5d-7a8b9c0d1e2f",
+    "syncId": "9c1a2b3d-4e5f-4a6b-8c7d-1e2f3a4b5c6d",
+    "metadata": {
+      "groupId": "a3f7c2d1-84be-4e10-9b3a-2c5d6e7f8091",
+      "listId": "805-POS-dine-in",
+      "channelId": "3a1b2c4d-85cf-4e11-80c6-000d3a3261f3",
+      "fulfillmentType": "DINE_IN"
+    }
+  }
+}
+```
+
+## Campos
+
+### `data`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `account` | string | Identificador da conta |
+| `country` | string | Código do país ISO 3166-1 alpha-2 (ex.: `EC`, `BR`, `CO`) |
+| `storeId` | string | UUID interno da loja (PK `stores.id`) — mesma convenção que `list.storeId` em [`menu.updated`](/pt/webhook-reference/menu-updated) |
+| `syncId` | string | UUID da atribuição de sync (a linha que amarra de forma única `storeId` + `channelId` + `fulfillmentType` a um menu e uma lista de preços). É o campo mínimo necessário para buscar o menu — passe-o para [`GET /v1/menus/{syncId}`](/pt/hybrid-delivery/get-menu) |
+| `metadata` | object | Dados de correlação complementares, não necessários para chamar o endpoint de busca |
+
+### `data.metadata`
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| `groupId` | string | UUID que correlaciona eventos do mesmo batch de publicação ou sincronização. Quando uma publicação afeta várias lojas/atribuições, cada `menu.list_ready` resultante compartilha o mesmo `groupId` |
+| `listId` | string | Identificador composto legado: `{storeNumber}-{channelCode}-{fulfillmentType}`, mantido por legibilidade e para cruzar com [`menu.updated`](/pt/webhook-reference/menu-updated). Não garante unicidade por si só — alguns caminhos de entrega deixam a parte do canal ambígua. Use `syncId` para correlacionar |
+| `channelId` | string | UUID interno do canal de vendas (PK `channels.id`) — mesma convenção que `list.channelId` em [`menu.updated`](/pt/webhook-reference/menu-updated) |
+| `fulfillmentType` | string | Código do tipo de fulfillment (ex.: `DELIVERY`, `DINE_IN`, `TAKEAWAY`). Parte da identidade real da atribuição — um par loja/canal pode ter um menu e uma lista de preços diferentes por fulfillment type |
+
+## Notas
+
+- Este evento não leva dados de catálogo. Chame
+  [`GET /v1/menus/{syncId}`](/pt/hybrid-delivery/get-menu) se precisar de
+  categorias, produtos ou grupos de modificadores.
+- **Um evento por atribuição.** Diferente de `targets[]` em
+  [`product.updated`](/pt/webhook-reference/product-updated) e
+  [`product.availability_changed`](/pt/webhook-reference/product-availability-changed),
+  ou dos batches de `stores.sync` / `menus.sync`, `menu.list_ready` não agrupa
+  várias lojas ou listas em um único evento. Uma publicação que afeta várias
+  atribuições dispara um `menu.list_ready` por atribuição, correlacionados por
+  `metadata.groupId`.
+- **`account`, `country`, `storeId` e `syncId` vão em primeiro nível** porque são o
+  que a maioria das integrações usa para rotear ou filtrar. O resto — `groupId`,
+  `listId`, `channelId`, `fulfillmentType` — é complementar e vive em `metadata`;
+  você não precisa de nada disso só para chamar o endpoint de busca.
+- **Use `syncId`, não `metadata.listId`, como chave única.** A atribuição da qual
+  um menu é publicado é identificada de forma única pela tripla `storeId` +
+  `metadata.channelId` + `metadata.fulfillmentType` — `syncId` é o id próprio dessa
+  atribuição. `metadata.listId` é um composto legível desses mesmos três valores,
+  mantido por compatibilidade com `menu.updated`, mas não garante unicidade em
+  todos os caminhos de entrega.
