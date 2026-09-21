@@ -1,0 +1,435 @@
+---
+title: "Corregir orden"
+api: "PUT https://api.fire.rest/api/v1/fire/external/orders/{orderId}"
+description: "Corrige una orden abierta antes de cobrarla: datos de facturación del consumidor final y localizador. No cobra, no cierra la orden y no emite eventos."
+authMethod: "bearer"
+---
+
+Una orden que nace en el kiosko y se cobra en caja queda **abierta** hasta el cobro. En ese tiempo el
+cajero puede necesitar corregirla: el cliente pide factura con su RUC, o hay que cargar el número de
+localizador que tiene impreso. Este endpoint corrige esos datos **sin tocar el cobro**.
+
+<Note>
+  **Solo órdenes abiertas.** Una orden cobrada, cancelada o con factura emitida ya produjo sus
+  consecuencias y no se corrige hacia atrás.
+</Note>
+
+## Corregir orden vs. Confirmar pago
+
+Son dos endpoints distintos a propósito. Uno corrige la orden, el otro la cobra, y ninguno escribe
+lo del otro.
+
+|  | **Corregir orden** (este) | [**Confirmar pago**](/es/api-reference/confirm-payment) |
+| --- | --- | --- |
+| Método | `PUT /orders/{orderId}` | `POST /orders/{orderId}/confirm-payment` |
+| Para qué | cambiar **datos** de la orden | registrar **la plata** |
+| Qué escribe | comprador y datos de facturación, localizador | medios de pago, estado del cobro |
+| ¿Cambia el estado? | **no** — la orden sigue `OPEN` | **sí** — pasa a `COMPLETED` al saldar |
+| ¿Emite eventos? | **no** | sí — [`order.completed`](/es/events/order-completed) |
+| ¿Registra rechazos? | no aplica | **sí** — los intentos rechazados quedan para tus métricas |
+| Idempotencia | `idempotencyKey` | `transaction_id` de cada pieza |
+| Concurrencia | `expectedRevision` | el cobro es todo o nada contra el total |
+| ¿Cuántas veces? | las que haga falta, mientras esté abierta | una vez: al saldar, la orden se cierra |
+
+**Los medios de pago no se corrigen acá.** Si el body trae `payments.paymentMethods` o un `status`,
+la respuesta es `400`: el estado de la orden se deriva del cobro y solo lo escribe
+[Confirmar pago](/es/api-reference/confirm-payment). Lo rechazamos en vez de ignorarlo porque un
+`APPROVED` descartado en silencio sería plata que vos das por cobrada y nosotros no.
+
+### El flujo completo
+
+```
+GET  /orders/{orderId}                     → revision: 1
+PUT  /orders/{orderId}   expectedRevision 1 → revision: 2   (localizador)
+PUT  /orders/{orderId}   expectedRevision 2 → revision: 3   (datos de factura)
+POST /orders/{orderId}/confirm-payment      → COMPLETED + order.completed
+```
+
+**No hace falta ningún paso extra para que la factura salga con los datos corregidos.** Cuando el
+cobro salda, Fire arma el evento `order.completed` leyendo la orden en ese momento, así que viaja con
+lo último que corregiste.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `orders:write`. La key **debe ser vendor-scoped** — las keys sin
+  `vendorId` se rechazan con `403`.
+</ParamField>
+
+## Path params
+
+<ParamField path="orderId" type="string" required>
+  Cualquiera de las tres referencias públicas de la orden:
+
+  | referencia | qué es |
+  | --- | --- |
+  | `orders.id` | el UUID interno de Fire |
+  | `order_external` | el id que asignaste al crear la orden |
+  | `metadata.order_id` | copia del id externo dentro de la orden |
+
+  Es el mismo conjunto que aceptan [Obtener orden](/es/api-reference/get-order) y
+  [Confirmar pago](/es/api-reference/confirm-payment).
+</ParamField>
+
+## Cuerpo
+
+Dos campos de control, siempre, y **uno o más bloques**. Lo que no mandás no se toca.
+
+<ParamField body="expectedRevision" type="integer" required>
+  La `revision` de la orden que leíste con [Obtener orden](/es/api-reference/get-order). Si la orden
+  cambió desde entonces —otra caja la corrigió—, la respuesta es `409 STALE_REVISION` y no se escribe
+  nada. Así dos cajas no se pisan sin enterarse.
+</ParamField>
+
+<ParamField body="idempotencyKey" type="string" required>
+  Un identificador único **por corrección** (hasta 200 caracteres), generado por vos. Si la respuesta
+  no te llega y reintentás con la misma clave, recibís `200 duplicate` y la corrección no se aplica
+  dos veces.
+
+  Sin esta clave, un reintento chocaría contra `expectedRevision` —que ya avanzó— y no podrías saber
+  si tu corrección entró o si otro escribió.
+</ParamField>
+
+### Localizador y kiosko — `additionalInfo`
+
+**Se aplica campo a campo:** mandá solo lo que cambia. Si corregís el localizador, el nombre del
+buzzer y el email de factura quedan como estaban.
+
+<ParamField body="additionalInfo.orderCode" type="string">
+  El **localizador**: el número que el cliente tiene impreso y que se canta al entregar.
+</ParamField>
+
+<ParamField body="additionalInfo.kiosk.buzzer_name" type="string">
+  Nombre con el que se llama al cliente.
+</ParamField>
+
+<ParamField body="additionalInfo.kiosk.invoice_email" type="string">
+  Email al que se envía la factura.
+</ParamField>
+
+<ParamField body="additionalInfo.kiosk.invoice_print" type="boolean">
+  Si el cliente quiere la factura impresa.
+</ParamField>
+
+### Consumidor final — `client`
+
+<Warning>
+  **Este bloque REEMPLAZA al comprador entero.** No es un parche: lo que no mandes queda vacío.
+  Mandar `{ "uid": "…", "name": "Juan" }` sobre una orden que tenía RUC **borra el RUC**.
+
+  Es deliberado. Nombre, documento y dirección son **un solo dato**: mezclar el nombre nuevo con el
+  documento viejo produce una factura mal emitida, y eso solo se arregla anulando y volviendo a
+  emitir. Mandá siempre **el comprador completo**, no la diferencia.
+</Warning>
+
+<ParamField body="client.uid" type="string" required>
+  Identificador del cliente. Obligatorio justamente porque el bloque reemplaza: sin él la orden
+  quedaría sin cliente. Usá el que ya tiene la orden.
+</ParamField>
+
+<ParamField body="client.govIdType" type="string">
+  Tipo de documento: `CEDULA`, `RUC`, `PASAPORTE` (Ecuador); `CC`, `NIT` (Colombia); `CPF`, `CNPJ`
+  (Brasil); o `FINAL_CONSUMER`.
+</ParamField>
+
+<ParamField body="client.govIdNumber" type="string">
+  Número de documento. Se aceptan puntos, guiones y espacios; Fire los quita. Un relleno de dígitos
+  repetidos (`9999999999999`, `222222222222`) se trata como consumidor final.
+</ParamField>
+
+<ParamField body="client.name" type="string">
+  Nombre o razón social.
+</ParamField>
+
+<ParamField body="client.lastName" type="string">
+  Apellido.
+</ParamField>
+
+<ParamField body="client.email" type="string">
+  Email del comprador.
+</ParamField>
+
+<ParamField body="client.billingInformation" type="object">
+  Datos de facturación, con la misma forma que al crear la orden. Si no lo mandás, queda vacío.
+</ParamField>
+
+Fire recalcula a partir de este bloque **el comprador que imprime el comprobante**. No hace falta
+mandarlo aparte.
+
+### Productos — todavía no
+
+<Info>
+  Corregir productos y totales **todavía no está habilitado**. Si el body trae `order` o `payments`,
+  la respuesta es `400`. Lo vamos a habilitar cuando se valide también que los impuestos y el total
+  cuadren con las líneas, igual que al crear la orden.
+</Info>
+
+## Petición
+
+<RequestExample>
+```http Localizador
+PUT https://api.fire.rest/api/v1/fire/external/orders/EC-K000-KIOSK-0001
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "expectedRevision": 1,
+  "idempotencyKey": "pos-loc-7f3a",
+  "additionalInfo": {
+    "orderCode": "82"
+  }
+}
+```
+
+```http Datos de factura
+PUT https://api.fire.rest/api/v1/fire/external/orders/EC-K000-KIOSK-0001
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "expectedRevision": 2,
+  "idempotencyKey": "pos-cli-9b21",
+  "client": {
+    "uid": "EnB3vmqHvrgarov6PFmfJY1bpPH2",
+    "name": "Comercial Andina",
+    "lastName": "SA",
+    "email": "facturas@andina.ec",
+    "govIdType": "RUC",
+    "govIdNumber": "1790012345001"
+  }
+}
+```
+
+```http Los dos juntos
+PUT https://api.fire.rest/api/v1/fire/external/orders/EC-K000-KIOSK-0001
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "expectedRevision": 1,
+  "idempotencyKey": "pos-both-c410",
+  "additionalInfo": {
+    "orderCode": "82",
+    "kiosk": { "buzzer_name": "Mesa 4" }
+  },
+  "client": {
+    "uid": "EnB3vmqHvrgarov6PFmfJY1bpPH2",
+    "name": "Ana",
+    "lastName": "Pérez",
+    "govIdType": "CEDULA",
+    "govIdNumber": "1712345678"
+  }
+}
+```
+</RequestExample>
+
+## Qué hace Fire con lo que enviás
+
+| situación | `outcome` | ¿se escribe? | `revision` |
+| --- | --- | --- | --- |
+| cambió algo | `applied` | sí | sube 1 |
+| misma `idempotencyKey` que una corrección anterior | `duplicate` | no — devuelve lo que aplicó la original | la actual |
+| mandaste exactamente lo que la orden ya tenía | `noop` | no | no cambia |
+
+**Guardá la `revision` de la respuesta:** es la que tenés que mandar en la próxima corrección.
+
+## Cuándo no se puede corregir
+
+Cada caso tiene su código, porque cada uno pide una acción distinta.
+
+| código | la orden | qué hacer |
+| --- | --- | --- |
+| `STALE_REVISION` | cambió desde que la leíste | volvé a leerla y reintentá con la `revision` nueva (viene en `data.currentRevision`) |
+| `ORDER_NOT_OPEN` | ya no está abierta | mirá `data.orderStatus`: `COMPLETED` = ya se cobró con los datos de antes (lo que sigue es una corrección fiscal); `CANCELLED` o `FORCE_CLOSED` = no hay nada que corregir |
+| `ORDER_ALREADY_INVOICED` | tiene factura emitida o en camino | una factura no se modifica: se anula y se vuelve a emitir |
+
+Todos son `409` y **no escriben nada**. La verificación ocurre en el mismo instante de la escritura,
+así que si un cobro entra justo mientras corregís, uno de los dos espera al otro: nunca se pisan.
+
+## Idempotencia y concurrencia
+
+**Reintentar es seguro.** Si la respuesta no te llegó, reenviá el mismo body con la **misma**
+`idempotencyKey`:
+
+| lo que enviás | qué es | respuesta |
+| --- | --- | --- |
+| una `idempotencyKey` que Fire ya tiene | un reintento | `200 duplicate` |
+| una clave nueva con la `revision` vigente | una corrección nueva | `200 applied` |
+| una clave nueva con una `revision` vieja | otra caja escribió antes | `409 STALE_REVISION` |
+
+Usá una clave **nueva por cada corrección distinta**. Reusar una clave para otro cambio devuelve
+`duplicate` y el cambio nuevo no se aplica.
+
+## Eventos
+
+Este endpoint **no emite eventos**. La corrección queda en la orden, y cuando se cobra, el
+[`order.completed`](/es/events/order-completed) sale con los datos corregidos: localizador, comprador
+y datos de facturación.
+
+<Note>
+  No hay `order.updated`, a propósito. La entrega de eventos no está ordenada: un aviso de corrección
+  que llegara después del `order.completed` sería un hecho viejo sobre el que tu sistema podría
+  actuar por error.
+</Note>
+
+## Validaciones
+
+Todas devuelven `400` salvo donde se indique. Ramificá por el **`code`**, no por el texto: el
+mensaje se puede reescribir, el código es contrato.
+
+| regla | código |
+| --- | --- |
+| `expectedRevision` entero mayor que cero | `400` |
+| `idempotencyKey` presente | `400` |
+| al menos un bloque (`client` o `additionalInfo`) | `400` |
+| `client.uid` presente si viene `client` | `400` |
+| sin `order` ni `payments` (productos todavía no) | `400` |
+| sin `payments.paymentMethods`, `status`, `paymentStatus`, `settlement`, `completedAt` | `400` |
+| el `orderId` del body, si viene, coincide con el de la URL | `400` |
+| la cuenta, el vendor y la tienda del body, si vienen, coinciden con la orden | `400` |
+| API key válida | `401` |
+| scope `orders:write` y key vendor-scoped | `403` |
+| la orden existe dentro de tu vendor | `404` |
+| la referencia matchea más de una orden | `409 AMBIGUOUS_ORDER_REFERENCE` |
+| la orden no cambió desde que la leíste | `409 STALE_REVISION` |
+| la orden está abierta (ni cobrada, ni cancelada) | `409 ORDER_NOT_OPEN` |
+| la orden no tiene factura emitida ni en camino | `409 ORDER_ALREADY_INVOICED` |
+
+## Respuestas
+
+<ResponseExample>
+```json 200 — aplicada
+{
+  "success": true,
+  "data": {
+    "orderId": "da670a2c-386d-4848-a51b-444738c3250b",
+    "orderCode": "EC-K000-KIOSK-0001",
+    "outcome": "applied",
+    "revision": 2,
+    "fields": ["kds"],
+    "changedColumns": ["metadata"],
+    "amendmentId": "24c523b3-a435-4cbb-b163-7a88c5b10d32",
+    "status": "OPEN",
+    "paymentStatus": "PENDING"
+  }
+}
+```
+
+```json 200 — reintento con la misma clave
+{
+  "success": true,
+  "data": {
+    "orderId": "da670a2c-386d-4848-a51b-444738c3250b",
+    "orderCode": "EC-K000-KIOSK-0001",
+    "outcome": "duplicate",
+    "revision": 2,
+    "fields": ["kds"],
+    "changedColumns": [],
+    "amendmentId": "24c523b3-a435-4cbb-b163-7a88c5b10d32",
+    "status": "OPEN",
+    "paymentStatus": "PENDING"
+  }
+}
+```
+
+```json 200 — no había nada que cambiar
+{
+  "success": true,
+  "data": {
+    "orderId": "da670a2c-386d-4848-a51b-444738c3250b",
+    "orderCode": "EC-K000-KIOSK-0001",
+    "outcome": "noop",
+    "revision": 2,
+    "fields": [],
+    "changedColumns": [],
+    "amendmentId": null,
+    "status": "OPEN",
+    "paymentStatus": "PENDING"
+  }
+}
+```
+
+```json 409 — otra caja la corrigió antes
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "STALE_REVISION",
+  "message": "The order changed since you read it — refetch and retry",
+  "data": {
+    "orderId": "da670a2c-386d-4848-a51b-444738c3250b",
+    "orderCode": "EC-K000-KIOSK-0001",
+    "expectedRevision": 1,
+    "currentRevision": 2
+  }
+}
+```
+
+```json 409 — la orden ya está cerrada
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_NOT_OPEN",
+  "message": "Order is closed and can no longer be updated",
+  "data": {
+    "orderId": "da670a2c-386d-4848-a51b-444738c3250b",
+    "orderCode": "EC-K000-KIOSK-0001",
+    "orderStatus": "COMPLETED"
+  }
+}
+```
+
+```json 409 — ya tiene factura
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "ORDER_ALREADY_INVOICED",
+  "message": "Order already has a fiscal document in flight or authorized and cannot be updated",
+  "data": {
+    "orderId": "da670a2c-386d-4848-a51b-444738c3250b",
+    "orderCode": "EC-K000-KIOSK-0001",
+    "documentStatus": "authorized"
+  }
+}
+```
+
+```json 400 — productos
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "code": "custom",
+      "path": ["order"],
+      "message": "Products and totals cannot be updated yet — only client (fiscal data) and additionalInfo (locator) are accepted"
+    }
+  ]
+}
+```
+
+```json 400 — el bloque de factura sin uid
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "code": "invalid_type",
+      "path": ["client", "uid"],
+      "message": "client.uid is required — the client block replaces, it does not merge"
+    }
+  ]
+}
+```
+</ResponseExample>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Obtener orden" icon="receipt" href="/es/api-reference/get-order">
+    Leé la `revision` antes de corregir.
+  </Card>
+  <Card title="Confirmar pago" icon="money-bill" href="/es/api-reference/confirm-payment">
+    Cobrá la orden cuando ya está corregida.
+  </Card>
+</CardGroup>
