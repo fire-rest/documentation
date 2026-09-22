@@ -63,7 +63,7 @@ The body is a JSON object with these top-level fields. **Everything canonical li
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  Your provider's own id for this delivery. Stored for audit/forensics — **it is not the idempotency key**. Fire deduplicates on `(orderId, eventId)` — a different `eventType` on the same pair returns `409`, except `fiscal_graphic` — so you may safely send a fresh `providerEventId` on every retry without creating duplicates. Use the provider's native event id if available; otherwise a UUID.
+  Your provider's own id for this delivery. Stored for audit/forensics — **it is not the idempotency key**. Fire deduplicates on `(orderId, eventId)` — a different `eventType` on the same pair returns `409`, except `fiscal_graphic` and retries after a failure (see [Retries and rejected cancellations](#retries-and-rejected-cancellations)) — so you may safely send a fresh `providerEventId` on every retry without creating duplicates. Use the provider's native event id if available; otherwise a UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -597,6 +597,26 @@ For non-authorized states, omit `document` (or send it as `null`) and provide `f
 }
 ```
 
+### Retries and rejected cancellations
+
+**A failed issuance can be retried.** If you reported `rejected`, `denied` or `error` and then retry with the authority, send the new result with the **same `eventId`** — the issuance's. Fire accepts it and the flow continues normally: if the new result is `authorized`, `order.invoiced` is dispatched. If the retry fails again, the new reason replaces the previous one.
+
+```text
+rejected (eventId E1)  →  authorized (eventId E1)   ✓ applied, order.invoiced dispatched
+rejected (eventId E1)  →  error (eventId E1)        ✓ new reason stored
+```
+
+**Cancellation rejected by the authority.** When Fire asks you to void an authorized invoice (`order.cancelled` event), the order is left "cancelling". If the authority **does not accept the cancellation**, send `rejected`, `denied` or `error` with the `eventId` of **that** cancellation and the reason in `failure`. Fire reads it as a failed cancellation: **the invoice remains valid** (the order goes back to `authorized`, with the reason in `error`) and no event is dispatched. If you later retry and the authority accepts it, send `cancelled` with the same `eventId` and `order.reversed` is dispatched.
+
+```text
+order.cancelled (eventId C1)  →  rejected (C1)   → the invoice stays authorized
+                              →  cancelled (C1)  → voided, order.reversed dispatched
+```
+
+<Note>
+  A `rejected` on an authorized invoice that is **not** being cancelled still means what it always did: the authority rejected the invoice.
+</Note>
+
 ## Response
 
 On success the endpoint returns **`202 Accepted`** — the event was authenticated, validated, deduplicated, and **enqueued**. A `202` does **not** mean the fiscal document was updated yet; that happens asynchronously in a background worker. Use the [status endpoint](#checking-the-outcome) to confirm the final outcome.
@@ -747,6 +767,8 @@ This is the full behavior matrix — every combination you can send:
 | New `(orderId, eventId)` | **`202`** · `duplicate: false` — enqueued |
 | Same `(orderId, eventId)` with the same `eventType` resent (any `providerEventId`) | **`202`** · `duplicate: true` — existing record returned, **not** re-enqueued |
 | `fiscal_graphic` then a terminal state on the **same `eventId`** | **`202`** both times — the graphic is a step of the same action, not a conflict |
+| A failure (`rejected`, `denied` or `error`) then another outcome with the **same `eventId`** (e.g. `authorized` after a retry) | **`202`** — it is a retry of the same issuance and is applied |
+| The same failure resent with the **same `eventId`** (e.g. a second `rejected` with another reason) | **`202`** · `duplicate: false` — processed, the new reason is stored. A failure dispatches no events, so reprocessing it is harmless |
 | Same `(orderId, eventId)` but **different terminal `eventType`** (e.g. `cancelled` echoing the `authorized`'s `eventId`) | **`409`** — rejected. Use the event that belongs to *this* action |
 | `eventId` not emitted by Fire for this `orderId` | **`400`** — wrong/invented `eventId` |
 | Order/event not under your API key's account + vendor | **`403`** |
