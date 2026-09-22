@@ -63,7 +63,7 @@ O body é um objeto JSON com estes campos top-level. **Tudo o que é canônico v
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  O id próprio do seu provedor para esta entrega. Armazenado para auditoria/forense — **não é a chave de idempotência**. O Fire deduplica por `(orderId, eventId)` — um `eventType` diferente no mesmo par retorna `409`, exceto `fiscal_graphic` — então você pode enviar um `providerEventId` novo a cada retentativa sem criar duplicatas. Use o ID nativo do evento do provedor se disponível; caso contrário, um UUID.
+  O id próprio do seu provedor para esta entrega. Armazenado para auditoria/forense — **não é a chave de idempotência**. O Fire deduplica por `(orderId, eventId)` — um `eventType` diferente no mesmo par retorna `409`, exceto `fiscal_graphic` e as retentativas após uma falha (veja [Retentativas e cancelamento rejeitado](#retentativas-e-cancelamento-rejeitado)) — então você pode enviar um `providerEventId` novo a cada retentativa sem criar duplicatas. Use o ID nativo do evento do provedor se disponível; caso contrário, um UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -596,6 +596,26 @@ Para estados não autorizados, omita `document` (ou envie `null`) e forneça `fa
 }
 ```
 
+### Retentativas e cancelamento rejeitado
+
+**Uma emissão com falha pode ser retentada.** Se você reportou `rejected`, `denied` ou `error` e depois retenta junto ao órgão, envie o novo resultado com o **mesmo `eventId`** — o da emissão. O Fire aceita e o fluxo segue normal: se o novo resultado for `authorized`, `order.invoiced` é despachado. Se a retentativa falhar de novo, o motivo novo substitui o anterior.
+
+```text
+rejected (eventId E1)  →  authorized (eventId E1)   ✓ aplicado, sai order.invoiced
+rejected (eventId E1)  →  error (eventId E1)        ✓ motivo novo salvo
+```
+
+**Cancelamento rejeitado pelo órgão.** Quando o Fire pede para anular uma nota autorizada (evento `order.cancelled`), o pedido fica "cancelando". Se o órgão **não aceitar o cancelamento**, envie `rejected`, `denied` ou `error` com o `eventId` **desse** cancelamento e o motivo em `failure`. O Fire interpreta como cancelamento com falha: **a nota continua válida** (o pedido volta para `authorized`, com o motivo em `error`) e nenhum evento é despachado. Se depois você retentar e o órgão aceitar, envie `cancelled` com o mesmo `eventId` e `order.reversed` é despachado.
+
+```text
+order.cancelled (eventId C1)  →  rejected (C1)   → a nota continua autorizada
+                              →  cancelled (C1)  → anulada, sai order.reversed
+```
+
+<Note>
+  Um `rejected` sobre uma nota autorizada que **não** está sendo cancelada continua significando o mesmo de sempre: o órgão rejeitou a nota.
+</Note>
+
 ## Resposta
 
 Em caso de sucesso o endpoint retorna **`202 Accepted`** — o evento foi autenticado, validado, deduplicado e **enfileirado**. Um `202` **não** significa que o documento fiscal já foi atualizado; isso acontece de forma assíncrona em um worker em segundo plano. Use o [endpoint de status](#verificar-o-resultado) para confirmar o resultado final.
@@ -743,6 +763,8 @@ Esta é a matriz completa de comportamento — cada combinação que você pode 
 | `(orderId, eventId)` novo | **`202`** · `duplicate: false` — enfileirado |
 | Mesmo `(orderId, eventId)` com o mesmo `eventType` reenviado (qualquer `providerEventId`) | **`202`** · `duplicate: true` — registro existente retornado, **não** re-enfileirado |
 | `fiscal_graphic` e depois um estado terminal com o **mesmo `eventId`** | **`202`** nas duas vezes — a representação é um passo da mesma ação, não um conflito |
+| Uma falha (`rejected`, `denied` ou `error`) e depois outro desfecho com o **mesmo `eventId`** (ex. `authorized` após retentar) | **`202`** — é a retentativa da mesma emissão, é aplicada |
+| A mesma falha reenviada com o **mesmo `eventId`** (ex. um segundo `rejected` com outro motivo) | **`202`** · `duplicate: false` — processada, o motivo novo é salvo. Uma falha não dispara eventos, então reprocessá-la é inofensivo |
 | Mesmo `(orderId, eventId)` mas **`eventType` diferente** (ex. `cancelled` com o `eventId` do `authorized`) | **`409`** — rejeitado. Use o evento que pertence a *esta* ação |
 | `eventId` não emitido pelo Fire para esse `orderId` | **`400`** — `eventId` incorreto/inventado |
 | Pedido/evento fora da conta + vendor da sua API key | **`403`** |
