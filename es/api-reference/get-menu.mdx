@@ -1,0 +1,254 @@
+---
+title: "Obtener menú"
+api: "GET https://api.fire.rest/api/v1/fire/external/stores/{storeId}/menu"
+description: "Lee el último menú generado de una terna de tienda (canal × tipo de fulfillment), con su estado de sincronización."
+authMethod: "bearer"
+---
+
+<Warning>
+  **Próximamente.** El diseño está cerrado pero este endpoint todavía no está implementado. Esta
+  página describe el contrato acordado para que los integradores puedan planificar antes del
+  release.
+</Warning>
+
+Devuelve el **último menú generado** de una terna de una tienda — la misma combinación que de otra
+forma te llegaría empujada como webhook [`menu.updated`](/es/webhook-reference/menu-updated). Usá
+[Listar menús](/es/api-reference/list-menus) para descubrir qué ternas de una tienda tienen hoy uno.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con scope `menu:read`. La key **debe ser vendor-scoped** (binding account +
+  vendor) — las keys sin `vendorId` se rechazan con `403`.
+</ParamField>
+
+## Path params
+
+<ParamField path="storeId" type="string" required>
+  UUID de la tienda (`stores.id`).
+</ParamField>
+
+## Query params
+
+<Info>
+  No existe una terna por defecto — Fire nunca adivina una por tu cuenta. Los dos parámetros son
+  obligatorios; si falta alguno, la respuesta es `400`.
+</Info>
+
+<ParamField query="channel" type="string" required>
+  Código del canal de venta (ej. `KIOSK`). Se compara sin distinguir mayúsculas.
+</ParamField>
+
+<ParamField query="fulfillmentType" type="string" required>
+  Código del tipo de fulfillment (ej. `DINE_IN`, `TAKEAWAY`). Se compara sin distinguir mayúsculas.
+</ParamField>
+
+## Petición
+
+<RequestExample>
+```http
+GET https://api.fire.rest/api/v1/fire/external/stores/550e8400-e29b-41d4-a716-446655440000/menu?channel=KIOSK&fulfillmentType=DINE_IN
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+## Respuesta
+
+<ResponseField name="menu" type="object">
+  Mismo shape que `data.menu` en el webhook [`menu.updated`](/es/webhook-reference/menu-updated#campos)
+  — `list`, `categories`, `products`, `modifierGroups` — con el mismo enriquecimiento que hoy reciben
+  los agregadores (ids internos en `list.storeId` / `list.channelId`, `categories[].assignedAt`). Ver
+  esa página para la referencia completa de campos.
+
+  <Expandable title="brechas conocidas">
+    `productModifiers[]` y `modifierGroups[].modifierOptions[]` todavía no llevan `active` ni
+    `assignedAt` — la misma brecha que tiene hoy el payload del webhook. Este endpoint devuelve
+    exactamente lo que se emite; la brecha se cierra del lado del emisor, y esta respuesta hereda
+    el arreglo.
+  </Expandable>
+</ResponseField>
+
+<Info>
+  Mismo shape también para canales tipo X-MART. `KIOSK` (`authType: XMART_LOGIN` — ver
+  [`channel.updated`](/es/webhook-reference/channel-updated)) es uno de ellos: su payload guardado
+  lleva además el número de tienda y el id externo del canal, ya plegados en el `list` de arriba.
+</Info>
+
+<ResponseField name="sync" type="object">
+  <Expandable title="sync">
+    <ResponseField name="status" type="string">`SYNCED` | `FAILED` | `PENDING` — el último intento de envío de esta versión del menú.</ResponseField>
+    <ResponseField name="generatedAt" type="string">Timestamp ISO 8601 de esta versión del menú.</ResponseField>
+    <ResponseField name="syncedAt" type="string | null">Timestamp ISO 8601 de la última entrega **exitosa**. `null` si nunca sincronizó. Ver [Semántica de `syncedAt`](#semantica-de-syncedat).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "menu": {
+      "list": {
+        "listId": "812-KIOSK-DINE_IN",
+        "listName": "KIOSK - Store 812",
+        "storeId": "aa11bb22-0000-4000-8000-000000000002",
+        "storeName": "Quicentro",
+        "channelId": "cc33dd44-0000-4000-8000-000000000009",
+        "channelReferenceName": "DINE_IN",
+        "timezone": "America/Guayaquil"
+      },
+      "categories": [
+        {
+          "productCategoryId": "cat_001",
+          "name": "Burgers",
+          "assignedAt": "2026-09-20T12:00:00Z",
+          "productListing": [ { "productId": "prod_001", "position": 1 } ]
+        }
+      ],
+      "products": [
+        {
+          "productId": "prod_001",
+          "name": "Classic Burger",
+          "type": "PRODUCTO",
+          "active": true,
+          "priceInfo": { "price": 4.5 },
+          "productModifiers": [ { "modifierId": "mod_001", "position": 1 } ]
+        },
+        {
+          "productId": "prod_size_small",
+          "name": "Small",
+          "type": "MODIFIER",
+          "active": true,
+          "priceInfo": { "price": 0 },
+          "productModifiers": []
+        },
+        {
+          "productId": "prod_size_large",
+          "name": "Large",
+          "type": "MODIFIER",
+          "active": true,
+          "priceInfo": { "price": 0.5 },
+          "productModifiers": []
+        }
+      ],
+      "modifierGroups": [
+        {
+          "modifierId": "mod_001",
+          "modifier": "Choose your size",
+          "minOptions": 1,
+          "maxOptions": 1,
+          "type": "RADIO",
+          "modifierOptions": [
+            { "optionId": "opt_001", "productId": "prod_size_small", "name": "Small", "position": 1 },
+            { "optionId": "opt_002", "productId": "prod_size_large", "name": "Large", "position": 2 }
+          ]
+        }
+      ]
+    },
+    "sync": {
+      "status": "FAILED",
+      "generatedAt": "2026-09-29T09:00:00Z",
+      "syncedAt": "2026-09-28T10:00:04Z"
+    }
+  }
+}
+```
+
+```json 400 — falta un query param obligatorio
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "channel and fulfillmentType are required"
+}
+```
+
+```json 401 — API key inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or missing API key"
+}
+```
+
+```json 403 — key sin el scope
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key does not have required scope: menu:read"
+}
+```
+
+```json 404 — la tienda no es tuya
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "Store not found"
+}
+```
+
+```json 404 — la terna no tiene menú
+{
+  "success": false,
+  "error": "MENU_NOT_AVAILABLE",
+  "message": "This terna has no menu available"
+}
+```
+</ResponseExample>
+
+## Notas
+
+### El último menú generado, aunque nunca haya sincronizado
+
+Fire guarda el payload del menú **antes** de enviarlo, y cada intento sobrescribe el anterior. Este
+endpoint devuelve esa última versión sin importar si el envío llegó al canal — el bloque `sync` te
+dice si llegó.
+
+Ejemplo: el lunes `KIOSK`/`DINE_IN` sincroniza bien. El martes suben los precios y el envío falla.
+El `GET` del miércoles devuelve la versión del martes con `sync.status: FAILED` y `sync.syncedAt`
+todavía apuntando al lunes.
+
+### Los agotados se recalculan al leer
+
+El `active` del payload guardado refleja el estado de agotado **al momento de generar el menú**. Un
+producto marcado como agotado después llega al canal por su propio webhook, no reescribiendo el
+menú guardado. Este endpoint recalcula `active` contra el estado de agotado **al momento de la
+consulta**, tanto en `products[].active` como en los productos-opción de combos.
+
+Ejemplo, en los dos sentidos: el menú se genera a las 10:00 con un producto agotado. A las 11:00
+vence el apagado y el webhook lo reactiva en el canal. Un `GET` a las 11:05 lo muestra activo, igual
+que el canal — no agotado, que es lo único que mostraría el payload guardado por sí solo.
+
+### Semántica de `syncedAt`
+
+`sync.syncedAt` significa "última entrega exitosa", de forma consistente en todos los tipos de
+canal, incluidos los de X-MART. Un envío fallido nunca lo avanza.
+
+### Terna sin menú — `404 MENU_NOT_AVAILABLE`
+
+Si la terna existe pero no tiene menú o lista de precios asignados, la respuesta es `404
+MENU_NOT_AVAILABLE` — distinto del `404` que se usa cuando la tienda en sí no existe o pertenece a
+otro tenant. La tienda ya se valida contra tu key antes de esta verificación, así que esta respuesta
+nunca filtra datos de otro tenant.
+
+### Envío vacío — también `404 MENU_NOT_AVAILABLE`
+
+Cuando el aplastado produce cero productos vendibles, el envío falla sin llegar nunca al canal —
+pero el payload guardado igual queda con `products: []`. Este endpoint trata ese caso igual que una
+terna sin menú: `404 MENU_NOT_AVAILABLE`, en vez de un `200` con un menú vacío. Un menú vacío acá
+sería indistinguible de "esta tienda no vende nada", que no es lo que pasó — el menú nunca llegó al
+canal. [Listar menús](/es/api-reference/list-menus) igual muestra la terna, con `syncStatus:
+FAILED`, para que el problema se vea.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Listar menús" icon="list" href="/es/api-reference/list-menus">
+    Descubrí qué ternas de una tienda tienen un menú generado.
+  </Card>
+  <Card title="menu.updated" icon="bell" href="/es/webhook-reference/menu-updated">
+    El webhook que este endpoint refleja — referencia completa de campos para `data.menu`.
+  </Card>
+  <Card title="Obtener tienda" icon="store" href="/es/api-reference/get-store">
+    Lee una tienda puntual por id.
+  </Card>
+</CardGroup>
