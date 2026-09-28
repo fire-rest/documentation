@@ -1,128 +1,154 @@
 ---
 title: "Vinculación"
-description: "Cómo vincular un terminal POS a una tienda desde el backoffice de Fire."
+description: "Registra un equipo como caja de una tienda con un código de un solo uso, o vuelve a vincular una caja que ya existía sin perder su historial."
 ---
 
-Esta guía describe cómo registrar un terminal POS contra una tienda. El registro es una operación única por dispositivo: el administrador genera un código de un solo uso desde el backoffice y el operador lo ingresa en la app del POS. Una vez vinculado, el terminal queda asociado a la tienda y los cajeros pueden iniciar sesión con su PIN.
+Un POS sin vincular no sabe de qué tienda es: no tiene menú, cajeros ni numeración fiscal. Vincular es el paso que lo convierte en una caja de la tienda. Se hace una vez por equipo, con un código de 6 dígitos que genera el encargado en el backoffice y que se ingresa en el POS.
+
+Si el equipo ya era una caja y se borró la caché, se cambió o se eliminó por error, no hay que crear una caja nueva: se **re-vincula** la misma y conserva su nombre, su historial y su identificador fiscal.
+
+<Note>
+  **Lo mínimo que hay que saber**
+
+  - El código se genera en **Fire POS → Terminales → Crear slot** y vence a los 30 minutos si nadie lo usa.
+  - **Vincular una caja nueva** crea un terminal nuevo. **Re-vincular una caja existente** recupera uno que ya estaba.
+  - El backoffice y el POS tienen que ser del mismo entorno: un código de producción no sirve en staging.
+</Note>
 
 ## Requisitos previos
 
-- Acceso al backoffice de Fire en **[app.fire.rest](https://app.fire.rest)**, con permisos sobre la tienda y rol **Fire POS Admin**.
-- El dispositivo encendido, con conexión a internet y un navegador compatible. Consulta los [requisitos del terminal](/es/manuals/pos/hardware-requirements) para las especificaciones completas de hardware, sistema operativo, navegador y red.
+- Acceso al backoffice de Fire en **[app.fire.rest](https://app.fire.rest)**, con permisos sobre la tienda.
+- El equipo encendido, con internet y un navegador compatible. Consulta los [requisitos del terminal](/es/manuals/pos/hardware-requirements).
 
 <Info>
-  **FIRE POS no se instala.** Es una aplicación web que se abre en el navegador del terminal — no hay ejecutable ni instalador. Opcionalmente se puede instalar como PWA desde el propio navegador para que abra a pantalla completa.
+  **FIRE POS no se instala.** Es una aplicación web que se abre en el navegador del equipo. Opcionalmente se puede instalar como PWA desde el propio navegador para que abra a pantalla completa.
 
-  Esta guía usa dos aplicaciones distintas: el **backoffice**, donde generas el código, y el **POS**, donde lo ingresas.
+  Esta guía usa dos aplicaciones: el **backoffice**, donde generas el código, y el **POS**, donde lo ingresas.
 
-  | Entorno | Backoffice (pasos 1-5) | FIRE POS (pasos 6-8) |
+  | Entorno | Backoffice | FIRE POS |
   |---|---|---|
   | **Producción** | [app.fire.rest](https://app.fire.rest) | [pos.fire.rest](https://pos.fire.rest) |
   | **Staging** | [stg.app.fire.rest](https://stg.app.fire.rest) | [stg.pos.fire.rest](https://stg.pos.fire.rest) |
 </Info>
 
-<Warning>
-  **Ambas aplicaciones deben estar en el mismo entorno.** Un código generado en el backoffice de producción no se puede canjear en el POS de staging, ni al revés — el POS lo rechaza como código inválido.
-</Warning>
-
-Para terminales que imprimen tickets y vouchers, instala también el **Agente Fire** en el dispositivo. Consulta la [guía del Agente Fire](/es/manuals/fire-agent/installation) para la instalación completa.
+Para imprimir tickets y vouchers, el equipo necesita además el **Agente Fire**. Consulta la [guía del Agente Fire](/es/manuals/fire-agent/installation).
 
 <Card title="Descargar Agente Fire (Windows)" icon="download" href="https://drive.google.com/uc?export=download&id=1OiqSbD5flcsc6cV2ZjxxkHy-cmxwH5d1">
   Instalador de Windows para impresión térmica local.
 </Card>
 
-## 1. Selecciona país y vendor
+## 1. Elige la tienda
 
-Entra al backoffice en **[app.fire.rest](https://app.fire.rest)** (o [stg.app.fire.rest](https://stg.app.fire.rest) en staging). Desde la esquina superior derecha, abre el selector y elige el país y el vendor en el que vas a operar. Todas las acciones de esta guía se ejecutan dentro de ese contexto.
-
-<Frame>
-  <img src="/images/manuals/pos/linking/01-select-country-vendor.png" alt="Selector de país y vendor en el backoffice" />
-</Frame>
-
-## 2. Confirma el canal Fire POS
-
-En el menú lateral, asegúrate de tener seleccionado el canal **Fire POS**. La sección de Terminales solo está disponible dentro de ese canal.
+En el backoffice, elige el país y el vendor en el selector de arriba a la derecha, el canal **Canal - POS** y, en el header, la tienda donde va a trabajar el equipo. La caja queda en esa tienda.
 
 <Frame>
-  <img src="/images/manuals/pos/linking/02-confirm-channel.png" alt="Selector de canal con Fire POS seleccionado" />
+  <img src="/images/manuals/pos/linking/01-pick-store.png" alt="Selector de tienda del header con Laboratorio Colombia seleccionada" />
 </Frame>
 
-## 3. Selecciona la tienda destino
+## 2. Crea el slot
 
-En el selector de tienda del header, elige la tienda en la que vas a registrar el terminal. El slot que generes en el paso siguiente queda atado a esa tienda — no podrás reasignarlo después.
+Abre **Fire POS → Terminales** y toca **Crear slot**.
 
 <Frame>
-  <img src="/images/manuals/pos/linking/03-pick-store.png" alt="Selector de tienda en el header del backoffice" />
+  <img src="/images/manuals/pos/linking/02-create-slot-button.png" alt="Página Terminales con el botón Crear slot" />
 </Frame>
 
-## 4. Abre la sección de Terminales
-
-En el menú lateral abre **POS → Terminales**. Verás un listado con los terminales ya registrados, agrupados por estado (Activos, Slots pendientes, Suspendidos, Revocados).
+En **Qué quieres hacer**, elige **Vincular una caja nueva**. En **Validez (minutos)** queda 30, que alcanza para ir hasta el equipo; puedes elegir entre 1 y 60.
 
 <Frame>
-  <img src="/images/manuals/pos/linking/04-terminals-section.png" alt="Submenú POS con la opción Terminales" />
+  <img src="/images/manuals/pos/linking/03-create-slot-modal.png" alt="Diálogo Crear slot de vinculación con la tienda destino, el modo y la validez" />
 </Frame>
 
-## 5. Crea un slot de vinculación
-
-1. En la esquina superior derecha haz clic en **+ Crear slot**.
-
-   <Frame>
-     <img src="/images/manuals/pos/linking/05-create-slot-button.png" alt="Página de Terminales con el botón Crear slot" />
-   </Frame>
-
-2. **Modal Crear slot de vinculación.** Verifica la tienda destino y elige la validez del código (por defecto **30 minutos**). Haz clic en **Generar código**.
-
-   <Frame>
-     <img src="/images/manuals/pos/linking/06-create-slot-modal.png" alt="Modal Crear slot con la tienda destino y la validez del código" />
-   </Frame>
-
-3. El backoffice muestra un **código de 6 dígitos** con la fecha de expiración. Usa el botón **Copiar** o anótalo. El código solo se muestra una vez y solo se puede usar para vincular un único dispositivo.
-
-   <Frame>
-     <img src="/images/manuals/pos/linking/07-slot-code.png" alt="Código de 6 dígitos generado con botón de copiar y fecha de expiración" />
-   </Frame>
-
-<Note>
-  Si el código expira antes de usarse, el slot queda inválido. Vuelve a este paso para generar uno nuevo.
-</Note>
-
-## 6. Abre la app del POS
-
-En el navegador del dispositivo, abre **[pos.fire.rest](https://pos.fire.rest)** — o [stg.pos.fire.rest](https://stg.pos.fire.rest) si generaste el código en staging. Si el terminal nunca fue vinculado, la pantalla inicial muestra el título **Vincular terminal** y un teclado numérico de 6 posiciones.
+Toca **Generar código**. El diálogo muestra el código de 6 dígitos, un botón para copiarlo y cuándo vence.
 
 <Frame>
-  <img src="/images/manuals/pos/linking/08-open-pos-app.png" alt="Pantalla del POS con el título Vincular terminal y el teclado numérico" />
+  <img src="/images/manuals/pos/linking/05-slot-code.png" alt="Código de vinculación de 6 dígitos con el botón Copiar y la hora de vencimiento" />
 </Frame>
 
-## 7. Ingresa el código
+Mientras nadie lo use, el código aparece en la pestaña **Slots pendientes**.
 
-Tipea los 6 dígitos en el teclado. Al completar el sexto dígito, la app valida el código automáticamente — no hace falta confirmar.
+## 3. Ingresa el código en el POS
+
+Abre el POS en el navegador del equipo. Sin vincular, muestra **Vincular terminal** y un teclado numérico.
 
 <Frame>
-  <img src="/images/manuals/pos/linking/09-type-code.png" alt="Teclado numérico con los 6 dígitos ingresados" />
+  <img src="/images/manuals/pos/linking/06-open-pos-app.png" alt="Pantalla Vincular terminal del POS con el teclado numérico" />
 </Frame>
 
-Mientras se valida, la pantalla muestra un indicador de carga. Si el código es inválido o expiró, aparece un mensaje de error y el teclado se limpia para que ingreses uno nuevo.
-
-## 8. El terminal queda vinculado
-
-Cuando la validación termina, el terminal recibe su nombre, su tienda y sus credenciales internas, y redirige automáticamente a la pantalla de **inicio de sesión del cajero**. Desde ese momento el dispositivo opera de forma autónoma — los cajeros pueden iniciar sesión con su PIN sin volver a usar el código.
+Escribe los 6 dígitos con el teclado de la pantalla, con el teclado físico o con **Pegar código**. Con el sexto dígito el POS se vincula solo.
 
 <Frame>
-  <img src="/images/manuals/pos/linking/10-cashier-signin.png" alt="Pantalla de inicio de sesión del cajero después de vincular el terminal" />
+  <img src="/images/manuals/pos/linking/07-type-code.png" alt="Teclado de vinculación con cinco dígitos ingresados" />
 </Frame>
 
-<Check>
-  El terminal quedó vinculado a la tienda y listo para operar.
-</Check>
+## 4. Configura la impresora
 
-## Verificación desde el backoffice
-
-Vuelve a **POS → Terminales** y abre la pestaña **Activos**. El terminal recién registrado aparece en la lista con su nombre, fecha de última conexión y estado **ACTIVO**.
+Recién vinculado, el POS ofrece elegir la impresora térmica. Si el Agente Fire está instalado, elige la impresora, toca **Imprimir prueba** y **Guardar**. Si todavía no lo instalaste, toca **Omitir por ahora**: puedes hacerlo después desde el menú.
 
 <Frame>
-  <img src="/images/manuals/pos/linking/11-terminal-active.png" alt="Listado de terminales con el nuevo dispositivo en estado ACTIVO" />
+  <img src="/images/manuals/pos/linking/08-printer-setup.png" alt="Diálogo Configurar impresora del POS, sin el agente local instalado" />
 </Frame>
 
-En la pestaña **Slots pendientes** ya no debería aparecer el slot que generaste — pasó al estado **CLAIMED** y se consume automáticamente.
+## 5. Verifica la caja
+
+El POS muestra el inicio de sesión de los cajeros, con el nombre de la caja arriba a la derecha.
+
+<Frame>
+  <img src="/images/manuals/pos/linking/09-cashier-signin.png" alt="Inicio de sesión de los cajeros con el nombre de la caja recién vinculada" />
+</Frame>
+
+En el backoffice, la caja aparece en **Terminales → Activos** con un nombre como **CO-K000-POS-15**: país, código de la tienda, tipo y número.
+
+<Frame>
+  <img src="/images/manuals/pos/linking/10-terminal-active.png" alt="Tarjeta de la caja recién vinculada en la lista de terminales activos" />
+</Frame>
+
+<Tip>
+  Si el POS ya muestra la lista de cajeros, terminaste. Para entrar con un cajero, consulta [Iniciar turno](/es/manuals/pos/start-shift).
+</Tip>
+
+---
+
+## Re-vincular una caja existente
+
+Úsalo cuando el equipo ya era una caja y dejó de estar vinculado: se borró la caché del navegador, se cambió el equipo o se eliminó la caja por error. La caja conserva su nombre, su historial y su identificador fiscal.
+
+1. En **Crear slot**, elige **Re-vincular una caja existente**.
+2. En **Caja a re-vincular**, elige la caja.
+3. Toca **Generar código** e ingrésalo en el POS como en una vinculación nueva.
+
+<Frame>
+  <img src="/images/manuals/pos/linking/04-repair-mode.png" alt="Diálogo Crear slot en modo re-vincular, con la caja elegida y el aviso de caja en operación" />
+</Frame>
+
+Si la caja está operando, solo se puede re-vincular desde el mismo equipo donde está hoy. Para pasarla a otro equipo, revócala primero en [Administración de terminales](/es/manuals/pos/terminal-admin). Tu usuario queda en la auditoría como quien autorizó la re-vinculación.
+
+## Errores que salen caros
+
+<Warning>
+  **Vincular una caja nueva cuando había que re-vincular.** La caja anterior queda con su turno abierto, el cajero no puede abrir otra, y la caja nueva empieza su propia numeración fiscal. Si el equipo ya era una caja, re-vincúlala.
+</Warning>
+
+<Warning>
+  **Mezclar entornos.** Un código generado en el backoffice de staging no sirve en el POS de producción, ni al revés: el POS lo rechaza como código inválido.
+</Warning>
+
+## Preguntas frecuentes
+
+<AccordionGroup>
+  <Accordion title="El POS dice que el código es inválido">
+    Revisa que no haya vencido (30 minutos por defecto), que no se haya usado y que el backoffice y el POS sean del mismo entorno. Si hace falta, genera otro.
+  </Accordion>
+
+  <Accordion title="¿Cómo se llama la caja nueva?">
+    El nombre lo pone el sistema: país, código de la tienda, tipo y número, como **CO-K000-POS-15**. No se elige.
+  </Accordion>
+
+  <Accordion title="Borré la caché del navegador y el POS pide vincular otra vez">
+    Re-vincula la misma caja: en **Crear slot** elige **Re-vincular una caja existente** y la caja. Así conserva su historial y su numeración.
+  </Accordion>
+
+  <Accordion title="El POS no encuentra la impresora">
+    Instala y abre el Agente Fire en el equipo, y toca **Reintentar** en la configuración de la impresora.
+  </Accordion>
+</AccordionGroup>
