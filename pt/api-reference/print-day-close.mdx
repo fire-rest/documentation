@@ -25,6 +25,19 @@ Se a loja não fechou aquele dia de negócio, a chamada falha com `409 PRINT_DAY
 
 A tela de pré-visualização do Fire tolera um dia aberto — ela desenha placeholders para que o template possa ser desenhado — mas um caixa não.
 
+## O parcial do dia
+
+Com `"partial": true` o mesmo endpoint imprime **como está o dia até agora**, sem fechar nada — o que no caixa costuma se chamar de leitura X.
+
+- Só para o dia de negócio **aberto** da loja: `businessDayDate` precisa ser o dia em curso. Qualquer outra data responde `409 PRINT_DAY_NOT_OPEN`, com o dia aberto em `data.openBusinessDayDate` (ou `null` se a loja não tiver um dia aberto).
+- É calculado com **o mesmo código do fechamento**, então um parcial e o fechamento daquele dia não podem divergir em como um número é contado. Não grava nada: os pedidos abertos continuam abertos, não somam como venda e aparecem como abertos.
+- Usa **o mesmo template do fechamento**, com uma faixa invertida no topo: `PARCIAL — NÃO É FECHAMENTO` e o horário do corte. Quem fechou e os pedidos forçados saem vazios: ainda não existem.
+- A Fire guarda o parcial por **60 segundos** por loja e dia: pedir de novo dentro desse minuto devolve o mesmo corte, com o mesmo horário.
+
+<Warning>
+  Um dia passado que não fechou **não** tem parcial: é um fechamento que falhou, e um papel o esconderia. Esse continua respondendo `409 PRINT_DAY_NOT_CLOSED`.
+</Warning>
+
 ## Autenticação
 
 <ParamField header="x-api-key" type="string" required>
@@ -71,6 +84,10 @@ A tela de pré-visualização do Fire tolera um dia aberto — ela desenha place
   A qual template aquela versão pertence. Veja a [nota sobre reimpressão](/pt/api-reference/print-order-document#corpo) no endpoint de pedido.
 </ParamField>
 
+<ParamField body="partial" type="boolean">
+  `true` imprime o [parcial do dia](#o-parcial-do-dia) em vez do fechamento. Default `false`.
+</ParamField>
+
 <RequestExample>
 ```http
 POST https://api.fire.rest/api/v1/fire/external/printing/stores/550e8400-e29b-41d4-a716-446655440000/days/2026-05-25
@@ -93,6 +110,7 @@ O envelope é idêntico. Estes blocos trazem valores diferentes:
     <ResponseField name="countryCode" type="string">O país cujas regras e idioma foram aplicados.</ResponseField>
     <ResponseField name="storeId" type="string">A loja.</ResponseField>
     <ResponseField name="businessDayDate" type="string">O dia operacional, `YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="partial" type="boolean">Só quando você pediu o parcial: `true`. Não vem num fechamento.</ResponseField>
   </Expandable>
 </ResponseField>
 
@@ -106,7 +124,7 @@ O envelope é idêntico. Estes blocos trazem valores diferentes:
       Sempre `none`. Um fechamento do dia não vai ao fisco, então não há nada a esperar e nada a tentar de novo.
     </ResponseField>
     <ResponseField name="isCancelled" type="boolean">Sempre `false`.</ResponseField>
-    <ResponseField name="asOf" type="string | null">Quando o dia foi fechado.</ResponseField>
+    <ResponseField name="asOf" type="string | null">Quando o dia foi fechado. Num parcial, o horário do corte.</ResponseField>
     <ResponseField name="fingerprint" type="string">Muda se o relatório mudar — um dia reaberto e fechado de novo, um template recém-publicado.</ResponseField>
   </Expandable>
 </ResponseField>
@@ -166,8 +184,19 @@ O envelope é idêntico. Estes blocos trazem valores diferentes:
 ```json 409 — o dia não está fechado
 {
   "success": false,
-  "error": "PRINT_DAY_NOT_CLOSED",
-  "message": "That store did not close that day"
+  "error": "CONFLICT",
+  "code": "PRINT_DAY_NOT_CLOSED",
+  "message": "Esa tienda no cerró ese día"
+}
+```
+
+```json 409 — parcial de um dia que não é o aberto
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "PRINT_DAY_NOT_OPEN",
+  "message": "Esa jornada no está abierta: el parcial es solo del día en curso",
+  "data": { "businessDayDate": "2026-10-04", "openBusinessDayDate": "2026-10-05" }
 }
 ```
 
@@ -188,3 +217,6 @@ O envelope é idêntico. Estes blocos trazem valores diferentes:
 | `401` | `UNAUTHORIZED` | API key ausente ou inválida. |
 | `403` | `FORBIDDEN` | A key não tem `printing:read`, não é vendor-scoped, ou a loja pertence a outro account/vendor. |
 | `409` | `PRINT_DAY_NOT_CLOSED` | A loja não fechou aquele dia de negócio. |
+| `409` | `PRINT_DAY_NOT_OPEN` | Você pediu o parcial (`partial: true`) de um dia que não é o dia aberto da loja. |
+
+Nos `409`, `error` é `CONFLICT` e o código desta tabela vem em `code`.
