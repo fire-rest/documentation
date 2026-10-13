@@ -1,0 +1,104 @@
+---
+title: "API keys"
+description: "Crie uma API key do Fire, vincule-a a um vendor e escolha os scopes que cada endpoint exige."
+---
+
+Toda chamada aos endpoints `/api/v1/*` é autenticada com uma API key enviada no header `x-api-key`. Esta página explica como criá-la, o que significa **vendor scope** (o motivo da maioria dos `403`) e qual **scope** cada endpoint precisa.
+
+Para o fluxo de login, os demais headers e a verificação de assinatura de webhooks, consulte [Autenticação](/pt/authentication).
+
+## Criar uma key
+
+As keys são criadas no dashboard do Fire, em **Developers → API Management** (`/developers/firepos-api-management`). A página lista suas keys existentes (nome, vendor, prefixo, scopes, status, data de criação e de expiração). Antes de começar, escolha a **conta e o vendor** desejados no seletor do dashboard (no topo), depois selecione **Create API Key** e preencha o formulário:
+
+<Steps>
+  <Step title="Confira a conta e o vendor">
+    O formulário mostra a **Account** e o **Vendor** aos quais a key ficará vinculada. Eles vêm da sua seleção no dashboard e não são alterados no formulário. Com **All vendors** selecionado, a key fica **sem vínculo de vendor** — veja [Vendor scope](#vendor-scope).
+  </Step>
+  <Step title="Nome e descrição">
+    **Name** é obrigatório (por exemplo, `XMART Production`). **Description** é opcional: escreva para que a key é usada, assim você consegue distingui-las depois.
+  </Step>
+  <Step title="Escolha os scopes">
+    Selecione pelo menos um scope. Conceda apenas o que sua integração chama — veja [Scopes](#scopes).
+  </Step>
+  <Step title="Defina uma expiração (opcional)">
+    Escolha uma data, ou deixe vazio para uma key que nunca expira.
+  </Step>
+</Steps>
+
+Selecione **Create API Key**, copie a key (ela começa com `pk_live_`) e guarde-a com segurança. Envie-a em cada requisição:
+
+```http
+x-api-key: <your_api_key>
+```
+
+<Note>
+  `x-api-key` é o header recomendado. O Fire também aceita a mesma key como `Authorization: Bearer pk_live_...` (alias legacy, que a tela do dashboard ainda menciona). Se você enviar ambos, `x-api-key` é usado.
+</Note>
+
+<Note>
+  Fale com a equipe da sua conta no Fire se você não vir **API Management** em **Developers** no seu dashboard.
+</Note>
+
+## Gerenciar keys
+
+- **Editar scopes:** você pode alterar os scopes de uma key sem mudar o segredo dela.
+- **Nome, descrição e expiração** não podem ser editados depois que a key é criada.
+- **Revogar:** uma key revogada para de funcionar e não pode mais ser editada.
+- **Rotação:** não há rotação integrada. Para rotacionar, crie uma key nova com os mesmos scopes, troque sua integração para ela e depois revogue a antiga.
+
+## Vendor scope
+
+Uma key **vendor-scoped** é vinculada a uma conta **e** a um vendor (uma marca ou conceito dentro dessa conta). O Fire deriva ambos da própria key — você nunca envia `accountId` nem `vendorId` como parâmetros — e só retorna ou aceita dados que pertencem a esse vínculo.
+
+A maioria dos endpoints `/api/v1/fire/external/*` e os webhooks de entrada (`webhooks:*`) **exigem** uma key vendor-scoped. Uma key sem vendor é rejeitada:
+
+```json 403 — key not vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
+}
+```
+
+Para obter uma key vendor-scoped, **selecione um vendor** no dashboard antes de criá-la. Dados de outra conta ou de outro vendor também retornam `403`, então o mais limpo é uma key por vendor.
+
+## Scopes
+
+Um scope dá acesso a uma família de endpoints. Uma key sem o scope exigido é rejeitada com `403` e uma mensagem indicando o scope que falta.
+
+<Info>
+  Ao lado de alguns scopes o dashboard mostra `requires account` ou `requires vendor`. Esse rótulo só é verificado quando você salva a key. **Cada endpoint exige o seu próprio vínculo quando você o chama**, e nem sempre coincide com o rótulo — a página do endpoint indica o que ele precisa. Na dúvida, crie a key com um vendor selecionado.
+</Info>
+
+| Rótulo no dashboard | Scope | Endpoints |
+|---|---|---|
+| Orders Write | `orders:write` | [Atualizar pedido](/pt/api-reference/update-order), [Confirmar pagamento](/pt/api-reference/confirm-payment), [Vendas perdidas](/pt/api-reference/lost-sales) |
+| Orders Read | `orders:read` | [Listar pedidos](/pt/api-reference/list-orders), [Listar pedidos da loja](/pt/api-reference/list-store-orders), [Obter pedido](/pt/api-reference/get-order), [Elegibilidade de cancelamento](/pt/api-reference/cancellation-eligibility), [Impressão fiscal](/pt/api-reference/fiscal-print), [Motivos de recusa de pagamento](/pt/api-reference/payment-decline-reasons) |
+| Printing Read | `printing:read` | [Imprimir fechamento do dia](/pt/api-reference/print-day-close), [Imprimir documento do pedido](/pt/api-reference/print-order-document) |
+| Store Read | `store:read` | [Listar lojas](/pt/api-reference/list-stores), [Obter loja](/pt/api-reference/get-store), [Listar terminais da loja](/pt/api-reference/list-store-terminals) — exigem uma key **vendor-scoped** |
+| Menu Read | `menu:read` | [Listar menus](/pt/api-reference/list-menus), [Obter menu](/pt/api-reference/get-menu) |
+| Cash Management Read | `cash-management:read` | [Dinheiro esperado](/pt/api-reference/cash-expected), [Conciliações de caixa](/pt/api-reference/cash-reconciliations) (leitura) |
+| Cash Management Write | `cash-management:write` | [Conciliações de caixa](/pt/api-reference/cash-reconciliations), [Conciliações de caixa (v2)](/pt/api-reference/cash-reconciliations-v2) |
+| Webhooks Fiscal Callback | `webhooks:fiscal` | [Callback fiscal](/pt/api-reference/fiscal-callback) — o callback exige uma key **vendor-scoped** |
+| Webhooks KDS Order Status | `webhooks:kds` | [Status do pedido KDS](/pt/api-reference/kds-order-status) — exige uma key **vendor-scoped** |
+| Webhooks Aggregator Order Status | `webhooks:aggregator` | [Status do pedido do agregador](/pt/api-reference/aggregator-order-status) |
+| Webhooks PlugNotas | `webhooks:plugnotas` | Callback do provedor fiscal brasileiro. |
+| Channels Read | `channels:read` | [Configuração de canais](/pt/api-reference/channels-config) |
+| Payment Methods Read | `payment-methods:read` | [Configuração de métodos de pagamento](/pt/api-reference/payment-methods-config-v2) |
+| Kiosks Write | `kiosks:write` | Abrir e fechar sessões de inicialização de quiosques. |
+| Component Health | `component-health:write` | [Saúde dos componentes](/pt/api-reference/component-health) |
+| Fiscal Gateway (numbering) | `fiscal:write` | [Numeração de documentos fiscais](/pt/api-reference/fiscal-documents-v2) |
+| Document Types | `document-types:read` | [Tipos de documento fiscal](/pt/api-reference/fiscal-document-types) |
+
+<Info>
+  Cada página de endpoint indica o scope exato no seu parâmetro `x-api-key`. Se esta tabela e uma página de endpoint divergirem, vale a página do endpoint.
+</Info>
+
+## Erros comuns
+
+| Status | Causa | Solução |
+|---|---|---|
+| `401` | `x-api-key` ausente ou inválida | Envie a key no header `x-api-key`. |
+| `403` — scope ausente | A key não tem o scope que o endpoint exige | Use uma key que inclua esse scope. Você pode adicionar scopes a uma key existente. |
+| `403` — não vendor-scoped | A key não tem vínculo de vendor | Crie uma key nova com um vendor selecionado no dashboard. |
