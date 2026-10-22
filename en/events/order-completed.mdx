@@ -1201,3 +1201,48 @@ Branch on `failure.scope`:
   `fiscal.callback` even though no callback had occurred. That case now says
   `order.injected`. If you branch on this field, account for the new value.
 </Note>
+
+## `data.fiscalEnrichment`
+
+<Note>
+  Additive field — nothing you already read changed. Today it only applies to **Brazil**, and only to stores where Fire calculates the taxes. Everywhere else it arrives as `null`.
+</Note>
+
+The result of Fire's **tax enrichment**: when the order is injected, Fire calculates each line's taxes from the product's fiscal classification (NCM). This block tells you **how that calculation went**. The taxes themselves are not here: they travel where they always did, in the order lines and in `payments.metadata.fiscal` (see [Fiscal data](#fiscal-data)).
+
+**The key always travels.** It arrives as `null` when the enrichment was not attempted — account, vendor or store out of scope, a country without enrichment, or orders older than the field. Branch on the value, not on the key's presence.
+
+<ResponseField name="fiscalEnrichment" type="object | null">
+  <Expandable title="fiscalEnrichment">
+    <ResponseField name="status" type="string">
+      How the calculation ended:
+
+      - `ENRICHED` — every line was taxed.
+      - `PARTIAL` — it taxed, but skipped lines whose product has no NCM; they are listed in `skippedProductIds`.
+      - `FAILED` — the calculation failed: the order was saved and moves on (kitchen, flows), but **carries no taxes**. The reason is in `error`.
+      - `EMITTER_TAXES` — the order already arrived with taxes from whoever injected it, so Fire did not calculate them.
+    </ResponseField>
+    <ResponseField name="source" type="string | null">
+      Who calculated it: `injection` (at injection time) or `node` (a fiscal-enrichment step inside an integration flow). `null` on records older than this field.
+    </ResponseField>
+    <ResponseField name="skippedProductIds" type="string[]">
+      Products that were not taxed because their NCM could not be resolved. Only filled with `PARTIAL`; `[]` in every other status.
+    </ResponseField>
+    <ResponseField name="error" type="object | null">
+      `{ code, message }` — why the calculation failed. Only with `FAILED`; `null` in every other status.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<Warning>
+  **With `status: "FAILED"` the order has no taxes.** Do not issue a fiscal document from it as if it did. Fire's own invoicing does not issue in that case; if you invoice by another route, branch on `fiscalEnrichment.status`.
+</Warning>
+
+```json
+"fiscalEnrichment": {
+  "status": "EMITTER_TAXES",
+  "source": "injection",
+  "skippedProductIds": [],
+  "error": null
+}
+```

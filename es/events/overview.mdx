@@ -6,7 +6,7 @@ description: "Fire es event-driven. Cuando algo significativo pasa dentro de Fir
 Fire emite **eventos** cada vez que ocurre una transición de negocio relevante — una orden se completa, una orden se cancela, un documento fiscal es autorizado por la autoridad tributaria, la cocina avanza un pedido. Cada evento se entrega a tu endpoint por un **Integration Flow** que configuras en el dashboard de Fire.
 
 <Note>
-  Fire emite **cinco** tipos de evento de orden hoy: [`order.completed`](/es/events/order-completed), [`order.cancelled`](/es/events/order-cancelled), [`order.invoiced`](/es/events/order-invoiced), [`order.reversed`](/es/events/order-reversed) y [`order.status_updated`](/es/events/order-status-updated), más el evento programado [`store.business_day_closed`](/es/events/store-day-closed) al cierre del día.
+  Fire emite **cinco** tipos de evento de orden hoy: [`order.completed`](/es/events/order-completed), [`order.cancelled`](/es/events/order-cancelled), [`order.invoiced`](/es/events/order-invoiced), [`order.reversed`](/es/events/order-reversed) y [`order.status_updated`](/es/events/order-status-updated), más el evento programado [`store.business_day_closed`](/es/events/store-day-closed) al cierre del día, y [`store.updated`](/es/events/store-updated) cada vez que se publica la configuración de una tienda.
 </Note>
 
 ## Fire es la fuente de verdad del ciclo de vida
@@ -120,6 +120,7 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
   "event": {
     "id": "0d6e8a1c-1e7a-4b4f-8a3a-74ab0e9a9b21",
     "type": "order.completed",
+    "emittedAt": "2026-05-06T13:41:57.512Z",
     "createdAt": "2026-05-06T13:42:11.812Z"
   },
   "data": {
@@ -145,10 +146,13 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
       Identificador único de esta entrega (el ID de ejecución del flow). **Úsalo como llave de idempotencia** — Fire puede entregar el mismo evento más de una vez en reintentos.
     </ResponseField>
     <ResponseField name="type" type="string">
-      Tipo de evento. Uno de: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`.
+      Tipo de evento. Uno de: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
+    </ResponseField>
+    <ResponseField name="emittedAt" type="string">
+      Timestamp ISO 8601 UTC del momento en que Fire **emitió el hecho** — cuando el evento se encoló. **Es estable entre reintentos**: todas las entregas del mismo evento traen el mismo valor. **Ordena los eventos por este campo**: las entregas pueden llegar tarde o desordenadas, así que ni el orden de llegada ni `createdAt` te dicen qué hecho ocurrió primero.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
-      Timestamp ISO 8601 UTC del momento en que el evento se materializó dentro de Fire (no el momento en que llegó a tu endpoint).
+      Timestamp ISO 8601 UTC de **esta entrega** — cuando corrió el flow para enviarla. **Cambia en cada reintento**, así que no dice cuándo ocurrió el hecho. Se mantiene por compatibilidad; para ordenar eventos usa `emittedAt`.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -166,6 +170,7 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
 | [`order.invoiced`](/es/events/order-invoiced) | Snapshot V4 de orden + bloque `fiscal`: `authority` (campos canónicos, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/es/events/order-reversed) | Snapshot V4 de orden + bloque `cancellation` de auditoría + `cancellation.fiscal` con el documento cancelado, `history` y `compensates` |
 | [`order.status_updated`](/es/events/order-status-updated) | Snapshot V4 + bloque `kitchen` (status, previousStatus, history del recorrido) |
+| [`store.updated`](/es/events/store-updated) | La tienda completa: bloque `store` V4 + `metadata`, `channels[]` con horarios resueltos, `operationSchedule`, `salesSchedule` y el bloque `publication` (`id`, `sequence`, `reason`, …) |
 
 ### `_meta`
 
@@ -240,6 +245,7 @@ app.post("/fire/events", express.json(), async (req, res) => {
     case "order.invoiced":       return onOrderInvoiced(data);
     case "order.reversed":       return onOrderReversed(data);
     case "order.status_updated": return onKitchenAdvance(data);
+    case "store.updated":        return onStoreUpdated(data);
     default: console.warn("Tipo de evento Fire desconocido", event.type);
   }
 });
@@ -272,7 +278,7 @@ El body que Fire entrega a tu endpoint es **lo que renderice el template del bod
 ```ts
 {
   trigger: {
-    event: { id, type, createdAt },
+    event: { id, type, emittedAt, createdAt },
     data: V4Snapshot,         // payload específico del evento
   },
   execution: { id, ... },     // metadata de ejecución
@@ -288,6 +294,7 @@ El template canónico usa estos paths:
   "event": {
     "id":        "{{trigger.event.id}}",
     "type":      "{{trigger.event.type}}",
+    "emittedAt": "{{trigger.event.emittedAt}}",
     "createdAt": "{{trigger.event.createdAt}}"
   },
   "data": "{{trigger.data}}",

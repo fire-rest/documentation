@@ -6,7 +6,7 @@ description: "Fire is event-driven. When something meaningful happens inside Fir
 Fire emits **events** whenever a meaningful business transition happens — an order is completed, an order is cancelled, a fiscal document is authorized by the tax authority, the kitchen advances an order. Each event is delivered to your endpoint by an **Integration Flow** you configure in the Fire dashboard.
 
 <Note>
-  Fire emits **five** order event types today: [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close.
+  Fire emits **five** order event types today: [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close, and [`store.updated`](/en/events/store-updated) whenever a store's configuration is published.
 </Note>
 
 ## Fire is the source of truth for the lifecycle
@@ -120,6 +120,7 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
   "event": {
     "id": "0d6e8a1c-1e7a-4b4f-8a3a-74ab0e9a9b21",
     "type": "order.completed",
+    "emittedAt": "2026-05-06T13:41:57.512Z",
     "createdAt": "2026-05-06T13:42:11.812Z"
   },
   "data": {
@@ -145,10 +146,13 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
       Unique identifier of this delivery (the flow execution ID). **Use this as your idempotency key** — Fire may deliver the same event more than once during retries.
     </ResponseField>
     <ResponseField name="type" type="string">
-      Event type. One of: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`.
+      Event type. One of: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
+    </ResponseField>
+    <ResponseField name="emittedAt" type="string">
+      ISO 8601 UTC timestamp of when Fire **emitted the fact** — the moment the event was queued. **Stable across retries**: every delivery of the same event carries the same value. **Order events by this field**: deliveries can arrive late or out of order, so neither arrival order nor `createdAt` tells you which fact came first.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
-      ISO 8601 UTC timestamp of the moment the event was materialized inside Fire (not the moment it reached your endpoint).
+      ISO 8601 UTC timestamp of **this delivery** — when the flow ran to send it. It **changes on every retry**, so it does not tell you when the fact happened. It stays for compatibility; to order events use `emittedAt`.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -165,6 +169,7 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 | [`order.cancelled`](/en/events/order-cancelled) | V4 order snapshot + `cancellation` audit block, with `cancellation.fiscal` (`status`, `authority`) when the order had an authorized document |
 | [`order.invoiced`](/en/events/order-invoiced) | V4 order snapshot + `fiscal` block: `authority` (canonical fields, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/en/events/order-reversed) | V4 order snapshot + `cancellation` audit block + `cancellation.fiscal` with the cancelled document, `history` and `compensates` |
+| [`store.updated`](/en/events/store-updated) | The whole store: V4 `store` block + `metadata`, `channels[]` with resolved schedules, `operationSchedule`, `salesSchedule` and the `publication` block (`id`, `sequence`, `reason`, …) |
 
 ### `_meta`
 
@@ -239,6 +244,7 @@ app.post("/fire/events", express.json(), async (req, res) => {
     case "order.invoiced":       return onOrderInvoiced(data);
     case "order.reversed":       return onOrderReversed(data);
     case "order.status_updated": return onKitchenAdvance(data);
+    case "store.updated":        return onStoreUpdated(data);
     default: console.warn("Unknown Fire event type", event.type);
   }
 });
@@ -271,7 +277,7 @@ The body Fire delivers to your endpoint is **whatever your flow's HTTP node body
 ```ts
 {
   trigger: {
-    event: { id, type, createdAt },
+    event: { id, type, emittedAt, createdAt },
     data: V4Snapshot,         // event-specific payload
   },
   execution: { id, ... },     // execution metadata
@@ -287,6 +293,7 @@ The canonical template uses these paths:
   "event": {
     "id":        "{{trigger.event.id}}",
     "type":      "{{trigger.event.type}}",
+    "emittedAt": "{{trigger.event.emittedAt}}",
     "createdAt": "{{trigger.event.createdAt}}"
   },
   "data": "{{trigger.data}}",

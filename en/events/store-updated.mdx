@@ -1,0 +1,324 @@
+---
+title: "store.updated"
+description: "A store's configuration was published to its channels — the whole store, its channels with resolved schedules, and the publication that produced the event."
+---
+
+<Note>
+  **Enabled account by account.** Fire is rolling this event out gradually. Until it is enabled for your account, a flow subscribed to `store.updated` receives nothing — ask your Fire contact to enable it.
+</Note>
+
+<Warning>
+  This is the **Integration Flows** `store.updated` event, documented on this page. It is **not** the aggregator-integration webhook with the same name described in [Webhook reference → `store.updated`](/en/webhook-reference/store-updated): that one belongs to a different system, has a different shape, and does not change.
+</Warning>
+
+`store.updated` fires every time a store's configuration is **published** to its channels: first publication, publishing a draft, re-synchronizing, switching a channel on or off, applying an override, archiving. It always carries the **whole store** — never a diff. Treat it as a full replacement of what you know about that store.
+
+Like `store.business_day_closed`, it is a **store-level** event: one per publication, not one per order or per channel. A publication that touches several channels produces a single event with every channel inside.
+
+## Trigger condition
+
+Each publication of a store emits **one** `store.updated`. `data.publication.reason` tells you what produced it:
+
+| `reason` | What happened |
+|---|---|
+| `publish` | The store was published for the first time (also when a store is created already published). |
+| `draft` | The pending changes of a published store were applied. Channels being switched off travel with `enabled: false`. |
+| `resync` | Someone re-synchronized the store; it travels exactly as it is. |
+| `channel_toggle` | A channel was switched on or off for the store, by hand or by its schedule. |
+| `override_apply` / `override_revert` | An override was applied to the store, or reverted. |
+| `archive` | The store was archived — see [Archiving](#archiving). |
+| `retry` | A re-send was requested from the store's publication history. It carries the store's **current** state, not the old payload. |
+
+A publication can also be **scheduled**: nothing is emitted when it is scheduled; the event fires when the scheduled time arrives, with `publication.mode: "scheduled"` and `publication.scheduledAt`. Cancelling a scheduled publication emits nothing.
+
+**Nothing is emitted** when changes are saved without publishing them to the channels, or when the business day opens or closes.
+
+| | |
+|---|---|
+| Coverage | Every country, on accounts where the event is enabled |
+| Publication id | `data.publication.id` — the same in every delivery and in every flow that receives that publication |
+| Delivery id | `event.id`, as in every event (the flow execution) |
+| Order | `data.publication.sequence`, per store — see [The latest publication wins](#the-latest-publication-wins) |
+| Entity | `_meta.triggerEntityId` is the store UUID (`data.store.uid`) |
+
+<Note>
+  A flow limited to certain channels receives a publication when it touches **at least one** of them — and it receives the **whole** event, every channel included. Pick the channels that are yours from `data.channels`.
+</Note>
+
+## Example — real payload (sanitized)
+
+```json
+{
+  "event": {
+    "id": "5b0f3c9e-2d71-4a8e-9f14-6c3e2a7d8b10",
+    "type": "store.updated",
+    "emittedAt": "2026-10-22T20:53:48.689Z",
+    "createdAt": "2026-10-22T20:53:50.112Z"
+  },
+  "data": {
+    "store": {
+      "uid": "a4019cad-bbac-4269-9f8d-f29654e92c45",
+      "code": "BR-SP-001",
+      "name": "Loja Centro - SP",
+      "number": 2,
+      "status": "PUBLISHED",
+      "active": true,
+      "phone": "1132094347",
+      "address": "Av. Paulista 1578, Bela Vista, São Paulo - SP",
+      "externalId": "200400500",
+      "vendor": { "uid": "100.2.1", "name": "Sandbox Brand", "description": null, "loyaltyPlan": false },
+      "account": { "uid": "100", "name": "Sandbox", "description": null },
+      "locationInfo": {
+        "city":     { "uid": "1", "code": "SAO", "name": "São Paulo" },
+        "country":  { "uid": "6", "code": "BR",  "name": "Brasil" },
+        "location": { "lat": "-23.5632", "lon": "-46.6543" },
+        "timezone": "America/Sao_Paulo",
+        "currencyCode": "BRL"
+      },
+      "storeFiscalConfig": {
+        "enabled": true,
+        "company": { "govIdType": "CNPJ", "govIdNumber": "00000000000000", "legalName": "Sandbox LTDA", "tradeName": "Sandbox" },
+        "govIdType": "CNPJ",
+        "govIdNumber": "00000000000000",
+        "secondaryGovIdType": "INSCRICAO_ESTADUAL",
+        "secondaryGovIdNumber": "000000000000",
+        "metadata": { "neverstop": { "url": "", "enabled": false }, "storeCode3S": "50000001", "serialNumber": 1 }
+      },
+      "metadata": {
+        "taxesInfo": { "taxRate": 0, "vatRatePercentage": 0 },
+        "deliveryInfo": { "cookTime": 5, "minimumOrder": 1.5, "shippingCost": 0 }
+      }
+    },
+    "channels": [
+      {
+        "code": "KIOSK",
+        "enabled": true,
+        "published": true,
+        "fulfillmentTypes": [
+          {
+            "code": "TAKEAWAY",
+            "enabled": true,
+            "schedules": [
+              { "day": "MONDAY",    "startTime": "10:00", "endTime": "22:00" },
+              { "day": "TUESDAY",   "startTime": "10:00", "endTime": "22:00" },
+              { "day": "WEDNESDAY", "startTime": "10:00", "endTime": "22:00" },
+              { "day": "THURSDAY",  "startTime": "10:00", "endTime": "22:00" },
+              { "day": "FRIDAY",    "startTime": "10:00", "endTime": "23:00" },
+              { "day": "SATURDAY",  "startTime": "10:00", "endTime": "23:00" },
+              { "day": "SUNDAY",    "startTime": "11:00", "endTime": "21:00" }
+            ]
+          }
+        ]
+      },
+      {
+        "code": "iFood",
+        "enabled": true,
+        "published": true,
+        "fulfillmentTypes": [
+          {
+            "code": "DELIVERY",
+            "enabled": true,
+            "schedules": [
+              { "day": "MONDAY",    "startTime": "11:00", "endTime": "23:00" },
+              { "day": "TUESDAY",   "startTime": "11:00", "endTime": "23:00" },
+              { "day": "WEDNESDAY", "startTime": "11:00", "endTime": "23:00" },
+              { "day": "THURSDAY",  "startTime": "11:00", "endTime": "23:00" },
+              { "day": "FRIDAY",    "startTime": "11:00", "endTime": "23:59" },
+              { "day": "SATURDAY",  "startTime": "11:00", "endTime": "23:59" },
+              { "day": "SUNDAY",    "startTime": "11:00", "endTime": "22:00" }
+            ]
+          }
+        ]
+      }
+    ],
+    "operationSchedule": [
+      { "day": "MONDAY",    "startTime": "09:00", "endTime": "23:59" },
+      { "day": "TUESDAY",   "startTime": "09:00", "endTime": "23:59" },
+      { "day": "WEDNESDAY", "startTime": "09:00", "endTime": "23:59" },
+      { "day": "THURSDAY",  "startTime": "09:00", "endTime": "23:59" },
+      { "day": "FRIDAY",    "startTime": "09:00", "endTime": "23:59" },
+      { "day": "SATURDAY",  "startTime": "09:00", "endTime": "23:59" },
+      { "day": "SUNDAY",    "startTime": "10:00", "endTime": "22:00" }
+    ],
+    "salesSchedule": [
+      { "day": "MONDAY",    "startTime": "10:00", "endTime": "22:00" },
+      { "day": "TUESDAY",   "startTime": "10:00", "endTime": "22:00" },
+      { "day": "WEDNESDAY", "startTime": "10:00", "endTime": "22:00" },
+      { "day": "THURSDAY",  "startTime": "10:00", "endTime": "22:00" },
+      { "day": "FRIDAY",    "startTime": "10:00", "endTime": "23:00" },
+      { "day": "SATURDAY",  "startTime": "10:00", "endTime": "23:00" },
+      { "day": "SUNDAY",    "startTime": "11:00", "endTime": "21:00" }
+    ],
+    "publication": {
+      "id": "0fc14118-15e2-4964-8ae6-970dd801b836",
+      "sequence": 3,
+      "mode": "now",
+      "reason": "resync",
+      "channels": ["KIOSK", "iFood"],
+      "scheduledAt": null,
+      "requestedBy": { "id": "7b1e4c2a-0d3f-4a5b-8c6d-9e0f1a2b3c4d", "name": "Ana Souza" }
+    }
+  },
+  "_meta": {
+    "executionId": "5b0f3c9e-2d71-4a8e-9f14-6c3e2a7d8b10",
+    "flowId": "9a2b3c4d-7e8f-4a1b-9c2d-3e4f5a6b7c8d",
+    "flowName": "Store sync",
+    "attempt": "1",
+    "triggerEntityId": "a4019cad-bbac-4269-9f8d-f29654e92c45"
+  }
+}
+```
+
+## `data.*` reference
+
+### `data.store`
+
+<ResponseField name="store" type="object">
+  The **same V4 store block** that travels on order events — `uid`, `code`, `name`, `phone`, `address`, `externalId`, `vendor`, `account`, `locationInfo` and, when fiscal emission is enabled for the store, `storeFiscalConfig`. Field reference in [`order.completed` → `data.store`](/en/events/order-completed#data-store). On top of it, this event adds:
+
+  <Expandable title="fields added by store.updated">
+    <ResponseField name="number" type="integer | null">
+      The store's sequential number in Fire. `null` when it is not known.
+    </ResponseField>
+    <ResponseField name="status" type="string">
+      Publication state of the store: `DRAFT`, `PUBLISHED`, `PARTIALLY_PUBLISHED` or `ARCHIVED`.
+    </ResponseField>
+    <ResponseField name="active" type="boolean">
+      Whether the store is active. Always `false` when archived.
+    </ResponseField>
+    <ResponseField name="metadata" type="object">
+      The store's **free key-value** configuration. Fire does not impose its keys; some integrations read well-known ones from here (in the example, `taxesInfo` and `deliveryInfo`). `{}` when the store has none. Treat keys you do not know as opaque.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.channels`
+
+<ResponseField name="channels" type="array">
+  **Every** channel configured for the store — not only the ones this publication is about (those are in `publication.channels`). A channel or fulfillment type that is switched off still travels, with `enabled: false`: that is how you learn it was taken down.
+
+  <Expandable title="channels[]">
+    <ResponseField name="code" type="string">
+      Channel code, written as configured in Fire (`KIOSK`, `POS`, `iFood`, `99`, …). Compare without assuming a particular case.
+    </ResponseField>
+    <ResponseField name="enabled" type="boolean">
+      Whether the channel is enabled for the store.
+    </ResponseField>
+    <ResponseField name="published" type="boolean">
+      Whether the channel is among the store's published channels.
+    </ResponseField>
+    <ResponseField name="fulfillmentTypes" type="array">
+      The channel's fulfillment types.
+      <Expandable title="fulfillmentTypes[]">
+        <ResponseField name="code" type="string">Fulfillment type code (`DELIVERY`, `TAKEAWAY`, `DINE_IN`, …).</ResponseField>
+        <ResponseField name="enabled" type="boolean">Whether the fulfillment type is enabled on this channel.</ResponseField>
+        <ResponseField name="schedules" type="array">
+          The **effective** schedule, already resolved: the fulfillment type's own schedule; if it has none, the channel's; if the channel has none either, the store's `salesSchedule`. Each entry is `{ day, startTime, endTime }`, same shape as below. You do not need to apply the inheritance yourself.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `data.operationSchedule` and `data.salesSchedule`
+
+<ResponseField name="operationSchedule" type="array">
+  The store's operating hours. Each entry: `day` (`MONDAY` … `SUNDAY`), `startTime` and `endTime` (`HH:mm`).
+</ResponseField>
+<ResponseField name="salesSchedule" type="array">
+  The store's sales hours, same shape. It is the fallback for channels and fulfillment types without a schedule of their own — already applied in `channels[].fulfillmentTypes[].schedules`.
+</ResponseField>
+
+### `data.publication`
+
+<ResponseField name="publication" type="object">
+  The publication that produced this event.
+
+  <Expandable title="publication">
+    <ResponseField name="id" type="string">
+      UUID of the publication. The same in every delivery and in every flow that receives it — use it to recognize a publication you already applied.
+    </ResponseField>
+    <ResponseField name="sequence" type="integer">
+      Per-store counter: it goes up by one with each emitted publication of that store. The higher one is the newer one. See [The latest publication wins](#the-latest-publication-wins).
+    </ResponseField>
+    <ResponseField name="mode" type="string">
+      `now` (published on the spot) or `scheduled` (fired by a schedule).
+    </ResponseField>
+    <ResponseField name="reason" type="string">
+      What produced the publication: `publish`, `draft`, `resync`, `channel_toggle`, `override_apply`, `override_revert`, `archive` or `retry`. See [Trigger condition](#trigger-condition).
+    </ResponseField>
+    <ResponseField name="channels" type="string[]">
+      The channel codes this publication is about: the ones chosen when publishing, or every enabled channel on a re-sync.
+    </ResponseField>
+    <ResponseField name="scheduledAt" type="string | null">
+      ISO 8601 UTC time the publication was scheduled for. `null` when `mode` is `now`.
+    </ResponseField>
+    <ResponseField name="requestedBy" type="object">
+      `{ id, name }` — who requested it. Either can be `null`; automatic runs may arrive with `id: null` and `name: "CRON"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## The latest publication wins
+
+Every event carries the **whole** store, so the most recent publication replaces everything before it. Fire already takes care of the order for you:
+
+- Within a flow, the publications of **one store** are delivered one at a time, in `sequence` order. Different stores move in parallel.
+- When a store gets a new publication, deliveries of older publications that were still waiting are cancelled.
+
+`publication.sequence` is still useful data: you can store the last one you applied per store, and recognize a stale payload if one ever reaches you — for example, a manual replay of an old delivery, which keeps its original `sequence`.
+
+## Archiving
+
+Archiving a store emits a `store.updated` with `publication.reason: "archive"`. It carries the archived store: `store.status: "ARCHIVED"`, `store.active: false`, and **every** channel and fulfillment type with `enabled: false` (and channels with `published: false`). To handle archiving separately, branch on `reason` or on `status`.
+
+<Note>
+  Integration Flows do not emit a separate `store.deleted` event: archiving is a `store.updated`.
+</Note>
+
+## Handler example
+
+```js
+async function onStoreUpdated(data) {
+  const { store, channels, publication } = data;
+
+  // 1. Already applied this publication? (same id on every delivery)
+  if (await db.storePublications.exists(publication.id)) return;
+
+  // 2. Optional: keep the sequence to recognize a stale payload
+  const last = await db.stores.lastSequence(store.uid);
+  if (last != null && publication.sequence < last) return;
+
+  // 3. Full replacement — the event carries the whole store
+  const mine = channels.filter((c) => MY_CHANNELS.includes(c.code.toUpperCase()));
+  await db.stores.replace(store.uid, {
+    code: store.code,
+    name: store.name,
+    active: store.active,
+    archived: store.status === "ARCHIVED",
+    metadata: store.metadata,
+    channels: mine,
+    sequence: publication.sequence,
+  });
+  await db.storePublications.add(publication.id);
+}
+```
+
+## Common pitfalls
+
+- **It is not a diff.** A channel missing from your copy is not "unchanged" — the event lists every channel. Replace, do not merge.
+- **A switched-off channel still travels.** Read `enabled`; do not assume that a channel present in the event is open.
+- **`publication.channels` is not the list of channels.** It says what this publication was about; the store's channels are in `data.channels`.
+- **Do not dedupe by `event.id`.** It identifies the delivery; the publication is `data.publication.id`.
+- **Channel codes keep the case they were configured with** (`iFood`, `KIOSK`). Normalize before comparing.
+
+## Related events
+
+<CardGroup cols={2}>
+  <Card title="store.business_day_closed" icon="calendar-check" href="/en/events/store-day-closed">
+    The other store-level event: a store closed its business day.
+  </Card>
+  <Card title="order.completed" icon="receipt" href="/en/events/order-completed">
+    Field reference for the V4 `store` block shared with this event.
+  </Card>
+</CardGroup>

@@ -1189,3 +1189,48 @@ Ramificá por `failure.scope`:
   `fiscal.callback` sin que ningún callback hubiera ocurrido. Ahora ese caso dice
   `order.injected`. Si ramificás por este campo, contemplá el valor nuevo.
 </Note>
+
+## `data.fiscalEnrichment`
+
+<Note>
+  Campo aditivo — nada de lo que ya leías cambió. Hoy solo aplica a **Brasil**, y solo en tiendas donde Fire calcula los impuestos. En todo lo demás llega en `null`.
+</Note>
+
+El resultado del **enriquecimiento fiscal** de Fire: al inyectar la orden, Fire calcula los impuestos de cada línea a partir de la clasificación fiscal del producto (NCM). Este bloque te dice **cómo terminó ese cálculo**. Los impuestos en sí no están acá: viajan donde siempre, en las líneas de la orden y en `payments.metadata.fiscal` (ver [Datos fiscales](#datos-fiscales)).
+
+**La clave viaja siempre.** Llega en `null` cuando no se intentó enriquecer — cuenta, vendor o tienda fuera de alcance, un país sin enriquecimiento, u órdenes anteriores al campo. Ramifica por el valor, no por la presencia de la clave.
+
+<ResponseField name="fiscalEnrichment" type="object | null">
+  <Expandable title="fiscalEnrichment">
+    <ResponseField name="status" type="string">
+      Cómo terminó el cálculo:
+
+      - `ENRICHED` — se gravaron todas las líneas.
+      - `PARTIAL` — gravó, pero salteó líneas cuyo producto no tiene NCM; están en `skippedProductIds`.
+      - `FAILED` — el cálculo falló: la orden se guardó y sigue su camino (cocina, flows), pero **no trae impuestos**. El motivo está en `error`.
+      - `EMITTER_TAXES` — la orden ya llegó con los impuestos de quien la inyectó, así que Fire no los calculó.
+    </ResponseField>
+    <ResponseField name="source" type="string | null">
+      Quién lo calculó: `injection` (al inyectar) o `node` (un paso de enriquecimiento fiscal dentro de un integration flow). `null` en registros anteriores a este campo.
+    </ResponseField>
+    <ResponseField name="skippedProductIds" type="string[]">
+      Productos que no se gravaron porque su NCM no se pudo resolver. Solo se llena con `PARTIAL`; `[]` en los demás estados.
+    </ResponseField>
+    <ResponseField name="error" type="object | null">
+      `{ code, message }` — por qué falló el cálculo. Solo con `FAILED`; `null` en los demás estados.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<Warning>
+  **Con `status: "FAILED"` la orden no tiene impuestos.** No emitas un documento fiscal a partir de ella como si los tuviera. La facturación propia de Fire no emite en ese caso; si facturas por otra vía, ramifica por `fiscalEnrichment.status`.
+</Warning>
+
+```json
+"fiscalEnrichment": {
+  "status": "EMITTER_TAXES",
+  "source": "injection",
+  "skippedProductIds": [],
+  "error": null
+}
+```
