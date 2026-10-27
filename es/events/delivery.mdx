@@ -17,7 +17,7 @@ Out of the box, sin configuración de retry, un nodo HTTP hace **un solo intento
 | `Content-Type` | `application/json` (auto-inyectado cuando hay body) |
 | `Accept` | `application/json` (auto-inyectado) |
 
-Si tu endpoint hace timeout, devuelve un non-`2xx` o la red falla, la ejecución falla inmediatamente y cae al dead letter a menos que hayas habilitado reintentos.
+Si tu endpoint hace timeout, devuelve un non-`2xx` o la red falla, el nodo HTTP no reintenta dentro de la ejecución: la ejecución falla y Fire reencola la entrega (ver [Política de reintentos](#política-de-reintentos)) antes de que termine en el dead letter.
 
 <Note>
   Los reintentos son **opt-in** a nivel de flow. La mayoría de flows en producción los habilitan. Setea `retryOnFailure: true` y ajusta `retryCount` por flow.
@@ -50,6 +50,11 @@ intento 6 → falla → dead letter
 
 Tiempo total de pared ≤ 23 segundos más el tiempo gastado en cada intento (cada uno hasta `timeout`).
 
+### Dos niveles de reintento
+
+- **Reintentos del nodo HTTP** (arriba): ocurren dentro de **una misma ejecución del flow** — mismo body, mismo `event.id`, mismo `event.createdAt`.
+- **Reencolado.** Cuando la ejecución falla — agotados los reintentos del nodo, o sin reintentos habilitados — Fire vuelve a poner la entrega en su cola con un backoff de minutos (unos 30 s, 2 min, 8 min…) hasta el límite de intentos del job, y recién entonces la pasa al dead letter. Cada entrega reencolada es una **ejecución nueva**: llega con `event.id` nuevo, `event.createdAt` nuevo y `_meta.attempt` mayor. Solo `event.emittedAt` se mantiene.
+
 ### Qué cuenta como falla
 
 | Resultado | ¿Reintentado? |
@@ -62,27 +67,35 @@ Tiempo total de pared ≤ 23 segundos más el tiempo gastado en cada intento (ca
 
 ### Idempotencia de tu lado
 
-Como los reintentos repiten el mismo body, **tu endpoint debe ser idempotente**. Usa `event.id` (el UUID de ejecución del flow, generado una vez por ejecución y estable a través de reintentos) como llave de dedup.
+El mismo hecho te puede llegar más de una vez, así que **tu endpoint debe ser idempotente**. No deduplices solo por `event.id`: identifica una ejecución del flow, y una entrega reencolada o reproducida llega con uno nuevo. Usa una llave de dominio:
+
+| Evento | Llave de dedup |
+|---|---|
+| Eventos de orden | `data.orderId` + `event.type` + `event.emittedAt` |
+| `store.updated` | `data.publication.id` |
+| `store.business_day_closed` | `data.businessDayId` |
 
 ```js
 const seen = new Map(); // Redis o DB en producción
 
-if (seen.has(event.id)) return; // duplicado de reintento — ya manejado
-seen.set(event.id, Date.now());
+const key = data.publication?.id ?? data.businessDayId
+  ?? `${data.orderId}:${event.type}:${event.emittedAt}`;
+if (seen.has(key)) return; // ya manejado
+seen.set(key, Date.now());
 ```
 
-Un TTL de 24 horas alcanza — Fire nunca repite un evento después del threshold de dead-letter.
+Guarda las llaves más tiempo que la ventana de reintentos: las entregas reencoladas llegan en minutos, pero una reproducción manual desde el dead letter puede llegar mucho después.
 
 ## Dead letter
 
-Cuando se agotan los reintentos, la ejecución se mueve a la tabla `flow_dead_letter`. Los flows fallidos se inspeccionan y reproducen manualmente desde **Settings → Integration Flows → Executions → Dead letter**. Las repeticiones producen un nuevo `event.id` (porque son una nueva ejecución de flow); tu dedup de idempotencia no las bloqueará, lo cual es lo que quieres.
+Cuando también se agotan los intentos reencolados, el job pasa al dead letter. Los flows fallidos se inspeccionan y reproducen manualmente desde **Settings → Integration Flows → Executions → Dead letter**. Una reproducción es una ejecución nueva: trae `event.id` y `event.createdAt` nuevos, y el `event.emittedAt` original. Si la entrega original nunca te llegó, tu dedup por llave de dominio deja pasar la reproducción — que es lo que quieres.
 
 ## Garantías de orden
 
-- **Ordena los eventos por `event.emittedAt`, nunca por llegada.** Las entregas pueden llegar tarde (una entrega reintentada o reejecutada puede llegar mucho después del hecho) y desordenadas. `event.emittedAt` es cuándo Fire emitió el hecho y no cambia entre reintentos; `event.createdAt` es cuándo corrió esa entrega en particular y cambia en cada intento.
+- **Ordena los eventos por `event.emittedAt`, nunca por llegada.** Las entregas pueden llegar tarde (una entrega reencolada o reproducida puede llegar mucho después del hecho) y desordenadas. `event.emittedAt` es cuándo Fire emitió el hecho y no cambia nunca; `event.createdAt` es la hora de la ejecución del flow y cambia cuando la entrega se reencola o se reproduce.
 - **Sin garantía de orden entre órdenes.** Dos eventos `order.completed` pueden llegar fuera de orden de negocio. Ordena por `data.createdAt` si necesitas orden.
 - **Sin garantía de orden entre tipos de evento para la misma orden.** `order.invoiced` puede llegar antes o después de `order.completed` para el mismo `data.orderId`. No asumas que uno precede al otro.
-- **Dentro de una sola ejecución de flow, los reintentos preservan identidad.** El mismo `event.id` llega múltiples veces durante reintentos; reintentos posteriores no cambian el body.
+- **Dentro de una misma ejecución del flow, los reintentos del nodo HTTP preservan la identidad.** Reenvían el mismo body con el mismo `event.id`. Una entrega reencolada o reproducida es una ejecución nueva, con `event.id` nuevo.
 
 ## Autenticación
 
@@ -169,7 +182,7 @@ Hasta entonces, trata tu credencial de auth como prueba de origen.
 
 - **Habilita siempre los reintentos en flows de producción.** Un solo timeout no debería tirar un evento.
 - **Cap de reintentos en 3 a menos que tengas un downstream flaky de cola larga.** Más reintentos significa más latencia hasta dead-letter.
-- **Usa `event.id` para idempotencia, no `data.orderId`.** Una entrega reintentada tiene el mismo `event.id`, pero `data.orderId` es el mismo a lo largo de todo el lifecycle de la orden (completed, cancelled, fiscal authorized, fiscal cancelled todos lo comparten).
+- **Deduplica por una llave de dominio, no por `event.id`.** `event.id` cambia cuando Fire reencola una entrega, y `data.orderId` solo lo comparten todos los eventos del ciclo de vida de la orden. Combina `data.orderId` + `event.type` + `event.emittedAt` (ver [Idempotencia de tu lado](#idempotencia-de-tu-lado)).
 - **Guarda `_meta.executionId` y `_meta.attempt` en eventos persistidos** — son invaluables para debuggear "por qué se procesó dos veces la misma orden".
 - **Mantén `timeout` corto (5–10s) y confirma rápido en tu handler.** Usa una cola para hacer el trabajo real en background.
 

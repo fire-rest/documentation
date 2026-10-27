@@ -6,7 +6,7 @@ description: "Fire is event-driven. When something meaningful happens inside Fir
 Fire emits **events** whenever a meaningful business transition happens — an order is completed, an order is cancelled, a fiscal document is authorized by the tax authority, the kitchen advances an order. Each event is delivered to your endpoint by an **Integration Flow** you configure in the Fire dashboard.
 
 <Note>
-  Fire emits **five** order event types today: [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close, and [`store.updated`](/en/events/store-updated) whenever a store's configuration is published.
+  Fire emits **five** order event types and **two** store event types today: [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close, and [`store.updated`](/en/events/store-updated) whenever a store's configuration is published.
 </Note>
 
 ## Fire is the source of truth for the lifecycle
@@ -143,16 +143,16 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 
   <Expandable title="event">
     <ResponseField name="id" type="string">
-      Unique identifier of this delivery (the flow execution ID). **Use this as your idempotency key** — Fire may deliver the same event more than once during retries.
+      Identifier of this **flow execution**. It stays the same across the HTTP node's own retries, but it is **new** when Fire re-queues the delivery or someone replays it by hand — so it does not identify the fact. To deduplicate, use a domain key: `data.orderId` + `event.type` + `event.emittedAt` on order events, `data.publication.id` on `store.updated`, `data.businessDayId` on `store.business_day_closed`. See [Idempotency on your side](/en/events/delivery#idempotency-on-your-side).
     </ResponseField>
     <ResponseField name="type" type="string">
       Event type. One of: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
-      ISO 8601 UTC timestamp of when Fire **emitted the fact** — the moment the event was queued. **Stable across retries**: every delivery of the same event carries the same value. **Order events by this field**: deliveries can arrive late or out of order, so neither arrival order nor `createdAt` tells you which fact came first.
+      ISO 8601 UTC timestamp of when Fire **emitted the fact** — the moment the event was queued. **Stable across retries**: every delivery of the same event carries the same value. **Order events by this field**: deliveries can arrive late or out of order, so neither arrival order nor `createdAt` tells you which fact came first. It only reaches you if your flow's body includes it: if your flow was created before this field existed, add `"emittedAt": "{{trigger.event.emittedAt}}"` to the `event` block of the HTTP node's body — the path is already available.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
-      ISO 8601 UTC timestamp of **this delivery** — when the flow ran to send it. It **changes on every retry**, so it does not tell you when the fact happened. It stays for compatibility; to order events use `emittedAt`.
+      ISO 8601 UTC timestamp of **this flow execution**. The same across the HTTP node's retries; new when Fire re-queues the delivery or it is replayed by hand. It does not tell you when the fact happened — to order events use `emittedAt`.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -230,9 +230,11 @@ app.post("/fire/events", express.json(), async (req, res) => {
   // 1. Acknowledge first to free Fire's connection
   res.status(200).end();
 
-  // 2. Deduplicate by event.id (the flow execution ID)
-  if (seen.has(event.id)) return;
-  seen.set(event.id, Date.now());
+  // 2. Deduplicate by a domain key — event.id changes when Fire re-queues a delivery
+  const key = data?.publication?.id ?? data?.businessDayId
+    ?? `${data?.orderId}:${event.type}:${event.emittedAt}`;
+  if (seen.has(key)) return;
+  seen.set(key, Date.now());
 
   // 3. Log _meta for traceability — invaluable when debugging
   console.log("Fire event", { eventId: event.id, type: event.type, _meta });
@@ -260,7 +262,7 @@ app.listen(8080);
     Validate the auth credential the flow sends (Bearer token, API key, or OAuth2 access token). Reject any request that doesn't match.
   </Step>
   <Step title="Deduplicate">
-    Look up `event.id` in a short-TTL store (Redis with 24-hour expiry works). If you've already processed it, skip.
+    Look up a **domain key** in a store — `data.orderId` + `event.type` + `event.emittedAt` for order events, `data.publication.id` for `store.updated`, `data.businessDayId` for `store.business_day_closed`. If you've already processed it, skip. Not `event.id`: it changes when Fire re-queues a delivery.
   </Step>
   <Step title="Validate the payload">
     Check `event.type` matches your handler and the `data` block has the fields you expect. Return `400` for malformed inputs so they don't enter your retry queue from Fire.

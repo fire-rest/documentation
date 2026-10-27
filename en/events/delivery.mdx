@@ -17,7 +17,7 @@ Out of the box, with no retry configuration, an HTTP node makes **a single attem
 | `Content-Type` | `application/json` (auto-injected when body is present) |
 | `Accept` | `application/json` (auto-injected) |
 
-If your endpoint times out, returns a non-`2xx`, or the network drops, the execution fails immediately and lands in the dead letter unless you've enabled retries.
+If your endpoint times out, returns a non-`2xx`, or the network drops, the HTTP node does not retry inside the execution: the execution fails and Fire re-queues the delivery (see [Retry policy](#retry-policy)) before it ends in the dead letter.
 
 <Note>
   Retries are **opt-in** at the flow level. Most production flows enable them. Set `retryOnFailure: true` and tune `retryCount` per flow.
@@ -50,6 +50,11 @@ attempt 6 → fails → dead letter
 
 Total wall time ≤ 23 seconds plus the time spent on each attempt (each up to `timeout`).
 
+### Two levels of retry
+
+- **HTTP node retries** (above) happen inside **one flow execution**: same body, same `event.id`, same `event.createdAt`.
+- **Re-queue.** When the execution fails — node retries exhausted, or retries disabled — Fire puts the delivery back in its queue with a backoff of minutes (about 30 s, 2 min, 8 min…) up to the job's attempt limit, and only then moves it to the dead letter. Each re-queued delivery is a **new execution**: it arrives with a new `event.id`, a new `event.createdAt` and a higher `_meta.attempt`. Only `event.emittedAt` stays the same.
+
 ### What counts as a failure
 
 | Outcome | Retried? |
@@ -62,27 +67,35 @@ Total wall time ≤ 23 seconds plus the time spent on each attempt (each up to `
 
 ### Idempotency on your side
 
-Because retries replay the same body, **your endpoint must be idempotent**. Use `event.id` (the flow execution UUID, generated once per execution and stable across retries) as your dedup key.
+The same fact can reach you more than once, so **your endpoint must be idempotent**. Do not dedupe by `event.id` alone: it identifies a flow execution, and a re-queued or replayed delivery arrives with a new one. Use a domain key instead:
+
+| Event | Dedup key |
+|---|---|
+| Order events | `data.orderId` + `event.type` + `event.emittedAt` |
+| `store.updated` | `data.publication.id` |
+| `store.business_day_closed` | `data.businessDayId` |
 
 ```js
 const seen = new Map(); // Redis or DB in production
 
-if (seen.has(event.id)) return; // duplicate retry — already handled
-seen.set(event.id, Date.now());
+const key = data.publication?.id ?? data.businessDayId
+  ?? `${data.orderId}:${event.type}:${event.emittedAt}`;
+if (seen.has(key)) return; // already handled
+seen.set(key, Date.now());
 ```
 
-A 24-hour TTL is enough — Fire never replays an event after the dead-letter threshold.
+Keep the keys longer than the retry window: re-queued deliveries arrive within minutes, but a manual replay from the dead letter can come much later.
 
 ## Dead letter
 
-When all retries are exhausted, the execution is moved to the `flow_dead_letter` table. Failed flows can be inspected and manually replayed from **Settings → Integration Flows → Executions → Dead letter**. Replays produce a new `event.id` (because they are a new flow execution); your idempotency dedup will not block them, which is what you want.
+When the re-queued attempts are exhausted too, the job is moved to the dead letter. Failed flows can be inspected and manually replayed from **Settings → Integration Flows → Executions → Dead letter**. A replay is a new flow execution: it carries a new `event.id` and `event.createdAt`, and the original `event.emittedAt`. If the original delivery never reached you, your domain-key dedup lets the replay through — which is what you want.
 
 ## Ordering guarantees
 
-- **Order events by `event.emittedAt`, never by arrival.** Deliveries can arrive late (a retried or replayed delivery may land long after the fact) and out of order. `event.emittedAt` is when Fire emitted the fact and does not change across retries; `event.createdAt` is when that particular delivery ran and changes on every attempt.
+- **Order events by `event.emittedAt`, never by arrival.** Deliveries can arrive late (a re-queued or replayed delivery may land long after the fact) and out of order. `event.emittedAt` is when Fire emitted the fact and never changes; `event.createdAt` is the time of the flow execution and changes when the delivery is re-queued or replayed.
 - **No ordering guarantee across orders.** Two `order.completed` events can arrive out of business order. Sort by `data.createdAt` if you need order.
 - **No ordering guarantee across event types for the same order.** `order.invoiced` may arrive before or after `order.completed` for the same `data.orderId`. Don't assume one precedes the other.
-- **Within a single flow execution, retries preserve identity.** The same `event.id` will arrive multiple times during retries; later retries do not change the body.
+- **Within one flow execution, the HTTP node's retries preserve identity.** They resend the same body with the same `event.id`. A re-queued or replayed delivery is a new execution, with a new `event.id`.
 
 ## Authentication
 
@@ -169,7 +182,7 @@ Until then, treat your auth credential as the origin proof.
 
 - **Always enable retries on production flows.** A single timeout shouldn't drop an event.
 - **Cap retries at 3 unless you have a long-tail flaky downstream.** More retries means longer dead-letter latency.
-- **Use `event.id` for idempotency, not `data.orderId`.** A retried delivery has the same `event.id` but `data.orderId` is the same across the entire order lifecycle (completed, cancelled, fiscal authorized, fiscal cancelled all share it).
+- **Deduplicate by a domain key, not by `event.id`.** `event.id` changes when Fire re-queues a delivery, and `data.orderId` alone is shared by every event of the order's lifecycle. Combine `data.orderId` + `event.type` + `event.emittedAt` (see [Idempotency on your side](#idempotency-on-your-side)).
 - **Store `_meta.executionId` and `_meta.attempt` on persisted events** — they're invaluable for debugging "why did the same order get processed twice".
 - **Keep `timeout` short (5–10s) and acknowledge fast in your handler.** Use a queue to do real work in the background.
 

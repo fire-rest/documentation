@@ -17,7 +17,7 @@ Out of the box, sem configuração de retry, um nó HTTP faz **uma única tentat
 | `Content-Type` | `application/json` (auto-injetado quando há body) |
 | `Accept` | `application/json` (auto-injetado) |
 
-Se seu endpoint dá timeout, retorna um non-`2xx` ou a rede falha, a execução falha imediatamente e cai para o dead letter, a menos que você tenha habilitado retentativas.
+Se seu endpoint dá timeout, retorna um non-`2xx` ou a rede falha, o nó HTTP não retenta dentro da execução: a execução falha e o Fire recoloca a entrega na fila (veja [Política de retentativas](#política-de-retentativas)) antes que ela termine no dead letter.
 
 <Note>
   Retentativas são **opt-in** a nível de flow. A maioria dos flows em produção habilita. Defina `retryOnFailure: true` e ajuste `retryCount` por flow.
@@ -50,6 +50,11 @@ tentativa 6 → falha → dead letter
 
 Tempo total de parede ≤ 23 segundos mais o tempo gasto em cada tentativa (cada uma até `timeout`).
 
+### Dois níveis de retentativa
+
+- **Retentativas do nó HTTP** (acima): acontecem dentro de **uma mesma execução do flow** — mesmo body, mesmo `event.id`, mesmo `event.createdAt`.
+- **Recolocação na fila.** Quando a execução falha — retentativas do nó esgotadas, ou sem retentativas habilitadas — o Fire coloca a entrega de volta na fila com um backoff de minutos (cerca de 30 s, 2 min, 8 min…) até o limite de tentativas do job, e só então a move para o dead letter. Cada entrega recolocada é uma **execução nova**: chega com `event.id` novo, `event.createdAt` novo e `_meta.attempt` maior. Só `event.emittedAt` se mantém.
+
 ### O que conta como falha
 
 | Resultado | Retried? |
@@ -62,27 +67,35 @@ Tempo total de parede ≤ 23 segundos mais o tempo gasto em cada tentativa (cada
 
 ### Idempotência do seu lado
 
-Como retentativas repetem o mesmo body, **seu endpoint precisa ser idempotente**. Use `event.id` (o UUID de execução do flow, gerado uma vez por execução e estável através de retentativas) como chave de dedup.
+O mesmo fato pode chegar até você mais de uma vez, então **seu endpoint precisa ser idempotente**. Não deduplique só por `event.id`: ele identifica uma execução do flow, e uma entrega recolocada na fila ou reprocessada chega com um novo. Use uma chave de domínio:
+
+| Evento | Chave de dedup |
+|---|---|
+| Eventos de pedido | `data.orderId` + `event.type` + `event.emittedAt` |
+| `store.updated` | `data.publication.id` |
+| `store.business_day_closed` | `data.businessDayId` |
 
 ```js
 const seen = new Map(); // Redis ou DB em produção
 
-if (seen.has(event.id)) return; // duplicata de retry — já tratada
-seen.set(event.id, Date.now());
+const key = data.publication?.id ?? data.businessDayId
+  ?? `${data.orderId}:${event.type}:${event.emittedAt}`;
+if (seen.has(key)) return; // já tratado
+seen.set(key, Date.now());
 ```
 
-Um TTL de 24 horas é suficiente — o Fire nunca repete um evento depois do threshold de dead-letter.
+Guarde as chaves por mais tempo que a janela de retentativas: entregas recolocadas na fila chegam em minutos, mas um reprocessamento manual a partir do dead letter pode chegar muito depois.
 
 ## Dead letter
 
-Quando todas as retentativas se esgotam, a execução é movida para a tabela `flow_dead_letter`. Flows falhos podem ser inspecionados e reprocessados manualmente em **Settings → Integration Flows → Executions → Dead letter**. Reprocessamentos produzem um novo `event.id` (porque são uma nova execução de flow); seu dedup de idempotência não os bloqueará, o que é o que você quer.
+Quando as tentativas recolocadas na fila também se esgotam, o job vai para o dead letter. Flows falhos podem ser inspecionados e reprocessados manualmente em **Settings → Integration Flows → Executions → Dead letter**. Um reprocessamento é uma execução nova: traz `event.id` e `event.createdAt` novos, e o `event.emittedAt` original. Se a entrega original nunca chegou até você, seu dedup por chave de domínio deixa o reprocessamento passar — que é o que você quer.
 
 ## Garantias de ordem
 
-- **Ordene os eventos por `event.emittedAt`, nunca pela chegada.** As entregas podem chegar atrasadas (uma entrega retentada ou reexecutada pode chegar muito depois do fato) e fora de ordem. `event.emittedAt` é quando o Fire emitiu o fato e não muda entre retentativas; `event.createdAt` é quando aquela entrega específica rodou e muda a cada tentativa.
+- **Ordene os eventos por `event.emittedAt`, nunca pela chegada.** As entregas podem chegar atrasadas (uma entrega recolocada na fila ou reprocessada pode chegar muito depois do fato) e fora de ordem. `event.emittedAt` é quando o Fire emitiu o fato e nunca muda; `event.createdAt` é a hora da execução do flow e muda quando a entrega é recolocada na fila ou reprocessada.
 - **Sem garantia de ordem entre pedidos.** Dois eventos `order.completed` podem chegar fora da ordem de negócio. Ordene por `data.createdAt` se precisar de ordem.
 - **Sem garantia de ordem entre tipos de evento para o mesmo pedido.** `order.invoiced` pode chegar antes ou depois de `order.completed` para o mesmo `data.orderId`. Não assuma que um precede o outro.
-- **Dentro de uma única execução de flow, retentativas preservam identidade.** O mesmo `event.id` chega múltiplas vezes durante retentativas; retentativas posteriores não alteram o body.
+- **Dentro de uma mesma execução do flow, as retentativas do nó HTTP preservam a identidade.** Elas reenviam o mesmo body com o mesmo `event.id`. Uma entrega recolocada na fila ou reprocessada é uma execução nova, com `event.id` novo.
 
 ## Autenticação
 
@@ -169,7 +182,7 @@ Até lá, trate sua credencial de auth como prova de origem.
 
 - **Sempre habilite retentativas em flows de produção.** Um único timeout não deveria derrubar um evento.
 - **Limite retentativas a 3 a menos que tenha um downstream flaky de cauda longa.** Mais retentativas significa mais latência até dead-letter.
-- **Use `event.id` para idempotência, não `data.orderId`.** Uma entrega retriada tem o mesmo `event.id`, mas `data.orderId` é o mesmo durante todo o lifecycle do pedido (completed, cancelled, fiscal authorized, fiscal cancelled todos compartilham).
+- **Deduplique por uma chave de domínio, não por `event.id`.** `event.id` muda quando o Fire recoloca uma entrega na fila, e `data.orderId` sozinho é compartilhado por todos os eventos do ciclo de vida do pedido. Combine `data.orderId` + `event.type` + `event.emittedAt` (veja [Idempotência do seu lado](#idempotência-do-seu-lado)).
 - **Salve `_meta.executionId` e `_meta.attempt` em eventos persistidos** — são inestimáveis para debugar "por que o mesmo pedido foi processado duas vezes".
 - **Mantenha `timeout` curto (5–10s) e confirme rápido no seu handler.** Use uma fila para fazer trabalho real em background.
 
