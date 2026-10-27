@@ -28,6 +28,8 @@ Cada publicação de uma loja emite **um** `store.updated`. `data.publication.re
 | `override_apply` / `override_revert` | Um override foi aplicado à loja, ou revertido. |
 | `archive` | A loja foi arquivada — veja [Arquivar](#arquivar). |
 
+Podem aparecer valores novos de `reason` (o contrato já admite `retry`) e de `mode`. Trate um valor que você não conhece como uma publicação normal: o evento continua trazendo a loja completa.
+
 Uma publicação também pode ser **agendada**: ao agendá-la nada é emitido; o evento é disparado quando chega a hora agendada, com `publication.mode: "scheduled"` e `publication.scheduledAt`. Cancelar uma publicação agendada não emite nada.
 
 **Nada é emitido** quando mudanças são salvas sem publicá-las nos canais, nem quando o dia de negócio abre ou fecha.
@@ -176,7 +178,7 @@ Uma publicação também pode ser **agendada**: ao agendá-la nada é emitido; o
 ### `data.store`
 
 <ResponseField name="store" type="object">
-  O **mesmo bloco de loja V4** que viaja nos eventos de pedido — `uid`, `code`, `name`, `phone`, `email`, `address`, `externalId`, `vendor`, `account`, `locationInfo` (com `country.phoneCode`), `metadata` e, quando a emissão fiscal está habilitada para a loja, `storeFiscalConfig`. Referência de campos em [`order.completed` → `data.store`](/pt/events/order-completed#data-store). `phone` vem em formato internacional, com o código do país (`+5511999990000`); uma loja sem telefone real pode trazer um valor de preenchimento. `metadata` é a configuração **chave-valor livre** da loja: o Fire não impõe as chaves, algumas integrações leem chaves conhecidas (no exemplo, `taxesInfo` e `deliveryInfo`), e é `{}` quando a loja não tem nenhuma. Sobre esse bloco, este evento acrescenta:
+  O **mesmo bloco de loja V4** que viaja nos eventos de pedido — `uid`, `code`, `name`, `phone`, `email`, `address`, `externalId`, `vendor`, `account`, `locationInfo` (com `country.phoneCode`), `metadata` e `storeFiscalConfig` (pode ser `null`). Referência de campos em [`order.completed` → `data.store`](/pt/events/order-completed#data-store). `phone` vem em formato internacional (`+` e dígitos, p. ex. `+5511999990000`). Pode trazer um número que não é real (por exemplo, só zeros) se a loja não tem telefone cadastrado, ou o valor como foi salvo se o país não tem código telefônico. `metadata` é a configuração **chave-valor livre** da loja: o Fire não impõe as chaves, algumas integrações leem chaves conhecidas (no exemplo, `taxesInfo` e `deliveryInfo`), e é `{}` quando a loja não tem nenhuma. Sobre esse bloco, este evento acrescenta:
 
   <Expandable title="campos que store.updated acrescenta">
     <ResponseField name="number" type="integer | null">
@@ -241,13 +243,13 @@ Uma publicação também pode ser **agendada**: ao agendá-la nada é emitido; o
       Contador por loja: sobe em um a cada publicação emitida daquela loja. A maior é a mais nova. Veja [A publicação mais recente vence](#a-publicação-mais-recente-vence).
     </ResponseField>
     <ResponseField name="mode" type="string">
-      `now` (publicada na hora) ou `scheduled` (disparada por um agendamento).
+      `now` (publicada na hora) ou `scheduled` (disparada por um agendamento). Podem aparecer valores novos; trate-os como uma publicação normal.
     </ResponseField>
     <ResponseField name="reason" type="string">
-      O que gerou a publicação: `publish`, `draft`, `resync`, `channel_toggle`, `override_apply`, `override_revert` ou `archive`. Veja [Condição de disparo](#condição-de-disparo).
+      O que gerou a publicação: `publish`, `draft`, `resync`, `channel_toggle`, `override_apply`, `override_revert` ou `archive`. Podem aparecer valores novos (p. ex. `retry`); trate-os como uma publicação normal. Veja [Condição de disparo](#condição-de-disparo).
     </ResponseField>
     <ResponseField name="channels" type="string[]">
-      Os códigos de canal de que trata esta publicação: os escolhidos ao publicar, todos os canais habilitados numa ressincronização, o canal ligado ou desligado num `channel_toggle`, ou o canal pontual numa ressincronização de um só canal.
+      Os códigos de canal de que trata esta publicação: os escolhidos ao publicar, todos os canais habilitados numa ressincronização, o canal ligado ou desligado num `channel_toggle`, o canal pontual numa ressincronização de um só canal, todos os canais habilitados num `override_apply` ou `override_revert`, e ao arquivar, os canais publicados mais os habilitados.
     </ResponseField>
     <ResponseField name="scheduledAt" type="string | null">
       Hora ISO 8601 UTC para a qual a publicação foi agendada. `null` quando `mode` é `now`.
@@ -262,7 +264,7 @@ Uma publicação também pode ser **agendada**: ao agendá-la nada é emitido; o
 
 Cada evento traz a loja **completa**, então a publicação mais recente substitui tudo o que veio antes. O Fire já cuida da ordem para você:
 
-- Dentro de um flow, as publicações de **uma mesma loja** são entregues uma por vez, na ordem de `sequence`. Lojas diferentes avançam em paralelo.
+- Dentro de um flow, as publicações de **uma mesma loja** são entregues uma por vez, na ordem em que foram emitidas. Lojas diferentes avançam em paralelo.
 - Quando uma loja recebe uma publicação nova que cobre os mesmos canais, as entregas anteriores que ainda estavam esperando são canceladas; as demais saem do mesmo jeito, em ordem.
 
 `publication.sequence` continua sendo um dado útil: você pode guardar a última que aplicou por loja e reconhecer um payload antigo se algum dia ele chegar — por exemplo, uma reexecução manual de uma entrega antiga, que mantém sua `sequence` original.

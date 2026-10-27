@@ -28,6 +28,8 @@ Each publication of a store emits **one** `store.updated`. `data.publication.rea
 | `override_apply` / `override_revert` | An override was applied to the store, or reverted. |
 | `archive` | The store was archived — see [Archiving](#archiving). |
 
+New `reason` values (the contract already allows `retry`) and new `mode` values may appear. Treat a value you do not know as a normal publication: the event still carries the whole store.
+
 A publication can also be **scheduled**: nothing is emitted when it is scheduled; the event fires when the scheduled time arrives, with `publication.mode: "scheduled"` and `publication.scheduledAt`. Cancelling a scheduled publication emits nothing.
 
 **Nothing is emitted** when changes are saved without publishing them to the channels, or when the business day opens or closes.
@@ -176,7 +178,7 @@ A publication can also be **scheduled**: nothing is emitted when it is scheduled
 ### `data.store`
 
 <ResponseField name="store" type="object">
-  The **same V4 store block** that travels on order events — `uid`, `code`, `name`, `phone`, `email`, `address`, `externalId`, `vendor`, `account`, `locationInfo` (with `country.phoneCode`), `metadata` and, when fiscal emission is enabled for the store, `storeFiscalConfig`. Field reference in [`order.completed` → `data.store`](/en/events/order-completed#data-store). `phone` comes in international format, with the country code (`+5511999990000`); a store without a real phone number may carry a placeholder value. `metadata` is the store's **free key-value** configuration: Fire does not impose its keys, some integrations read well-known ones (in the example, `taxesInfo` and `deliveryInfo`), and it is `{}` when the store has none. On top of that block, this event adds:
+  The **same V4 store block** that travels on order events — `uid`, `code`, `name`, `phone`, `email`, `address`, `externalId`, `vendor`, `account`, `locationInfo` (with `country.phoneCode`), `metadata` and `storeFiscalConfig` (may be `null`). Field reference in [`order.completed` → `data.store`](/en/events/order-completed#data-store). `phone` comes in international format (`+` and digits, e.g. `+5511999990000`). It may carry a number that is not real (for example, all zeros) if the store has no phone set, or the value exactly as stored if the country has no calling code. `metadata` is the store's **free key-value** configuration: Fire does not impose its keys, some integrations read well-known ones (in the example, `taxesInfo` and `deliveryInfo`), and it is `{}` when the store has none. On top of that block, this event adds:
 
   <Expandable title="fields added by store.updated">
     <ResponseField name="number" type="integer | null">
@@ -241,13 +243,13 @@ A publication can also be **scheduled**: nothing is emitted when it is scheduled
       Per-store counter: it goes up by one with each emitted publication of that store. The higher one is the newer one. See [The latest publication wins](#the-latest-publication-wins).
     </ResponseField>
     <ResponseField name="mode" type="string">
-      `now` (published on the spot) or `scheduled` (fired by a schedule).
+      `now` (published on the spot) or `scheduled` (fired by a schedule). New values may appear; treat them as a normal publication.
     </ResponseField>
     <ResponseField name="reason" type="string">
-      What produced the publication: `publish`, `draft`, `resync`, `channel_toggle`, `override_apply`, `override_revert` or `archive`. See [Trigger condition](#trigger-condition).
+      What produced the publication: `publish`, `draft`, `resync`, `channel_toggle`, `override_apply`, `override_revert` or `archive`. New values may appear (e.g. `retry`); treat them as a normal publication. See [Trigger condition](#trigger-condition).
     </ResponseField>
     <ResponseField name="channels" type="string[]">
-      The channel codes this publication is about: the ones chosen when publishing, every enabled channel on a re-sync, the channel switched on or off in a `channel_toggle`, or the single channel of a one-channel re-sync.
+      The channel codes this publication is about: the ones chosen when publishing, every enabled channel on a re-sync, the channel switched on or off in a `channel_toggle`, the single channel of a one-channel re-sync, every enabled channel on an `override_apply` or `override_revert`, and on archiving, the published channels plus the enabled ones.
     </ResponseField>
     <ResponseField name="scheduledAt" type="string | null">
       ISO 8601 UTC time the publication was scheduled for. `null` when `mode` is `now`.
@@ -262,7 +264,7 @@ A publication can also be **scheduled**: nothing is emitted when it is scheduled
 
 Every event carries the **whole** store, so the most recent publication replaces everything before it. Fire already takes care of the order for you:
 
-- Within a flow, the publications of **one store** are delivered one at a time, in `sequence` order. Different stores move in parallel.
+- Within a flow, the publications of **one store** are delivered one at a time, in the order they were emitted. Different stores move in parallel.
 - When a store gets a new publication that covers the same channels, deliveries of older publications that were still waiting are cancelled; the others still go out, in order.
 
 `publication.sequence` is still useful data: you can store the last one you applied per store, and recognize a stale payload if one ever reaches you — for example, a manual replay of an old delivery, which keeps its original `sequence`.

@@ -17,7 +17,7 @@ Out of the box, sem configuração de retry, um nó HTTP faz **uma única tentat
 | `Content-Type` | `application/json` (auto-injetado quando há body) |
 | `Accept` | `application/json` (auto-injetado) |
 
-Se seu endpoint dá timeout, retorna um non-`2xx` ou a rede falha, o nó HTTP não retenta dentro da execução: a execução falha e o Fire recoloca a entrega na fila (veja [Política de retentativas](#política-de-retentativas)) antes que ela termine no dead letter.
+Se seu endpoint dá timeout, retorna um non-`2xx` ou a rede falha, a execução falha. O que acontece depois depende do resultado: um timeout, um erro de rede ou uma resposta `5xx`, `408` ou `429` fazem o Fire recolocar a entrega na fila (veja [Dois níveis de retentativa](#dois-níveis-de-retentativa)); qualquer outro `4xx` vai **direto para o dead letter**, sem recolocar na fila — repetir a mesma requisição não muda a resposta. Veja [O que conta como falha](#o-que-conta-como-falha).
 
 <Note>
   Retentativas são **opt-in** a nível de flow. A maioria dos flows em produção habilita. Defina `retryOnFailure: true` e ajuste `retryCount` por flow.
@@ -25,7 +25,7 @@ Se seu endpoint dá timeout, retorna um non-`2xx` ou a rede falha, o nó HTTP n�
 
 ## Política de retentativas
 
-Quando retentativas estão habilitadas, o nó HTTP tenta a requisição até `retryCount + 1` vezes no total, esperando entre tentativas com backoff exponencial limitado a 8 segundos.
+Quando retentativas estão habilitadas, o nó HTTP repete a requisição diante de um **timeout ou erro de rede** — não diante de uma resposta non-`2xx` — até `retryCount + 1` vezes no total, esperando entre tentativas com backoff exponencial limitado a 8 segundos.
 
 | Setting | Range | Default | Máximo |
 |---|---|---|---|
@@ -45,7 +45,7 @@ tentativa 4 → falha
 espera 8s
 tentativa 5 → falha
 espera 8s
-tentativa 6 → falha → dead letter
+tentativa 6 → falha → a execução falha (veja Dois níveis de retentativa)
 ```
 
 Tempo total de parede ≤ 23 segundos mais o tempo gasto em cada tentativa (cada uma até `timeout`).
@@ -53,17 +53,20 @@ Tempo total de parede ≤ 23 segundos mais o tempo gasto em cada tentativa (cada
 ### Dois níveis de retentativa
 
 - **Retentativas do nó HTTP** (acima): acontecem dentro de **uma mesma execução do flow** — mesmo body, mesmo `event.id`, mesmo `event.createdAt`.
-- **Recolocação na fila.** Quando a execução falha — retentativas do nó esgotadas, ou sem retentativas habilitadas — o Fire coloca a entrega de volta na fila com um backoff de minutos (cerca de 30 s, 2 min, 8 min…) até o limite de tentativas do job, e só então a move para o dead letter. Cada entrega recolocada é uma **execução nova**: chega com `event.id` novo, `event.createdAt` novo e `_meta.attempt` maior. Só `event.emittedAt` se mantém.
+- **Recolocação automática na fila.** Quando a execução falha por um motivo retentável (veja [O que conta como falha](#o-que-conta-como-falha)) — retentativas do nó esgotadas, ou sem retentativas habilitadas — o Fire coloca a entrega de volta na fila **até 3 vezes**, com esperas de cerca de 30 s, 2 min e 8 min (mais alguns segundos aleatórios). Se a quarta tentativa também falhar, a entrega vai para o dead letter. Cada entrega recolocada é uma **execução nova**: chega com `event.id` novo, `event.createdAt` novo e `_meta.attempt` maior. Na recolocação automática, `event.emittedAt` se mantém.
 
 ### O que conta como falha
 
-| Resultado | Retried? |
-|---|---|
-| Resposta non-`2xx` | Sim |
-| Timeout | Sim |
-| Erro de rede / falha de DNS | Sim |
-| Erro de resolução de auth (ex.: fetch de token OAuth2 falhou) | Não — falha imediatamente |
-| URL bloqueada (requisição a host interno) | Não — falha com `BLOCKED_URL` |
+| Resultado | Retentativa do nó HTTP (com `retryOnFailure`) | Depois, o Fire… |
+|---|---|---|
+| Timeout | Sim | recoloca a entrega na fila |
+| Erro de rede / falha de DNS | Sim | recoloca a entrega na fila |
+| Resposta `5xx`, `408` ou `429` | Não | recoloca a entrega na fila |
+| Outra resposta `4xx` | Não | a envia **direto para o dead letter**, sem recolocar na fila |
+| Erro de resolução de auth (ex.: fetch de token OAuth2 falhou) | Não | recoloca a entrega na fila |
+| URL bloqueada (requisição a host interno) | Não | a envia direto para o dead letter (`BLOCKED_URL`) |
+
+Um código de status que o seu flow roteia explicitamente no nó HTTP não conta como falha.
 
 ### Idempotência do seu lado
 
@@ -75,6 +78,8 @@ O mesmo fato pode chegar até você mais de uma vez, então **seu endpoint preci
 | `store.updated` | `data.publication.id` |
 | `store.business_day_closed` | `data.businessDayId` |
 
+A chave dos eventos de pedido cobre as **recolocações automáticas na fila**, que mantêm `event.emittedAt`. Um **reprocessamento manual a partir do dead letter** chega como um evento novo, com `event.emittedAt` novo, então seu dedup o deixa passar: se você já processou esse fato, decida pelo estado do pedido no seu sistema. As chaves de `store.updated` e `store.business_day_closed` vêm de `data` e não mudam num reprocessamento.
+
 ```js
 const seen = new Map(); // Redis ou DB em produção
 
@@ -84,15 +89,15 @@ if (seen.has(key)) return; // já tratado
 seen.set(key, Date.now());
 ```
 
-Guarde as chaves por mais tempo que a janela de retentativas: entregas recolocadas na fila chegam em minutos, mas um reprocessamento manual a partir do dead letter pode chegar muito depois.
+As recolocações automáticas chegam em até uns 11 minutos depois da primeira tentativa (mais o tempo de cada tentativa), então basta guardar as chaves um pouco mais que isso. Um reprocessamento manual a partir do dead letter traz uma chave nova nos eventos de pedido (veja acima).
 
 ## Dead letter
 
-Quando as tentativas recolocadas na fila também se esgotam, o job vai para o dead letter. Flows falhos podem ser inspecionados e reprocessados manualmente em **Settings → Integration Flows → Executions → Dead letter**. Um reprocessamento é uma execução nova: traz `event.id` e `event.createdAt` novos, e o `event.emittedAt` original. Se a entrega original nunca chegou até você, seu dedup por chave de domínio deixa o reprocessamento passar — que é o que você quer.
+Quando as recolocações também se esgotam — ou a falha não é retentável, como um `4xx` — o job vai para o dead letter. Flows falhos podem ser inspecionados e reprocessados manualmente em **Settings → Integration Flows → Executions → Dead letter**. Um reprocessamento é uma **entrega nova**: traz `event.id`, `event.createdAt` e `event.emittedAt` novos, e `_meta.attempt` volta a `1`; `data` é o da entrega original. Nos eventos de pedido seu dedup o deixa passar: se a entrega original chegou e você já a processou, decida pelo estado do pedido no seu sistema.
 
 ## Garantias de ordem
 
-- **Ordene os eventos por `event.emittedAt`, nunca pela chegada.** As entregas podem chegar atrasadas (uma entrega recolocada na fila ou reprocessada pode chegar muito depois do fato) e fora de ordem. `event.emittedAt` é quando o Fire emitiu o fato e nunca muda; `event.createdAt` é a hora da execução do flow e muda quando a entrega é recolocada na fila ou reprocessada.
+- **Ordene os eventos por `event.emittedAt`, nunca pela chegada.** As entregas podem chegar atrasadas e fora de ordem. `event.emittedAt` é quando o Fire emitiu o fato e não muda entre as recolocações automáticas; um reprocessamento manual a partir do dead letter é um evento novo, com o `event.emittedAt` do reprocessamento. `event.createdAt` é a hora da execução do flow e muda a cada recolocação ou reprocessamento.
 - **Sem garantia de ordem entre pedidos.** Dois eventos `order.completed` podem chegar fora da ordem de negócio. Ordene por `data.createdAt` se precisar de ordem.
 - **Sem garantia de ordem entre tipos de evento para o mesmo pedido.** `order.invoiced` pode chegar antes ou depois de `order.completed` para o mesmo `data.orderId`. Não assuma que um precede o outro.
 - **Dentro de uma mesma execução do flow, as retentativas do nó HTTP preservam a identidade.** Elas reenviam o mesmo body com o mesmo `event.id`. Uma entrega recolocada na fila ou reprocessada é uma execução nova, com `event.id` novo.
@@ -182,7 +187,7 @@ Até lá, trate sua credencial de auth como prova de origem.
 
 - **Sempre habilite retentativas em flows de produção.** Um único timeout não deveria derrubar um evento.
 - **Limite retentativas a 3 a menos que tenha um downstream flaky de cauda longa.** Mais retentativas significa mais latência até dead-letter.
-- **Deduplique por uma chave de domínio, não por `event.id`.** `event.id` muda quando o Fire recoloca uma entrega na fila, e `data.orderId` sozinho é compartilhado por todos os eventos do ciclo de vida do pedido. Combine `data.orderId` + `event.type` + `event.emittedAt` (veja [Idempotência do seu lado](#idempotência-do-seu-lado)).
+- **Deduplique por uma chave de domínio, não por `event.id`.** `event.id` muda quando o Fire recoloca uma entrega na fila, e `data.orderId` sozinho é compartilhado por todos os eventos do ciclo de vida do pedido. Combine `data.orderId` + `event.type` + `event.emittedAt`, que cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo (veja [Idempotência do seu lado](#idempotência-do-seu-lado)).
 - **Salve `_meta.executionId` e `_meta.attempt` em eventos persistidos** — são inestimáveis para debugar "por que o mesmo pedido foi processado duas vezes".
 - **Mantenha `timeout` curto (5–10s) e confirme rápido no seu handler.** Use uma fila para fazer trabalho real em background.
 

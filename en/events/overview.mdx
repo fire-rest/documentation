@@ -143,13 +143,13 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 
   <Expandable title="event">
     <ResponseField name="id" type="string">
-      Identifier of this **flow execution**. It stays the same across the HTTP node's own retries, but it is **new** when Fire re-queues the delivery or someone replays it by hand — so it does not identify the fact. To deduplicate, use a domain key: `data.orderId` + `event.type` + `event.emittedAt` on order events, `data.publication.id` on `store.updated`, `data.businessDayId` on `store.business_day_closed`. See [Idempotency on your side](/en/events/delivery#idempotency-on-your-side).
+      Identifier of this **flow execution**. It stays the same across the HTTP node's own retries, but it is **new** when Fire re-queues the delivery or someone replays it by hand — so it does not identify the fact. To deduplicate, use a domain key: `data.orderId` + `event.type` + `event.emittedAt` on order events, `data.publication.id` on `store.updated`, `data.businessDayId` on `store.business_day_closed`. The order key covers automatic re-queues; a manual replay from the dead letter arrives as a new event. See [Idempotency on your side](/en/events/delivery#idempotency-on-your-side).
     </ResponseField>
     <ResponseField name="type" type="string">
       Event type. One of: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
-      ISO 8601 UTC timestamp of when Fire **emitted the fact** — the moment the event was queued. **Stable across retries**: every delivery of the same event carries the same value. **Order events by this field**: deliveries can arrive late or out of order, so neither arrival order nor `createdAt` tells you which fact came first. It only reaches you if your flow's body includes it: if your flow was created before this field existed, add `"emittedAt": "{{trigger.event.emittedAt}}"` to the `event` block of the HTTP node's body — the path is already available.
+      ISO 8601 UTC timestamp of when Fire **emitted the fact** — the moment the event was queued. **Stable across retries**: every re-queued delivery of the same event carries the same value; a manual replay from the dead letter carries a new one. **Order events by this field**: deliveries can arrive late or out of order, so neither arrival order nor `createdAt` tells you which fact came first. It only reaches you if your flow's body includes it: if your flow was created before this field existed, add `"emittedAt": "{{trigger.event.emittedAt}}"` to the `event` block of the HTTP node's body — the path is already available.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
       ISO 8601 UTC timestamp of **this flow execution**. The same across the HTTP node's retries; new when Fire re-queues the delivery or it is replayed by hand. It does not tell you when the fact happened — to order events use `emittedAt`.
@@ -170,6 +170,8 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 | [`order.invoiced`](/en/events/order-invoiced) | V4 order snapshot + `fiscal` block: `authority` (canonical fields, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/en/events/order-reversed) | V4 order snapshot + `cancellation` audit block + `cancellation.fiscal` with the cancelled document, `history` and `compensates` |
 | [`store.updated`](/en/events/store-updated) | The whole store: V4 `store` block + `metadata`, `channels[]` with resolved schedules, `operationSchedule`, `salesSchedule` and the `publication` block (`id`, `sequence`, `reason`, …) |
+
+The full `store` block —with `email`, `metadata` and `locationInfo.country.phoneCode`— travels on the events that carry the full order snapshot (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) and on `store.updated`. `order.status_updated` and `store.business_day_closed` carry a minimal store reference.
 
 ### `_meta`
 
@@ -208,8 +210,8 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 | Timeout | 30 seconds (configurable, 1–60s) |
 | Auth | None / `Bearer` / `x-api-key` / OAuth2 client credentials — selected per flow |
 | Signature | **Optional** HMAC-SHA256 (Webhook node) — `X-Fire-Signature` + `X-Fire-Timestamp` |
-| Retries | Up to 5 with exponential backoff |
-| Dead letter | After max retries, the execution lands in `flow_dead_letter` |
+| Retries | The HTTP node, up to 5 (opt-in, on timeout or network error); then Fire re-queues retryable failures up to 3 times (~30 s, 2 min, 8 min) |
+| Dead letter | After the re-queues, or straight away on a `4xx`, the execution lands in the dead letter |
 
 <Note>
   Outbound requests can be **HMAC-signed** when your flow uses the **Webhook node**: Fire adds `X-Fire-Signature` (`v1=hex(HMAC-SHA256(secret, "{timestamp}.{body}"))`) and `X-Fire-Timestamp` (Unix seconds). The signature is optional and **complements** transport auth (Bearer / API key / OAuth2). Details and verification in [the signed Webhook node](/en/events/integration-flows#signed-webhook-node-hmac).
@@ -262,7 +264,7 @@ app.listen(8080);
     Validate the auth credential the flow sends (Bearer token, API key, or OAuth2 access token). Reject any request that doesn't match.
   </Step>
   <Step title="Deduplicate">
-    Look up a **domain key** in a store — `data.orderId` + `event.type` + `event.emittedAt` for order events, `data.publication.id` for `store.updated`, `data.businessDayId` for `store.business_day_closed`. If you've already processed it, skip. Not `event.id`: it changes when Fire re-queues a delivery.
+    Look up a **domain key** in a store — `data.orderId` + `event.type` + `event.emittedAt` for order events, `data.publication.id` for `store.updated`, `data.businessDayId` for `store.business_day_closed`. If you've already processed it, skip. The order key covers automatic re-queues; a manual replay from the dead letter arrives as a new event — if you already processed that fact, decide based on the order's state in your system. Not `event.id`: it changes when Fire re-queues a delivery.
   </Step>
   <Step title="Validate the payload">
     Check `event.type` matches your handler and the `data` block has the fields you expect. Return `400` for malformed inputs so they don't enter your retry queue from Fire.

@@ -143,13 +143,13 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
 
   <Expandable title="event">
     <ResponseField name="id" type="string">
-      Identificador de esta **ejecución del flow**. Es el mismo en los reintentos del propio nodo HTTP, pero es **nuevo** cuando Fire reencola la entrega o alguien la reproduce a mano — así que no identifica el hecho. Para deduplicar usa una llave de dominio: `data.orderId` + `event.type` + `event.emittedAt` en los eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`. Ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado).
+      Identificador de esta **ejecución del flow**. Es el mismo en los reintentos del propio nodo HTTP, pero es **nuevo** cuando Fire reencola la entrega o alguien la reproduce a mano — así que no identifica el hecho. Para deduplicar usa una llave de dominio: `data.orderId` + `event.type` + `event.emittedAt` en los eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`. La llave de orden cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo. Ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado).
     </ResponseField>
     <ResponseField name="type" type="string">
       Tipo de evento. Uno de: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
-      Timestamp ISO 8601 UTC del momento en que Fire **emitió el hecho** — cuando el evento se encoló. **Es estable entre reintentos**: todas las entregas del mismo evento traen el mismo valor. **Ordena los eventos por este campo**: las entregas pueden llegar tarde o desordenadas, así que ni el orden de llegada ni `createdAt` te dicen qué hecho ocurrió primero. Solo te llega si el body de tu flow lo incluye: si tu flow se creó antes de que existiera este campo, agrega `"emittedAt": "{{trigger.event.emittedAt}}"` al bloque `event` del body del nodo HTTP — el path ya está disponible.
+      Timestamp ISO 8601 UTC del momento en que Fire **emitió el hecho** — cuando el evento se encoló. **Es estable entre reintentos**: todas las entregas reencoladas del mismo evento traen el mismo valor; una reproducción manual desde el dead letter trae uno nuevo. **Ordena los eventos por este campo**: las entregas pueden llegar tarde o desordenadas, así que ni el orden de llegada ni `createdAt` te dicen qué hecho ocurrió primero. Solo te llega si el body de tu flow lo incluye: si tu flow se creó antes de que existiera este campo, agrega `"emittedAt": "{{trigger.event.emittedAt}}"` al bloque `event` del body del nodo HTTP — el path ya está disponible.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
       Timestamp ISO 8601 UTC de **esta ejecución del flow**. Igual en los reintentos del nodo HTTP; nuevo cuando Fire reencola la entrega o se reproduce a mano. No dice cuándo ocurrió el hecho — para ordenar eventos usa `emittedAt`.
@@ -171,6 +171,8 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
 | [`order.reversed`](/es/events/order-reversed) | Snapshot V4 de orden + bloque `cancellation` de auditoría + `cancellation.fiscal` con el documento cancelado, `history` y `compensates` |
 | [`order.status_updated`](/es/events/order-status-updated) | Snapshot V4 + bloque `kitchen` (status, previousStatus, history del recorrido) |
 | [`store.updated`](/es/events/store-updated) | La tienda completa: bloque `store` V4 + `metadata`, `channels[]` con horarios resueltos, `operationSchedule`, `salesSchedule` y el bloque `publication` (`id`, `sequence`, `reason`, …) |
+
+El bloque `store` completo —con `email`, `metadata` y `locationInfo.country.phoneCode`— viaja en los eventos que llevan el snapshot completo de la orden (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) y en `store.updated`. `order.status_updated` y `store.business_day_closed` llevan una referencia mínima de la tienda.
 
 ### `_meta`
 
@@ -209,8 +211,8 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
 | Timeout | 30 segundos (configurable, 1–60s) |
 | Auth | None / `Bearer` / `x-api-key` / OAuth2 client credentials — se elige por flow |
 | Firma | HMAC-SHA256 **opcional** (nodo Webhook) — `X-Fire-Signature` + `X-Fire-Timestamp` |
-| Reintentos | Hasta 5 con backoff exponencial |
-| Dead letter | Después de los reintentos, la ejecución cae en `flow_dead_letter` |
+| Reintentos | El nodo HTTP, hasta 5 (opt-in, ante timeout o error de red); después Fire reencola hasta 3 veces (~30 s, 2 min, 8 min) los fallos reintentables |
+| Dead letter | Después de los reencolados, o directo ante un `4xx`, la ejecución cae en el dead letter |
 
 <Note>
   Las peticiones salientes pueden ir **firmadas con HMAC** si tu flow usa el **nodo Webhook**: Fire agrega `X-Fire-Signature` (`v1=hex(HMAC-SHA256(secret, "{timestamp}.{body}"))`) y `X-Fire-Timestamp` (Unix seconds). La firma es opcional y **complementa** al auth de transporte (Bearer / API key / OAuth2). Detalle y verificación en [el nodo Webhook firmado](/es/events/integration-flows#nodo-webhook-firmado-hmac).
@@ -263,7 +265,7 @@ app.listen(8080);
     Valida la credencial de auth que envía el flow (Bearer token, API key u OAuth2 access token). Rechaza cualquier petición que no haga match.
   </Step>
   <Step title="Deduplica">
-    Busca una **llave de dominio** en un store — `data.orderId` + `event.type` + `event.emittedAt` en eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`. Si ya lo procesaste, salta. No uses `event.id`: cambia cuando Fire reencola una entrega.
+    Busca una **llave de dominio** en un store — `data.orderId` + `event.type` + `event.emittedAt` en eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`. Si ya lo procesaste, salta. La llave de orden cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo — si ya procesaste ese hecho, decide por el estado de la orden en tu sistema. No uses `event.id`: cambia cuando Fire reencola una entrega.
   </Step>
   <Step title="Valida el payload">
     Chequea que `event.type` sea lo que esperas y que el bloque `data` tenga los campos esperados. Devuelve `400` ante inputs malformados para que no entren en tu cola de retry desde Fire.
