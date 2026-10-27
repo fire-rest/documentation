@@ -6,7 +6,7 @@ description: "Fire is event-driven. When something meaningful happens inside Fir
 Fire emits **events** whenever a meaningful business transition happens — an order is completed, an order is cancelled, a fiscal document is authorized by the tax authority, the kitchen advances an order. Each event is delivered to your endpoint by an **Integration Flow** you configure in the Fire dashboard.
 
 <Note>
-  Fire emits **five** order event types and **two** store event types today: [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close, and [`store.updated`](/en/events/store-updated) whenever a store's configuration is published.
+  Fire emits **six** order event types and **two** store event types today: [`order.opened`](/en/events/order-opened), [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close, and [`store.updated`](/en/events/store-updated) whenever a store's configuration is published.
 </Note>
 
 ## Fire is the source of truth for the lifecycle
@@ -146,7 +146,7 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
       Identifier of this **flow execution**. It stays the same across the HTTP node's own retries, but it is **new** when Fire re-queues the delivery or someone replays it by hand — so it does not identify the fact. To deduplicate, use a domain key: `data.orderId` + `event.type` + `event.emittedAt` on order events, `data.publication.id` on `store.updated`, `data.businessDayId` on `store.business_day_closed`. The order key covers automatic re-queues; a manual replay from the dead letter arrives as a new event. See [Idempotency on your side](/en/events/delivery#idempotency-on-your-side).
     </ResponseField>
     <ResponseField name="type" type="string">
-      Event type. One of: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
+      Event type. One of: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
       ISO 8601 UTC timestamp of when Fire **emitted the fact** — the moment the event was queued. **Stable across retries**: every re-queued delivery of the same event carries the same value; a manual replay from the dead letter carries a new one. **Order events by this field**: deliveries can arrive late or out of order, so neither arrival order nor `createdAt` tells you which fact came first. It only reaches you if your flow's body includes it: if your flow was created before this field existed, add `"emittedAt": "{{trigger.event.emittedAt}}"` to the `event` block of the HTTP node's body — the path is already available.
@@ -165,10 +165,12 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 
 | Event | What's in `data` |
 |---|---|
+| [`order.opened`](/en/events/order-opened) | V4 snapshot of the order when it is created — same shape as `order.completed` |
 | [`order.completed`](/en/events/order-completed) | V4 order snapshot — order, store (with optional `storeFiscalConfig`), customer, payments, fulfillment, KDS, lines |
 | [`order.cancelled`](/en/events/order-cancelled) | V4 order snapshot + `cancellation` audit block, with `cancellation.fiscal` (`status`, `authority`) when the order had an authorized document |
 | [`order.invoiced`](/en/events/order-invoiced) | V4 order snapshot + `fiscal` block: `authority` (canonical fields, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/en/events/order-reversed) | V4 order snapshot + `cancellation` audit block + `cancellation.fiscal` with the cancelled document, `history` and `compensates` |
+| [`order.status_updated`](/en/events/order-status-updated) | A light payload, **not** the full V4 snapshot: order identity (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), a minimal store (`code`, `name`, `account`, `vendor`), `fulfillment.service.code` and the `kitchen` block (status, previousStatus, history of the route) |
 | [`store.updated`](/en/events/store-updated) | The whole store: V4 `store` block + `metadata`, `channels[]` with resolved schedules, `operationSchedule`, `salesSchedule` and the `publication` block (`id`, `sequence`, `reason`, …) |
 
 The full `store` block —with `email`, `metadata` and `locationInfo.country.phoneCode`— travels on the events that carry the full order snapshot (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) and on `store.updated`. `order.status_updated` and `store.business_day_closed` carry a minimal store reference.

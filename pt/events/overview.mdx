@@ -6,7 +6,7 @@ description: "O Fire é event-driven. Quando algo significativo acontece dentro 
 O Fire emite **eventos** sempre que ocorre uma transição de negócio relevante — um pedido é completado, um pedido é cancelado, um documento fiscal é autorizado pela autoridade tributária, a cozinha avança um pedido. Cada evento é entregue ao seu endpoint por um **Integration Flow** que você configura no dashboard do Fire.
 
 <Note>
-  O Fire emite hoje **cinco** tipos de evento de pedido e **dois** de loja: [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status_updated`](/pt/events/order-status-updated), mais o evento agendado [`store.business_day_closed`](/pt/events/store-day-closed) no fechamento do dia, e [`store.updated`](/pt/events/store-updated) sempre que a configuração de uma loja é publicada.
+  O Fire emite hoje **seis** tipos de evento de pedido e **dois** de loja: [`order.opened`](/pt/events/order-opened), [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status_updated`](/pt/events/order-status-updated), mais o evento agendado [`store.business_day_closed`](/pt/events/store-day-closed) no fechamento do dia, e [`store.updated`](/pt/events/store-updated) sempre que a configuração de uma loja é publicada.
 </Note>
 
 ## O Fire é a fonte da verdade do ciclo de vida
@@ -146,7 +146,7 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
       Identificador desta **execução do flow**. É o mesmo nas retentativas do próprio nó HTTP, mas é **novo** quando o Fire recoloca a entrega na fila ou alguém a reprocessa manualmente — então não identifica o fato. Para deduplicar use uma chave de domínio: `data.orderId` + `event.type` + `event.emittedAt` nos eventos de pedido, `data.publication.id` em `store.updated`, `data.businessDayId` em `store.business_day_closed`. A chave de pedido cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo. Veja [Idempotência do seu lado](/pt/events/delivery#idempotência-do-seu-lado).
     </ResponseField>
     <ResponseField name="type" type="string">
-      Tipo de evento. Um de: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
+      Tipo de evento. Um de: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
       Timestamp ISO 8601 UTC do momento em que o Fire **emitiu o fato** — quando o evento entrou na fila. **É estável entre retentativas**: todas as entregas recolocadas na fila do mesmo evento trazem o mesmo valor; um reprocessamento manual a partir do dead letter traz um novo. **Ordene os eventos por este campo**: as entregas podem chegar atrasadas ou fora de ordem, então nem a ordem de chegada nem `createdAt` dizem qual fato aconteceu primeiro. Só chega até você se o body do seu flow o incluir: se o seu flow foi criado antes de este campo existir, adicione `"emittedAt": "{{trigger.event.emittedAt}}"` ao bloco `event` do body do nó HTTP — o path já está disponível.
@@ -165,11 +165,12 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 
 | Evento | O que tem em `data` |
 |---|---|
+| [`order.opened`](/pt/events/order-opened) | Snapshot V4 do pedido ao ser criado — mesma forma de `order.completed` |
 | [`order.completed`](/pt/events/order-completed) | Snapshot V4 do pedido — order, store (com `storeFiscalConfig` opcional), customer, payments, fulfillment, KDS, lines |
 | [`order.cancelled`](/pt/events/order-cancelled) | Snapshot V4 + bloco `cancellation` de auditoria, com `cancellation.fiscal` (`status`, `authority`) quando o pedido tinha um documento autorizado |
 | [`order.invoiced`](/pt/events/order-invoiced) | Snapshot V4 + bloco `fiscal`: `authority` (campos canônicos, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/pt/events/order-reversed) | Snapshot V4 + bloco `cancellation` de auditoria + `cancellation.fiscal` com o documento cancelado, `history` e `compensates` |
-| [`order.status_updated`](/pt/events/order-status-updated) | Snapshot V4 + bloco `kitchen` (status, previousStatus, history do percurso) |
+| [`order.status_updated`](/pt/events/order-status-updated) | Payload leve, **não** o snapshot V4 completo: identidade do pedido (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), uma loja mínima (`code`, `name`, `account`, `vendor`), `fulfillment.service.code` e o bloco `kitchen` (status, previousStatus, history do percurso) |
 | [`store.updated`](/pt/events/store-updated) | A loja completa: bloco `store` V4 + `metadata`, `channels[]` com horários resolvidos, `operationSchedule`, `salesSchedule` e o bloco `publication` (`id`, `sequence`, `reason`, …) |
 
 O bloco `store` completo —com `email`, `metadata` e `locationInfo.country.phoneCode`— viaja nos eventos que levam o snapshot completo do pedido (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) e em `store.updated`. `order.status_updated` e `store.business_day_closed` levam uma referência mínima da loja.
