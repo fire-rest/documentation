@@ -92,7 +92,8 @@ O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sand
     "uid": "a4019cad-bbac-4269-9f8d-f29654e92c45",
     "code": "BR-SP-001",
     "name": "Loja Centro - SP",
-    "phone": "1132094347",
+    "phone": "+5511999990000",
+    "email": "loja.centro@example.com",
     "address": "Av. Paulista 1578, Bela Vista, São Paulo - SP",
     "externalId": "a4019cad-bbac-4269-9f8d-f29654e92c45",
     "vendor": {
@@ -108,7 +109,7 @@ O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sand
     },
     "locationInfo": {
       "city":     { "uid": "1", "code": "SAO", "name": "São Paulo" },
-      "country":  { "uid": "6", "code": "BR",  "name": "Brasil" },
+      "country":  { "uid": "6", "code": "BR",  "name": "Brasil", "phoneCode": "+55" },
       "location": { "lat": "-23.5952979", "lon": "-46.6866818" },
       "timezone": "America/Sao_Paulo",
       "currencyCode": "BRL"
@@ -130,6 +131,10 @@ O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sand
         "storeCode3S": "50000001",
         "serialNumber": 1
       }
+    },
+    "metadata": {
+      "taxesInfo":    { "taxRate": 0, "vatRatePercentage": 0 },
+      "deliveryInfo": { "cookTime": 5, "minimumOrder": 1.5, "shippingCost": 0 }
     }
   },
   "device": {
@@ -487,13 +492,14 @@ O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sand
     <ResponseField name="externalId" type="string | null">ID da loja no seu sistema externo, quando mapeado.</ResponseField>
     <ResponseField name="code" type="string | null">Código da loja (ex.: `BR-SP-001`). Use para limitar flows a lojas específicas.</ResponseField>
     <ResponseField name="name" type="string | null">Nome de exibição da loja.</ResponseField>
-    <ResponseField name="phone" type="string | null">Telefone da loja.</ResponseField>
+    <ResponseField name="phone" type="string | null">Telefone da loja. Formato esperado: internacional, com o código do país (`+5511999990000`: `+` e dígitos). Não conte com isso como garantido: uma loja sem telefone real pode trazer um valor de preenchimento, e pedidos anteriores a este formato trazem o telefone como estava salvo.</ResponseField>
+    <ResponseField name="email" type="string | null">E-mail de contato da loja, sem espaços no início nem no fim. `null` quando a loja não tem um.</ResponseField>
     <ResponseField name="address" type="string | null">Endereço da loja.</ResponseField>
     <ResponseField name="locationInfo" type="object">
       Contexto geográfico.
       <Expandable title="locationInfo">
         <ResponseField name="city"     type="object">`{ uid, code, name }` — identificadores de cidade.</ResponseField>
-        <ResponseField name="country"  type="object">`{ uid, code, name }` — `code` é ISO 3166-1 alpha-2 (`BR`, `EC`, `CO`, …).</ResponseField>
+        <ResponseField name="country"  type="object">`{ uid, code, name, phoneCode }` — `code` é ISO 3166-1 alpha-2 (`BR`, `EC`, `CO`, …). `phoneCode` é o código telefônico do país, com `+` (`"+55"`, `"+593"`); `null` quando o país não tem um cadastrado e em pedidos anteriores a este campo.</ResponseField>
         <ResponseField name="location" type="object">`{ lat, lon }` como strings de graus decimais.</ResponseField>
         <ResponseField name="timezone" type="string | null">Fuso IANA (ex.: `America/Sao_Paulo`).</ResponseField>
         <ResponseField name="currencyCode" type="string | null">Código de moeda ISO 4217 (`BRL`, `USD`, …).</ResponseField>
@@ -503,6 +509,9 @@ O exemplo abaixo vem de uma linha real de `flow_queue.trigger_data` (tenant sand
     <ResponseField name="account" type="object">`{ uid, name, description }` — account top-level dono da marca.</ResponseField>
     <ResponseField name="storeFiscalConfig" type="object | null">
       Snapshot da configuração fiscal da loja. **Incluído apenas quando a emissão fiscal está habilitada para a loja.** Veja [Dados fiscais](#dados-fiscais) abaixo.
+    </ResponseField>
+    <ResponseField name="metadata" type="object">
+      A configuração **chave-valor livre** da loja — a mesma que viaja em [`store.updated`](/pt/events/store-updated), lida ao emitir o evento. O Fire não impõe as chaves; algumas integrações leem chaves conhecidas (p. ex. `taxesInfo` e `deliveryInfo`). `{}` quando a loja não tem nenhuma. Trate como opacas as chaves que você não conhece.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -1190,48 +1199,3 @@ O que muda é `lastKnown.fiscal`.
   `fiscal.callback` sem que nenhum callback tivesse ocorrido. Esse caso agora diz
   `order.injected`. Se você ramifica por este campo, contemple o valor novo.
 </Note>
-
-## `data.fiscalEnrichment`
-
-<Note>
-  Campo aditivo — nada do que você já lia mudou. Hoje só se aplica ao **Brasil**, e só em lojas onde o Fire calcula os impostos. Em todo o resto chega como `null`. **Campo em implantação:** até chegar à sua conta você não verá a chave; quando chegar, ela sempre viaja (`null` se o enriquecimento não foi tentado).
-</Note>
-
-O resultado do **enriquecimento fiscal** do Fire: ao injetar o pedido, o Fire calcula os impostos de cada linha a partir da classificação fiscal do produto (NCM). Este bloco diz **como esse cálculo terminou**. Os impostos em si não estão aqui: viajam onde sempre viajaram, nas linhas do pedido e em `payments.metadata.fiscal` (veja [Dados fiscais](#dados-fiscais)).
-
-**Quando o campo chega à sua conta, a chave sempre viaja.** Chega como `null` quando o enriquecimento não foi tentado — conta, vendor ou loja fora do escopo, um país sem enriquecimento, ou pedidos anteriores ao campo. Ramifique pelo valor, não pela presença da chave.
-
-<ResponseField name="fiscalEnrichment" type="object | null">
-  <Expandable title="fiscalEnrichment">
-    <ResponseField name="status" type="string">
-      Como o cálculo terminou:
-
-      - `ENRICHED` — todas as linhas foram tributadas.
-      - `PARTIAL` — tributou, mas pulou linhas cujo produto não tem NCM; elas estão em `skippedProductIds`.
-      - `FAILED` — o cálculo falhou: o pedido foi salvo e segue seu caminho (cozinha, flows), mas **não traz impostos**. O motivo está em `error`.
-      - `EMITTER_TAXES` — o pedido já chegou com os impostos de quem o injetou, então o Fire não os calculou.
-    </ResponseField>
-    <ResponseField name="source" type="string | null">
-      Quem calculou: `injection` (na injeção) ou `node` (uma etapa de enriquecimento fiscal dentro de um integration flow). `null` em registros anteriores a este campo.
-    </ResponseField>
-    <ResponseField name="skippedProductIds" type="string[]">
-      Produtos que não foram tributados porque o NCM não pôde ser resolvido. Só é preenchido com `PARTIAL`; `[]` nos demais estados.
-    </ResponseField>
-    <ResponseField name="error" type="object | null">
-      `{ code, message }` — por que o cálculo falhou. Só com `FAILED`; `null` nos demais estados.
-    </ResponseField>
-  </Expandable>
-</ResponseField>
-
-<Warning>
-  **Com `status: "FAILED"` o pedido não tem impostos.** Não emita um documento fiscal a partir dele como se tivesse. O faturamento próprio do Fire não emite nesse caso; se você fatura por outra via, ramifique por `fiscalEnrichment.status`.
-</Warning>
-
-```json
-"fiscalEnrichment": {
-  "status": "EMITTER_TAXES",
-  "source": "injection",
-  "skippedProductIds": [],
-  "error": null
-}
-```
