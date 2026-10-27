@@ -81,6 +81,7 @@ No dashboard do Fire, vá em **Settings → Integration Flows → New flow**.
       "event": {
         "id":        "{{trigger.event.id}}",
         "type":      "{{trigger.event.type}}",
+        "emittedAt": "{{trigger.event.emittedAt}}",
         "createdAt": "{{trigger.event.createdAt}}"
       },
       "data": "{{trigger.data}}",
@@ -120,6 +121,7 @@ Seu handler agora recebe uma requisição cujo body fica assim:
   "event": {
     "id": "0d6e8a1c-1e7a-4b4f-8a3a-74ab0e9a9b21",
     "type": "order.completed",
+    "emittedAt": "2026-05-06T01:22:45.602Z",
     "createdAt": "2026-05-06T01:22:59.902Z"
   },
   "data": {
@@ -164,16 +166,17 @@ app.post("/fire/events", express.json(), async (req, res) => {
 });
 ```
 
-### Deduplique por event.id
+### Deduplique por uma chave de domínio
 
-O Fire faz retry em qualquer resposta não-`2xx`. Use `event.id` (o ID de execução do flow) para pular duplicatas.
+O mesmo fato pode chegar mais de uma vez, e uma entrega recolocada na fila traz um `event.id` novo. Deduplique por uma chave de domínio: `data.orderId` + `event.type` + `event.emittedAt` (veja [Idempotência do seu lado](/pt/events/delivery#idempotência-do-seu-lado)).
 
 ```js
 const seen = new Map(); // troque por Redis/DB em produção
 
 async function process({ event, data }) {
-  if (seen.has(event.id)) return;
-  seen.set(event.id, Date.now());
+  const key = `${data.orderId}:${event.type}:${event.emittedAt}`;
+  if (seen.has(key)) return;
+  seen.set(key, Date.now());
 
   switch (event.type) {
     case "order.completed":      return onOrderCompleted(data);
@@ -209,7 +212,7 @@ app.post("/fire/events", express.json(), (req, res) => {
 ## Erros comuns
 
 - **Valores monetários são strings × 10000.** `payments.totals[0].total === "229000"` significa 22.9. Parseie com uma biblioteca decimal; nunca com `parseFloat`.
-- **`event.id` é o ID de execução do flow, não o ID do pedido.** Use `event.id` como chave de idempotência; use `data.orderId` como chave de negócio.
+- **`event.id` é o ID de execução do flow, não o ID do pedido.** Muda a cada recolocação na fila: não deduplique por ele. Use `data.orderId` + `event.type` + `event.emittedAt` como chave de idempotência e `data.orderId` como chave de negócio.
 - **`fulfillment.delivery` pode estar presente mesmo em pedidos dine-in / pickup** com zeros placeholder. Ramifique por `fulfillment.service.code`, não por `delivery !== null`.
 - **`payments.totals[]` e `paymentMethods[]` misturam camelCase e snake_case.** Leia tanto `currencyCode` quanto `currency_code` defensivamente nesses objetos.
 

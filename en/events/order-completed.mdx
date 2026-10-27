@@ -34,14 +34,14 @@ Orders that are still `PENDING` payment, or that fail payment, **never** produce
 | | |
 |---|---|
 | Coverage | Global (every country, every channel) |
-| Idempotency key | `event.id` (= `flow_executions.id`) |
-| Fires more than once | No, unless retried — use `event.id` to dedup |
+| Idempotency key | `data.orderId` + `event.type` + `event.emittedAt` — see [Idempotency on your side](/en/events/delivery#idempotency-on-your-side) |
+| Fires more than once | No, unless re-queued or replayed — dedupe by the key above |
 | Ordering | Not guaranteed across orders — sort by `data.createdAt` if you need it |
 | Retries | Up to 5 attempts with exponential backoff |
 
 ## What's in `trigger.data`
 
-`trigger.data` is the **V4 order snapshot** — the same object that's persisted in `flow_queue.trigger_data` and exposed to your flow's templates.
+`trigger.data` is the **V4 order snapshot** — the same object Fire stores with the event and exposes to your flow's templates.
 
 The top-level keys, in the order they appear:
 
@@ -72,7 +72,7 @@ The top-level keys, in the order they appear:
 
 ## Example — real production payload (BR, sanitized)
 
-The example below is taken from a real `flow_queue.trigger_data` row (Brazilian sandbox tenant, `KIOSK` channel, dine-in service). PII fields are replaced with placeholders; all other fields and shapes are verbatim.
+The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` channel, dine-in service). PII fields are replaced with placeholders; all other fields and shapes are verbatim.
 
 ```json
 {
@@ -92,7 +92,8 @@ The example below is taken from a real `flow_queue.trigger_data` row (Brazilian 
     "uid": "a4019cad-bbac-4269-9f8d-f29654e92c45",
     "code": "BR-SP-001",
     "name": "Loja Centro - SP",
-    "phone": "1132094347",
+    "phone": "+5511999990000",
+    "email": "loja.centro@example.com",
     "address": "Av. Paulista 1578, Bela Vista, São Paulo - SP",
     "externalId": "a4019cad-bbac-4269-9f8d-f29654e92c45",
     "vendor": {
@@ -108,7 +109,7 @@ The example below is taken from a real `flow_queue.trigger_data` row (Brazilian 
     },
     "locationInfo": {
       "city":     { "uid": "1", "code": "SAO", "name": "São Paulo" },
-      "country":  { "uid": "6", "code": "BR",  "name": "Brasil" },
+      "country":  { "uid": "6", "code": "BR",  "name": "Brasil", "phoneCode": "+55" },
       "location": { "lat": "-23.5952979", "lon": "-46.6866818" },
       "timezone": "America/Sao_Paulo",
       "currencyCode": "BRL"
@@ -130,6 +131,10 @@ The example below is taken from a real `flow_queue.trigger_data` row (Brazilian 
         "storeCode3S": "50000001",
         "serialNumber": 1
       }
+    },
+    "metadata": {
+      "taxesInfo":    { "taxRate": 0, "vatRatePercentage": 0 },
+      "deliveryInfo": { "cookTime": 5, "minimumOrder": 1.5, "shippingCost": 0 }
     }
   },
   "device": {
@@ -487,13 +492,14 @@ The example below is taken from a real `flow_queue.trigger_data` row (Brazilian 
     <ResponseField name="externalId" type="string | null">Store ID in your external system, when mapped.</ResponseField>
     <ResponseField name="code" type="string | null">Store code (e.g. `BR-SP-001`). Use this to scope flows to specific stores.</ResponseField>
     <ResponseField name="name" type="string | null">Store display name.</ResponseField>
-    <ResponseField name="phone" type="string | null">Store phone number.</ResponseField>
+    <ResponseField name="phone" type="string | null">Store phone number, in international format (`+` and digits, e.g. `+5511999990000`). It may carry a number that is not real (for example, all zeros) if the store has no phone set, or the value exactly as stored if the country has no calling code. It is a snapshot of the order: orders older than this format carry the phone as it was when they were injected.</ResponseField>
+    <ResponseField name="email" type="string | null">Store contact email, with leading and trailing spaces removed. `null` when the store has none.</ResponseField>
     <ResponseField name="address" type="string | null">Store street address.</ResponseField>
     <ResponseField name="locationInfo" type="object">
       Geographic context.
       <Expandable title="locationInfo">
         <ResponseField name="city"     type="object">`{ uid, code, name }` — city identifiers.</ResponseField>
-        <ResponseField name="country"  type="object">`{ uid, code, name }` — `code` is ISO 3166-1 alpha-2 (`BR`, `EC`, `CO`, …).</ResponseField>
+        <ResponseField name="country"  type="object">`{ uid, code, name, phoneCode }` — `code` is ISO 3166-1 alpha-2 (`BR`, `EC`, `CO`, …). `phoneCode` is the country calling code, with `+` (`"+55"`, `"+593"`); `null` when the country has none configured and on orders older than this field.</ResponseField>
         <ResponseField name="location" type="object">`{ lat, lon }` as decimal-degree strings.</ResponseField>
         <ResponseField name="timezone" type="string | null">IANA timezone (e.g. `America/Sao_Paulo`).</ResponseField>
         <ResponseField name="currencyCode" type="string | null">ISO 4217 currency code (`BRL`, `USD`, …).</ResponseField>
@@ -503,6 +509,9 @@ The example below is taken from a real `flow_queue.trigger_data` row (Brazilian 
     <ResponseField name="account" type="object">`{ uid, name, description }` — top-level account that owns the brand.</ResponseField>
     <ResponseField name="storeFiscalConfig" type="object | null">
       Fiscal configuration snapshot. **Only included when fiscal emission is enabled for the store.** See [Fiscal data](#fiscal-data) below.
+    </ResponseField>
+    <ResponseField name="metadata" type="object">
+      The store's **free key-value** configuration — the same one that travels in [`store.updated`](/en/events/store-updated), read when the event is emitted. Fire does not impose its keys; some integrations read well-known keys (e.g. `taxesInfo` and `deliveryInfo`). `{}` when the store has none. Treat keys you do not recognize as opaque.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -1077,7 +1086,7 @@ async function onOrderCompleted(data) {
 - **Casing is mixed in `payments.totals[]` and parts of `paymentMethods[]`.** Read both `currencyCode` and `currencyCode` defensively. The V4 builder transforms most of the snapshot but passes payment objects through.
 - **`fulfillment.delivery` may be present even for non-delivery services** with placeholder zeroes. Always branch on `fulfillment.service.code`.
 - **`client` may be a populated "FINAL_CONSUMER" placeholder** in any country — it is not `null`. Treat `govIdType === "FINAL_CONSUMER"` as anonymous for analytics.
-- **`event.id` is the flow execution ID, not the order ID.** Use `event.id` for idempotency (it changes per delivery), and `orderId` for business key.
+- **`event.id` is the flow execution ID, not the order ID.** Do not dedupe by it: it changes on every re-queue. Use the domain key `data.orderId` + `event.type` + `event.emittedAt` (see [Idempotency on your side](/en/events/delivery#idempotency-on-your-side)), and `orderId` for business key.
 - **Multi-tenant routing.** Use `store.account.uid`, `store.vendor.uid`, and `store.code` to route to the right tenant in your system, even though Fire already scopes the flow on its side.
 
 ## Related events

@@ -6,7 +6,7 @@ description: "O Fire é event-driven. Quando algo significativo acontece dentro 
 O Fire emite **eventos** sempre que ocorre uma transição de negócio relevante — um pedido é completado, um pedido é cancelado, um documento fiscal é autorizado pela autoridade tributária, a cozinha avança um pedido. Cada evento é entregue ao seu endpoint por um **Integration Flow** que você configura no dashboard do Fire.
 
 <Note>
-  O Fire emite **cinco** tipos de evento de pedido hoje: [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status_updated`](/pt/events/order-status-updated), mais o evento agendado [`store.business_day_closed`](/pt/events/store-day-closed) no fechamento do dia.
+  O Fire emite hoje **seis** tipos de evento de pedido e **dois** de loja: [`order.opened`](/pt/events/order-opened), [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status_updated`](/pt/events/order-status-updated), mais o evento agendado [`store.business_day_closed`](/pt/events/store-day-closed) no fechamento do dia, e [`store.updated`](/pt/events/store-updated) sempre que a configuração de uma loja é publicada.
 </Note>
 
 ## O Fire é a fonte da verdade do ciclo de vida
@@ -120,6 +120,7 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
   "event": {
     "id": "0d6e8a1c-1e7a-4b4f-8a3a-74ab0e9a9b21",
     "type": "order.completed",
+    "emittedAt": "2026-05-06T13:41:57.512Z",
     "createdAt": "2026-05-06T13:42:11.812Z"
   },
   "data": {
@@ -142,13 +143,16 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 
   <Expandable title="event">
     <ResponseField name="id" type="string">
-      Identificador único desta entrega (o ID de execução do flow). **Use como sua chave de idempotência** — o Fire pode entregar o mesmo evento mais de uma vez em retentativas.
+      Identificador desta **execução do flow**. É o mesmo nas retentativas do próprio nó HTTP, mas é **novo** quando o Fire recoloca a entrega na fila ou alguém a reprocessa manualmente — então não identifica o fato. Para deduplicar use uma chave de domínio: `data.orderId` + `event.type` + `event.emittedAt` nos eventos de pedido, `data.publication.id` em `store.updated`, `data.businessDayId` em `store.business_day_closed`. A chave de pedido cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo. Veja [Idempotência do seu lado](/pt/events/delivery#idempotência-do-seu-lado).
     </ResponseField>
     <ResponseField name="type" type="string">
-      Tipo de evento. Um de: `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`.
+      Tipo de evento. Um de: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`.
+    </ResponseField>
+    <ResponseField name="emittedAt" type="string">
+      Timestamp ISO 8601 UTC do momento em que o Fire **emitiu o fato** — quando o evento entrou na fila. **É estável entre retentativas**: todas as entregas recolocadas na fila do mesmo evento trazem o mesmo valor; um reprocessamento manual a partir do dead letter traz um novo. **Ordene os eventos por este campo**: as entregas podem chegar atrasadas ou fora de ordem, então nem a ordem de chegada nem `createdAt` dizem qual fato aconteceu primeiro. Só chega até você se o body do seu flow o incluir: se o seu flow foi criado antes de este campo existir, adicione `"emittedAt": "{{trigger.event.emittedAt}}"` ao bloco `event` do body do nó HTTP — o path já está disponível.
     </ResponseField>
     <ResponseField name="createdAt" type="string">
-      Timestamp ISO 8601 UTC do momento em que o evento se materializou dentro do Fire (não o momento em que chegou ao seu endpoint).
+      Timestamp ISO 8601 UTC **desta execução do flow**. Igual nas retentativas do nó HTTP; novo quando o Fire recoloca a entrega na fila ou ela é reprocessada manualmente. Não diz quando o fato aconteceu — para ordenar eventos use `emittedAt`.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -161,11 +165,15 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 
 | Evento | O que tem em `data` |
 |---|---|
+| [`order.opened`](/pt/events/order-opened) | Snapshot V4 do pedido ao ser criado — mesma forma de `order.completed` |
 | [`order.completed`](/pt/events/order-completed) | Snapshot V4 do pedido — order, store (com `storeFiscalConfig` opcional), customer, payments, fulfillment, KDS, lines |
 | [`order.cancelled`](/pt/events/order-cancelled) | Snapshot V4 + bloco `cancellation` de auditoria, com `cancellation.fiscal` (`status`, `authority`) quando o pedido tinha um documento autorizado |
 | [`order.invoiced`](/pt/events/order-invoiced) | Snapshot V4 + bloco `fiscal`: `authority` (campos canônicos, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/pt/events/order-reversed) | Snapshot V4 + bloco `cancellation` de auditoria + `cancellation.fiscal` com o documento cancelado, `history` e `compensates` |
-| [`order.status_updated`](/pt/events/order-status-updated) | Snapshot V4 + bloco `kitchen` (status, previousStatus, history do percurso) |
+| [`order.status_updated`](/pt/events/order-status-updated) | Payload leve, **não** o snapshot V4 completo: identidade do pedido (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), uma loja mínima (`code`, `name`, `account`, `vendor`), `fulfillment.service.code` e o bloco `kitchen` (status, previousStatus, history do percurso) |
+| [`store.updated`](/pt/events/store-updated) | A loja completa: bloco `store` V4 + `metadata`, `channels[]` com horários resolvidos, `operationSchedule`, `salesSchedule` e o bloco `publication` (`id`, `sequence`, `reason`, …) |
+
+O bloco `store` completo —com `email`, `metadata` e `locationInfo.country.phoneCode`— viaja nos eventos que levam o snapshot completo do pedido (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) e em `store.updated`. `order.status_updated` e `store.business_day_closed` levam uma referência mínima da loja.
 
 ### `_meta`
 
@@ -204,8 +212,8 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 | Timeout | 30 segundos (configurável, 1–60s) |
 | Auth | None / `Bearer` / `x-api-key` / OAuth2 client credentials — escolhido por flow |
 | Assinatura | HMAC-SHA256 **opcional** (nó Webhook) — `X-Fire-Signature` + `X-Fire-Timestamp` |
-| Retentativas | Até 5 com backoff exponencial |
-| Dead letter | Após as retentativas, a execução cai em `flow_dead_letter` |
+| Retentativas | O nó HTTP, até 5 (opt-in, diante de timeout ou erro de rede); depois o Fire recoloca na fila até 3 vezes (~30 s, 2 min, 8 min) as falhas retentáveis |
+| Dead letter | Depois das recolocações, ou direto diante de um `4xx`, a execução cai no dead letter |
 
 <Note>
   As requisições de saída podem ser **assinadas com HMAC** se o seu flow usar o **nó Webhook**: o Fire adiciona `X-Fire-Signature` (`v1=hex(HMAC-SHA256(secret, "{timestamp}.{body}"))`) e `X-Fire-Timestamp` (Unix seconds). A assinatura é opcional e **complementa** o auth de transporte (Bearer / API key / OAuth2). Detalhe e verificação no [nó Webhook assinado](/pt/events/integration-flows#webhook-assinado-hmac).
@@ -226,9 +234,11 @@ app.post("/fire/events", express.json(), async (req, res) => {
   // 1. Confirme primeiro para liberar a conexão do Fire
   res.status(200).end();
 
-  // 2. Deduplique por event.id (o ID de execução do flow)
-  if (seen.has(event.id)) return;
-  seen.set(event.id, Date.now());
+  // 2. Deduplique por uma chave de domínio — event.id muda quando o Fire recoloca uma entrega na fila
+  const key = data?.publication?.id ?? data?.businessDayId
+    ?? `${data?.orderId}:${event.type}:${event.emittedAt}`;
+  if (seen.has(key)) return;
+  seen.set(key, Date.now());
 
   // 3. Logue _meta para rastreabilidade — inestimável ao debugar
   console.log("Evento Fire", { eventId: event.id, type: event.type, _meta });
@@ -240,6 +250,7 @@ app.post("/fire/events", express.json(), async (req, res) => {
     case "order.invoiced":       return onOrderInvoiced(data);
     case "order.reversed":       return onOrderReversed(data);
     case "order.status_updated": return onKitchenAdvance(data);
+    case "store.updated":        return onStoreUpdated(data);
     default: console.warn("Tipo de evento Fire desconhecido", event.type);
   }
 });
@@ -255,7 +266,7 @@ app.listen(8080);
     Valide a credencial de auth que o flow envia (Bearer token, API key ou OAuth2 access token). Rejeite qualquer requisição que não bata.
   </Step>
   <Step title="Deduplique">
-    Procure `event.id` em um store de TTL curto (Redis com expiração de 24 horas funciona). Se já processou, pule.
+    Procure uma **chave de domínio** em um store — `data.orderId` + `event.type` + `event.emittedAt` em eventos de pedido, `data.publication.id` em `store.updated`, `data.businessDayId` em `store.business_day_closed`. Se já processou, pule. A chave de pedido cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo — se você já processou esse fato, decida pelo estado do pedido no seu sistema. Não use `event.id`: ele muda quando o Fire recoloca uma entrega na fila.
   </Step>
   <Step title="Valide o payload">
     Verifique que `event.type` é o que você espera e que o bloco `data` tem os campos esperados. Retorne `400` para entradas malformadas para que não entrem na sua fila de retry pelo Fire.
@@ -272,7 +283,7 @@ O body que o Fire entrega ao seu endpoint é **o que o template do body do nó H
 ```ts
 {
   trigger: {
-    event: { id, type, createdAt },
+    event: { id, type, emittedAt, createdAt },
     data: V4Snapshot,         // payload específico do evento
   },
   execution: { id, ... },     // metadata de execução
@@ -288,6 +299,7 @@ O template canônico usa estes paths:
   "event": {
     "id":        "{{trigger.event.id}}",
     "type":      "{{trigger.event.type}}",
+    "emittedAt": "{{trigger.event.emittedAt}}",
     "createdAt": "{{trigger.event.createdAt}}"
   },
   "data": "{{trigger.data}}",

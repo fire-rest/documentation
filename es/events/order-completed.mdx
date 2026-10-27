@@ -34,14 +34,14 @@ Las órdenes que siguen en `PENDING` de pago, o que fallan el pago, **nunca** pr
 | | |
 |---|---|
 | Cobertura | Global (todos los países, todos los canales) |
-| Llave de idempotencia | `event.id` (= `flow_executions.id`) |
-| Dispara más de una vez | No, salvo en reintentos — usa `event.id` para deduplicar |
+| Llave de idempotencia | `data.orderId` + `event.type` + `event.emittedAt` — ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado) |
+| Dispara más de una vez | No, salvo un reencolado o una reproducción — deduplica por la llave de arriba |
 | Orden | No garantizado entre órdenes — ordena por `data.createdAt` si necesitas orden |
 | Reintentos | Hasta 5 intentos con backoff exponencial |
 
 ## Qué hay en `trigger.data`
 
-`trigger.data` es el **snapshot V4 de la orden** — el mismo objeto que se persiste en `flow_queue.trigger_data` y se expone a los templates de tu flow.
+`trigger.data` es el **snapshot V4 de la orden** — el mismo objeto que Fire guarda con el evento y expone a los templates de tu flow.
 
 Las claves top-level, en orden:
 
@@ -72,7 +72,7 @@ Las claves top-level, en orden:
 
 ## Ejemplo — payload real de producción (BR, sanitizado)
 
-El ejemplo abajo viene de una fila real de `flow_queue.trigger_data` (tenant sandbox brasileño, canal `KIOSK`, servicio dine-in). Los campos PII se reemplazan por placeholders; el resto de los campos y formas son verbatim.
+El ejemplo abajo viene de un evento real (tenant sandbox brasileño, canal `KIOSK`, servicio dine-in). Los campos PII se reemplazan por placeholders; el resto de los campos y formas son verbatim.
 
 ```json
 {
@@ -92,7 +92,8 @@ El ejemplo abajo viene de una fila real de `flow_queue.trigger_data` (tenant san
     "uid": "a4019cad-bbac-4269-9f8d-f29654e92c45",
     "code": "BR-SP-001",
     "name": "Loja Centro - SP",
-    "phone": "1132094347",
+    "phone": "+5511999990000",
+    "email": "loja.centro@example.com",
     "address": "Av. Paulista 1578, Bela Vista, São Paulo - SP",
     "externalId": "a4019cad-bbac-4269-9f8d-f29654e92c45",
     "vendor": {
@@ -108,7 +109,7 @@ El ejemplo abajo viene de una fila real de `flow_queue.trigger_data` (tenant san
     },
     "locationInfo": {
       "city":     { "uid": "1", "code": "SAO", "name": "São Paulo" },
-      "country":  { "uid": "6", "code": "BR",  "name": "Brasil" },
+      "country":  { "uid": "6", "code": "BR",  "name": "Brasil", "phoneCode": "+55" },
       "location": { "lat": "-23.5952979", "lon": "-46.6866818" },
       "timezone": "America/Sao_Paulo",
       "currencyCode": "BRL"
@@ -130,6 +131,10 @@ El ejemplo abajo viene de una fila real de `flow_queue.trigger_data` (tenant san
         "storeCode3S": "50000001",
         "serialNumber": 1
       }
+    },
+    "metadata": {
+      "taxesInfo":    { "taxRate": 0, "vatRatePercentage": 0 },
+      "deliveryInfo": { "cookTime": 5, "minimumOrder": 1.5, "shippingCost": 0 }
     }
   },
   "device": {
@@ -487,13 +492,14 @@ El ejemplo abajo viene de una fila real de `flow_queue.trigger_data` (tenant san
     <ResponseField name="externalId" type="string | null">ID de la tienda en tu sistema externo, cuando está mapeado.</ResponseField>
     <ResponseField name="code" type="string | null">Código de tienda (p. ej. `BR-SP-001`). Úsalo para limitar flows a tiendas específicas.</ResponseField>
     <ResponseField name="name" type="string | null">Nombre para mostrar de la tienda.</ResponseField>
-    <ResponseField name="phone" type="string | null">Teléfono de la tienda.</ResponseField>
+    <ResponseField name="phone" type="string | null">Teléfono de la tienda, en formato internacional (`+` y dígitos, p. ej. `+5511999990000`). Puede traer un número que no es real (por ejemplo, solo ceros) si la tienda no tiene teléfono cargado, o el valor tal como se guardó si el país no tiene código telefónico. Es una foto de la orden: las órdenes anteriores a este formato traen el teléfono como estaba cuando se inyectaron.</ResponseField>
+    <ResponseField name="email" type="string | null">Email de contacto de la tienda, sin espacios al inicio ni al final. `null` cuando la tienda no tiene uno.</ResponseField>
     <ResponseField name="address" type="string | null">Dirección de la tienda.</ResponseField>
     <ResponseField name="locationInfo" type="object">
       Contexto geográfico.
       <Expandable title="locationInfo">
         <ResponseField name="city"     type="object">`{ uid, code, name }` — identificadores de ciudad.</ResponseField>
-        <ResponseField name="country"  type="object">`{ uid, code, name }` — `code` es ISO 3166-1 alpha-2 (`BR`, `EC`, `CO`, …).</ResponseField>
+        <ResponseField name="country"  type="object">`{ uid, code, name, phoneCode }` — `code` es ISO 3166-1 alpha-2 (`BR`, `EC`, `CO`, …). `phoneCode` es el código telefónico del país, con `+` (`"+55"`, `"+593"`); `null` cuando el país no tiene uno cargado y en órdenes anteriores a este campo.</ResponseField>
         <ResponseField name="location" type="object">`{ lat, lon }` como strings de grados decimales.</ResponseField>
         <ResponseField name="timezone" type="string | null">Zona IANA (p. ej. `America/Sao_Paulo`).</ResponseField>
         <ResponseField name="currencyCode" type="string | null">Código de moneda ISO 4217 (`BRL`, `USD`, …).</ResponseField>
@@ -503,6 +509,9 @@ El ejemplo abajo viene de una fila real de `flow_queue.trigger_data` (tenant san
     <ResponseField name="account" type="object">`{ uid, name, description }` — account top-level dueño de la marca.</ResponseField>
     <ResponseField name="storeFiscalConfig" type="object | null">
       Snapshot de la configuración fiscal de la tienda. **Solo se incluye cuando la emisión fiscal está habilitada para la tienda.** Ver [Datos fiscales](#datos-fiscales) abajo.
+    </ResponseField>
+    <ResponseField name="metadata" type="object">
+      La configuración **llave-valor libre** de la tienda — la misma que viaja en [`store.updated`](/es/events/store-updated), leída al emitir el evento. Fire no impone sus llaves; algunas integraciones leen llaves conocidas (p. ej. `taxesInfo` y `deliveryInfo`). `{}` cuando la tienda no tiene ninguna. Trata como opacas las llaves que no conozcas.
     </ResponseField>
   </Expandable>
 </ResponseField>
@@ -1065,7 +1074,7 @@ el evento donde estos bloques más importan.
 - **El casing es mixto en `payments.totals[]` y partes de `paymentMethods[]`.** Lee tanto `currencyCode` como `currencyCode` defensivamente. El builder V4 transforma la mayor parte del snapshot pero pasa los objetos de payment sin cambios.
 - **`fulfillment.delivery` puede estar presente incluso para servicios non-delivery** con ceros placeholder. Ramifica siempre por `fulfillment.service.code`.
 - **`client` puede ser un placeholder "FINAL_CONSUMER" populado** en BR — no es `null`. Trata `govIdType === "FINAL_CONSUMER"` como anónimo para analítica.
-- **`event.id` es el ID de ejecución del flow, no el ID de la orden.** Usa `event.id` para idempotencia (cambia por entrega), y `orderId` como llave de negocio.
+- **`event.id` es el ID de ejecución del flow, no el ID de la orden.** No lo uses para deduplicar: cambia en cada reencolado. Usa la llave de dominio `data.orderId` + `event.type` + `event.emittedAt` (ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado)), y `orderId` como llave de negocio.
 - **Routing multi-tenant.** Usa `store.account.uid`, `store.vendor.uid` y `store.code` para enrutar al tenant correcto en tu sistema, aunque Fire ya da scope al flow de su lado.
 
 ## Eventos relacionados
