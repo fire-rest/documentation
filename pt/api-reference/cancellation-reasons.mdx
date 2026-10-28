@@ -1,0 +1,222 @@
+---
+title: "Motivos de cancelamento"
+api: "GET https://app.fire.rest/api/v1/adapters/xmart/stores/orders/{orderId}/cancellation-reasons"
+description: "Lista os motivos que você pode oferecer ao cancelar um pedido. Devolve uma lista para escolher ou indica que você deve pedir um texto livre."
+authMethod: "bearer"
+---
+
+Devolve os motivos de cancelamento que se aplicam a um pedido. Use-o para montar o seletor de motivos antes de chamar [Cancelar pedido (parceiros)](/pt/api-reference/cancel-order-partners).
+
+A resposta sempre tem o mesmo formato, `{ mode, reasons }`, não importa de onde venham os motivos:
+
+- `mode: "catalog"`: mostre a lista de `reasons` para a pessoa escolher.
+- `mode: "free_text"`: não há motivos para oferecer. Mostre um campo de texto livre. Nesse caso `reasons` é sempre `[]`.
+
+<Info>
+  `orderId` aceita qualquer uma destas formas: o **id externo** que você enviou ao injetar o pedido, o `order_id` do payload de injeção, o `order_code` do Fire ou o UUID interno do Fire. O Fire procura o pedido dentro dos vendors da sua key. Se o id corresponder a mais de um pedido, responde `409` em vez de escolher um.
+</Info>
+
+<Warning>
+  **Este endpoint não diz se o pedido pode ser cancelado.** Devolve motivos mesmo que o pedido já esteja cancelado. Para saber antes de tentar, use [Elegibilidade de cancelamento](/pt/api-reference/cancellation-eligibility).
+</Warning>
+
+## De onde vêm os motivos
+
+O Fire escolhe a fonte de acordo com o canal do pedido:
+
+- **Canal com gateway SAG ativo** (agregadores): os motivos são consultados no SAG a cada chamada. Todos chegam com `group` igual a `"<provedor> (<canal>)"`, por exemplo `"SAG (KEETA)"`. Se o SAG não responder ou não devolver motivos, a resposta é `free_text`. O Fire nunca substitui o catálogo do SAG pelo próprio, porque o SAG rejeitaria esses códigos. Nesse caso `surface` e `locale` não são usados.
+- **Qualquer outro canal**: é usado o catálogo do Fire, filtrado por `surface` e pelo canal do pedido. Se a conta tiver motivos próprios, eles são combinados com o catálogo global: para um mesmo código vale o da conta, e a conta pode desativar um motivo global. Os motivos chegam ordenados.
+
+<Note>
+  O catálogo do Fire fica em cache por até 5 minutos. Uma mudança nos motivos pode levar esse tempo para aparecer. Os motivos do SAG não ficam em cache.
+</Note>
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com scope `orders:read`. A key **deve estar vinculada a um vendor**: uma key sem conta é rejeitada com `403`. Também é aceita em `Authorization: Bearer <api-key>`; se você enviar os dois headers, é usado o `x-api-key`.
+</ParamField>
+
+## Parâmetros de rota
+
+<ParamField path="orderId" type="string" required>
+  Identificador do pedido: id externo, `order_id` do payload, `order_code` do Fire ou UUID interno do Fire.
+</ParamField>
+
+## Parâmetros de consulta
+
+<ParamField query="surface" type="string" default="pos">
+  Quem vai mostrar os motivos. Cada motivo do catálogo do Fire está habilitado para uma ou mais superfícies. Hoje existem `pos`, `kds` e `backoffice`, e as três são pensadas para a equipe da loja ou da operação, não para o cliente final.
+
+  Um valor que não existe não dá erro: devolve `free_text`. `free_text` é um valor de `mode`, não uma superfície.
+</ParamField>
+
+<ParamField query="locale" type="string" default="es">
+  Idioma de `cancellationReason` e `group` no catálogo do Fire: `es`, `en` ou `pt`. Se um texto não existir nesse idioma, é usado espanhol, depois inglês, depois português. A comparação é exata: `pt-BR` não encontra `pt` e cai para espanhol. Não afeta os motivos do SAG.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/adapters/xmart/stores/orders/EXT-100234/cancellation-reasons?surface=pos&locale=pt
+x-api-key: <sua_api_key>
+```
+</RequestExample>
+
+## Resposta
+
+A resposta vem dentro do envelope padrão: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="mode" type="string">
+  `catalog` ou `free_text`. Define se você mostra uma lista ou um campo de texto livre.
+</ResponseField>
+
+<ResponseField name="reasons" type="array">
+  Os motivos. Vazio quando `mode` é `free_text`.
+  <Expandable title="reasons[]">
+    <ResponseField name="cancellationType" type="string">
+      Código do motivo. É o valor que você envia em `cancellationType` ao cancelar.
+    </ResponseField>
+    <ResponseField name="cancellationReason" type="string">
+      Texto para mostrar. No catálogo do Fire vem no idioma pedido. No SAG é a descrição que o SAG devolve, ou `""` se não houver.
+    </ResponseField>
+    <ResponseField name="requiresNote" type="boolean">
+      Só no catálogo do Fire. Se for `true`, peça uma observação obrigatória à pessoa. O Fire não valida isso ao cancelar: sua interface precisa controlar.
+    </ResponseField>
+    <ResponseField name="group" type="string">
+      Grupo do motivo, para mostrar a lista agrupada. No catálogo do Fire pode não vir. No SAG é sempre `"<provedor> (<canal>)"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200 — catálogo do Fire
+{
+  "success": true,
+  "data": {
+    "mode": "catalog",
+    "reasons": [
+      {
+        "cancellationType": "CUSTOMER_CHANGED_MIND",
+        "cancellationReason": "Cliente desistiu",
+        "requiresNote": false,
+        "group": "Cliente"
+      },
+      {
+        "cancellationType": "ITEM_OUT_OF_STOCK",
+        "cancellationReason": "Item indisponível",
+        "requiresNote": false,
+        "group": "Estoque"
+      }
+    ]
+  }
+}
+```
+
+```json 200 — catálogo do SAG
+{
+  "success": true,
+  "data": {
+    "mode": "catalog",
+    "reasons": [
+      {
+        "cancellationType": "<id do SAG>",
+        "cancellationReason": "<descrição do SAG>",
+        "group": "SAG (KEETA)"
+      }
+    ]
+  }
+}
+```
+
+```json 200 — sem motivos
+{
+  "success": true,
+  "data": {
+    "mode": "free_text",
+    "reasons": []
+  }
+}
+```
+
+```json 401 — API key inválida
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — key sem conta
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "Vendor-scoped API key required (accountId binding missing)"
+}
+```
+
+```json 404 — pedido não encontrado
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "InjectedOrder not found with ID EXT-100234"
+}
+```
+
+```json 409 — id ambíguo
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "AMBIGUOUS_ORDER_REFERENCE",
+  "message": "External order id ORD-123 matches 2 orders across vendors; cannot disambiguate",
+  "data": { "reference": "ORD-123", "matchCount": 2 }
+}
+```
+</ResponseExample>
+
+## Erros
+
+| Status | `error` | Quando |
+|---|---|---|
+| `400` | `BUSINESS_ERROR` | A key não tem vendors vinculados. |
+| `401` | `UNAUTHORIZED` | A key está ausente, tem formato inválido, foi revogada ou expirou. |
+| `403` | `FORBIDDEN` | A key não tem o scope `orders:read` ou não está vinculada a uma conta. |
+| `404` | `NOT_FOUND` | Não há nenhum pedido com esse id dentro dos vendors da sua key. Um pedido de outro vendor também dá `404`. |
+| `409` | `CONFLICT` | O id corresponde a mais de um pedido (`code: AMBIGUOUS_ORDER_REFERENCE`). Pode acontecer com `order_code`, que não é único. Tente de novo com o id externo ou o UUID. |
+
+Decida pelo status, `error` e `code`. O texto de `message` pode mudar.
+
+## Como usar ao cancelar
+
+<Steps>
+  <Step title="Peça os motivos">
+    Chame este endpoint com o pedido que você vai cancelar.
+  </Step>
+  <Step title="Mostre a lista ou o campo livre">
+    Com `mode: "catalog"`, mostre os motivos (agrupados por `group`, se quiser). Se o motivo escolhido tiver `requiresNote: true`, peça a observação. Com `mode: "free_text"`, peça um texto livre.
+  </Step>
+  <Step title="Cancele">
+    Chame [Cancelar pedido (parceiros)](/pt/api-reference/cancel-order-partners) com:
+    - `reason`: o `cancellationReason` do motivo escolhido ou o texto livre.
+    - `cancellationType`: o `cancellationType` do motivo escolhido.
+    - `cancellationNote`: a observação, se houver.
+
+    Não é preciso enviar `cancellationGroup`.
+  </Step>
+</Steps>
+
+<Warning>
+  `reason` exige **pelo menos 5 caracteres**. Se o texto de um motivo for mais curto, envie um texto mais longo em `reason`.
+
+  O Fire também não verifica se `cancellationType` existe no catálogo. Se você enviar um código que não veio deste endpoint, o cancelamento não falha, mas o motivo fica sem grupo. Em canais com SAG, o código precisa vir do catálogo do SAG.
+</Warning>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Cancelar pedido (parceiros)" icon="ban" href="/pt/api-reference/cancel-order-partners">
+    Cancele o pedido com o motivo escolhido.
+  </Card>
+  <Card title="Elegibilidade de cancelamento" icon="circle-question" href="/pt/api-reference/cancellation-eligibility">
+    Pergunte se o pedido pode ser cancelado antes de tentar.
+  </Card>
+</CardGroup>
