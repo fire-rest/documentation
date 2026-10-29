@@ -1,0 +1,282 @@
+---
+title: "Create order"
+api: "POST https://api.fire.rest/api/v1/fire/external/orders"
+description: "Create an order in Fire from the POS, the kiosk, or an aggregator integrator, using the same order structure they already send today."
+authMethod: "bearer"
+---
+
+Creates an order in Fire. The **POS**, the **kiosk**, and **aggregator integrators** use it to send
+their sales straight to Fire **without changing the body** they already build: only the URL, the
+credential, and how you read the response change.
+
+Fire recognizes the kind of order from the body's `channel.uid`:
+
+- If the channel belongs to an aggregator (iFood, 99Food, Keeta, Rappi), the body is the one from
+  [Inject order](/en/api-reference/orders) (camelCase, with prices and totals).
+- Any other channel (POS, kiosk) uses the POS and kiosk structure described below (snake_case,
+  unit price only: Fire calculates the totals).
+
+Once created, the order follows the same lifecycle as any Fire order: taxes, business day, fiscal
+document, and [events](/en/events/overview).
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `orders:write` scope. `Authorization: Bearer <api_key>` is also accepted.
+  The key **must be bound to a vendor**: the order's account comes from that vendor. A key without a
+  vendor is rejected with `403`. You don't need to send the `account` header; if it arrives, it is ignored.
+</ParamField>
+
+## Customer identity (POS and kiosk)
+
+Send **exactly one** of these two headers. If you send neither, or both, the order is rejected with
+`422` `INVALID_ORDER`. Aggregator orders don't use them.
+
+<ParamField header="anonymous_customer_uid" type="string">
+  Identifier of the device's anonymous session (POS or kiosk). This is the usual case.
+</ParamField>
+
+<ParamField header="customer_uid" type="string">
+  Identifier of a registered customer.
+</ParamField>
+
+## Body — POS and kiosk
+
+<ParamField body="order_code" type="string" required>
+  Unique order code in your system. If an order with that code already exists for your vendor,
+  the response is `409`.
+</ParamField>
+
+<ParamField body="vendor_uid" type="string" required>Order vendor (e.g. `11.6.1350`).</ParamField>
+
+<ParamField body="catalog_uid" type="string" required>Catalog of the sales channel.</ParamField>
+
+<ParamField body="status" type="string">
+  `COMPLETED` if the sale is closed; `OPEN` if it is still waiting to be charged. An order that does
+  not arrive as `COMPLETED` + `SUCCEEDED` stays pending payment.
+</ParamField>
+
+<ParamField body="payment_status" type="string">`SUCCEEDED` if it has already been charged.</ParamField>
+
+<ParamField body="channel" type="object" required>
+  Sales channel. Its `uid` decides how the body is read.
+  <Expandable title="channel">
+    <ParamField body="uid" type="string" required>Channel UID in Fire.</ParamField>
+    <ParamField body="code" type="string" required>Channel code (e.g. `POS`, `KIOSK`).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="service" type="object" required>
+  Sale service.
+  <Expandable title="service">
+    <ParamField body="uid" type="string" required>Service UID in Fire.</ParamField>
+    <ParamField body="code" type="string" required>Service code (e.g. `Dine-In`, `Takeaway`).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="store" type="object" required>
+  Store of the sale.
+  <Expandable title="store">
+    <ParamField body="uid" type="string" required>Store UID.</ParamField>
+    <ParamField body="code" type="string" required>Store code.</ParamField>
+    <ParamField body="name" type="string" required>Store name.</ParamField>
+    <ParamField body="vendor_uid" type="string" required>Store vendor.</ParamField>
+    <ParamField body="vendor_name" type="string" required>Vendor name.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="fulfillment" type="object" required>
+  Delivery method and catalog.
+  <Expandable title="fulfillment">
+    <ParamField body="method" type="string" required>`POS` or `KIOSK`.</ParamField>
+    <ParamField body="catalog_uid" type="string" required>Catalog. It must be enabled for your account.</ParamField>
+    <ParamField body="details" type="object">Delivery data, e.g. `buzzer_name` (name used to call the customer).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="device" type="object">
+  Device that recorded the sale: `uid`, `name`, `metadata`.
+</ParamField>
+
+<ParamField body="operator" type="object">
+  Cashier or operator: `uid`, `name`, `session` (`uid`, `start_timestamp`, `end_timestamp`).
+  `null` on the kiosk.
+</ParamField>
+
+<ParamField body="customer" type="object">
+  Customer data: `uid`, `name`, `last_name`, `phone` (required if you send the object), `email`,
+  `gov_id_type`, `gov_id_number`.
+</ParamField>
+
+<ParamField body="billing" type="object">Billing data: `gov_id_type`, `gov_id_number`, `business_name`.</ParamField>
+
+<ParamField body="metadata" type="object">
+  Additional sale data, e.g. `display_code` (number used to call the order) and kiosk or POS data.
+</ParamField>
+
+<ParamField body="order_lines" type="object[]" required>
+  Order products.
+  <Expandable title="order_lines[]">
+    <ParamField body="hash" type="string" required>Line identifier within the order.</ParamField>
+    <ParamField body="item_id" type="string" required>Product UID in the catalog.</ParamField>
+    <ParamField body="item_description" type="string" required>Product name.</ParamField>
+    <ParamField body="item_type" type="string" required>Item type (e.g. `PRODUCT`).</ParamField>
+    <ParamField body="quantity" type="string" required>Quantity, as text (`"1"`).</ParamField>
+    <ParamField body="selected_currency" type="string" required>Currency (e.g. `BRL`).</ParamField>
+    <ParamField body="vendor_uid" type="string" required>Vendor.</ParamField>
+    <ParamField body="store_uid" type="string" required>Store.</ParamField>
+    <ParamField body="fulfillment" type="object" required>`method` and `catalog_uid`, as in the order.</ParamField>
+    <ParamField body="price" type="object" required>
+      Unit price only: `unit_price[]` with `currency_code`, `gross_price`, `net_price`, `taxes`,
+      `taxes_value`, `discount_value`, `subtotal_before_taxes`, and `discounts`. Amounts are sent as
+      text (`"14.9"`). Fire calculates the line and order totals.
+    </ParamField>
+    <ParamField body="modifier_groups" type="object[]" required>
+      Modifier groups (`uid`, `description`, `selected_modifiers[]`). Each modifier has the same shape
+      as a line. `[]` if there are none.
+    </ParamField>
+    <ParamField body="additional_info" type="object">Product codes, e.g. `code`, `external_code`, `ncm`.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="payment_methods" type="object[]" required>
+  Order payments.
+  <Expandable title="payment_methods[]">
+    <ParamField body="uid" type="string" required>Payment method UID.</ParamField>
+    <ParamField body="method" type="string" required>Payment method (e.g. `CASH`, `CREDIT`, `DEBIT`).</ParamField>
+    <ParamField body="currency_code" type="string" required>Currency.</ParamField>
+    <ParamField body="total" type="string" required>Amount paid, as text.</ParamField>
+    <ParamField body="details" type="object">
+      Transaction details: `processor`, `transaction_status` (`APPROVED`, `PENDING`),
+      `transaction_type`, `transaction_id`, `tid`, `authorization_code`, `total_bill`,
+      `customer_cash_amount`, `change_amount`, `card`, `acquirer`, `transaction_date`. A `PENDING`
+      payment leaves the order open, waiting to be charged.
+    </ParamField>
+    <ParamField body="metadata" type="object">Payment authorizer data.</ParamField>
+  </Expandable>
+</ParamField>
+
+## Body — aggregators
+
+The same body as [Inject order](/en/api-reference/orders), unchanged. Fire identifies it as an
+aggregator order by `channel.uid` and records it as closed and paid.
+
+## Response
+
+<ResponseField name="success" type="boolean">`true` when the order was created.</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="id" type="string">Order ID in Fire. Use it to read, update, or cancel the order.</ResponseField>
+    <ResponseField name="external_order_id" type="string">The `order_code` you sent.</ResponseField>
+    <ResponseField name="status" type="string">`COMPLETED` or `OPEN`.</ResponseField>
+    <ResponseField name="payment_status" type="string">`SUCCEEDED` or `PENDING`.</ResponseField>
+    <ResponseField name="business_day_date" type="string">Store business day, `YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="created_at" type="string">Creation date in Fire (ISO 8601).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Errors
+
+| HTTP | `error` / `code` | When |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | The order code is missing or the resulting payload is invalid |
+| `400` / `404` | `BUSINESS_ERROR` / `NOT_FOUND` | Store missing or inactive, business day closed |
+| `401` | `UNAUTHORIZED` | Invalid, expired, or revoked API key |
+| `403` | `FORBIDDEN` | API key without the `orders:write` scope or not bound to a vendor |
+| `409` | `CONFLICT` / `DUPLICATE_ORDER` | The order already existed for your vendor. `data` carries the existing order's `id`, `externalOrderId`, and `status` |
+| `422` | `INVALID_ORDER` | The POS or kiosk body is invalid, or the customer headers are missing or both were sent. `data.issues[]` details each problem |
+| `422` | `INVALID_AGGREGATOR_ORDER` | The aggregator body can't be read |
+| `422` | `ORDER_CONFIG_NOT_FOUND` | The catalog is not enabled for your account |
+| `422` | `CHANNEL_PROFILE_NOT_FOUND` | The channel is not enabled for your account |
+| `422` | `ORDER_TRANSFORMATION_FAILED` | Fire couldn't process the order. Contact support with the `order_code` |
+
+<Info>
+  Every request is recorded in Fire with its body and the rejection reason, including rejected
+  ones. If you retry an order that was already created, the response is `409` and it isn't duplicated.
+</Info>
+
+<RequestExample>
+```bash POS or kiosk
+curl -X POST https://api.fire.rest/api/v1/fire/external/orders \
+  -H "x-api-key: $FIRE_API_KEY" \
+  -H "anonymous_customer_uid: device-session-0001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_code": "BR-K000-05-1793063248",
+    "vendor_uid": "11.6.1350",
+    "catalog_uid": "5",
+    "status": "COMPLETED",
+    "payment_status": "SUCCEEDED",
+    "channel": { "uid": "c784d4ba-23c7-4929-b2f0-1a1960d9cdc2", "code": "KIOSK" },
+    "service": { "uid": "726c4892-48b9-45da-b066-2a8e83d2cb78", "code": "Dine-In" },
+    "store": { "uid": "11.6.1350.50", "code": "K000", "name": "Tienda demo", "vendor_uid": "11.6.1350", "vendor_name": "Vendor demo" },
+    "fulfillment": { "method": "KIOSK", "catalog_uid": "5", "details": { "buzzer_name": "Cliente" } },
+    "customer": { "uid": "device-session-0001", "name": "CONSUMIDOR", "last_name": "FINAL", "phone": "" },
+    "metadata": { "display_code": "48K" },
+    "order_lines": [{
+      "hash": "hash_0",
+      "item_id": "7abdd4e5-d685-43ff-ba79-5e8b2f700b5b",
+      "item_description": "12 Tiras de Frango",
+      "item_type": "PRODUCT",
+      "quantity": "1",
+      "selected_currency": "BRL",
+      "vendor_uid": "11.6.1350",
+      "store_uid": "11.6.1350.50",
+      "fulfillment": { "method": "KIOSK", "catalog_uid": "5" },
+      "price": { "unit_price": [{ "currency_code": "BRL", "gross_price": "64.9", "net_price": "64.9", "taxes": [], "taxes_value": "0", "discount_value": "0", "subtotal_before_taxes": "64.9", "discounts": [] }] },
+      "modifier_groups": []
+    }],
+    "payment_methods": [{
+      "uid": "80242d0c-3bdd-4e8a-8ec2-eb250230b4e9",
+      "method": "CREDIT",
+      "currency_code": "BRL",
+      "total": "64.9",
+      "details": { "processor": "Tarjeta", "transaction_status": "APPROVED", "transaction_type": "CREDIT", "transaction_id": "BR-K000-05-1793063248", "tid": "TF000000", "authorization_code": "0000000000000", "total_bill": "64.9", "currency_code": "BRL", "exact_payment": false, "customer_cash_amount": "0", "mid": "", "voucher": "", "reference_number": "", "card": null, "acquirer": null, "transaction_date": { "date": "2026-10-26T22:08:00-03:00", "time_zone_name": "America/Sao_Paulo", "time_zone_type": "3" } }
+    }]
+  }'
+```
+
+```bash Aggregator
+curl -X POST https://api.fire.rest/api/v1/fire/external/orders \
+  -H "x-api-key: $FIRE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @ifood-order.json   # same body as in "Inject order"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "id": "6f1c2b9e-3a1d-4c55-9b7e-0d2f6a7c8e10",
+    "external_order_id": "BR-K000-05-1793063248",
+    "status": "COMPLETED",
+    "payment_status": "SUCCEEDED",
+    "business_day_date": "2026-10-26",
+    "created_at": "2026-10-27T01:08:00.405Z"
+  }
+}
+```
+
+```json 409
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "DUPLICATE_ORDER",
+  "message": "Order with external id BR-K000-05-1793063248 already exists for this vendor.",
+  "data": { "id": "6f1c2b9e-3a1d-4c55-9b7e-0d2f6a7c8e10", "externalOrderId": "BR-K000-05-1793063248", "status": "COMPLETED" }
+}
+```
+
+```json 422
+{
+  "success": false,
+  "error": "UNPROCESSABLE_ENTITY",
+  "code": "INVALID_ORDER",
+  "message": "Invalid order payload",
+  "data": { "issues": [{ "path": "", "message": "customer_uid or anonymous_customer_uid is required" }] }
+}
+```
+</ResponseExample>
