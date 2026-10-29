@@ -1,0 +1,145 @@
+---
+title: "Criar pedido (v1)"
+api: "POST https://app.fire.rest/api/v1/external/orders"
+description: "Cria um pedido no Fire enviando-o no formato Fire. Para a estrutura de PDV, quiosque e agregadores, use a versão 2."
+authMethod: "bearer"
+---
+
+Cria um pedido no Fire com o corpo no **formato Fire**: o mesmo de
+[Injetar pedido](/pt/api-reference/orders), sem mudanças. O Fire não o traduz: valida e cria o
+pedido diretamente.
+
+Esta é a **versão 1**. Se o seu sistema envia os pedidos com a estrutura de PDV e quiosque ou com a
+de agregadores, use [Criar pedido (v2)](/pt/api-reference/create-order-v2). As duas versões estão
+vigentes e terminam no mesmo lugar: mesmas validações, mesma resposta.
+
+Depois de criado, o pedido segue o mesmo ciclo de qualquer pedido do Fire: impostos, dia de
+negócio, documento fiscal e [eventos](/pt/events/overview).
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com escopo `orders:write`. Também é aceito `Authorization: Bearer <api_key>`.
+  A key **deve estar associada à sua conta e a um vendor**. Não é preciso enviar o header `account`.
+</ParamField>
+
+## Corpo
+
+O corpo é o de [Injetar pedido](/pt/api-reference/orders), no formato Fire (camelCase, com preços e
+totais). Os campos mínimos são:
+
+<ParamField body="orderId" type="string" required>Identificador do pedido no seu sistema.</ParamField>
+<ParamField body="orderCode" type="string" required>
+  Código único do pedido. Se já existir um pedido com esse código para o seu vendor, a resposta é `409`.
+</ParamField>
+<ParamField body="accountId" type="number" required>Conta do pedido.</ParamField>
+<ParamField body="createdAt" type="string" required>Data da venda.</ParamField>
+<ParamField body="selectedShippingMethod" type="string" required>`delivery` ou `pickup`.</ParamField>
+<ParamField body="client" type="object" required>Cliente: `uid`, `name`, `lastName`.</ParamField>
+<ParamField body="store" type="object" required>Loja: `id`, `code`, `vendorId`.</ParamField>
+<ParamField body="order" type="object" required>`products[]` com pelo menos um produto.</ParamField>
+<ParamField body="payments" type="object" required>
+  `totals[]` e `paymentMethods[]`, com pelo menos um item cada. O `transactionStatus` dos pagamentos
+  decide se o pedido fica fechado (`APPROVED`) ou aberto, pendente de cobrança (`PENDING`).
+</ParamField>
+
+## Resposta
+
+<ResponseField name="success" type="boolean">`true` quando o pedido foi criado.</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="id" type="string">ID do pedido no Fire. Use-o para consultar, atualizar ou cancelar o pedido.</ResponseField>
+    <ResponseField name="external_order_id" type="string">O `orderId` que você enviou.</ResponseField>
+    <ResponseField name="status" type="string">`COMPLETED` ou `OPEN`.</ResponseField>
+    <ResponseField name="payment_status" type="string">`SUCCEEDED` ou `PENDING`.</ResponseField>
+    <ResponseField name="business_day_date" type="string">Dia de negócio da loja, `YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="created_at" type="string">Data de criação no Fire (ISO 8601).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Erros
+
+| HTTP | `error` / `code` | Quando |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Falta `orderCode` ou o corpo não está no formato Fire |
+| `400` | `BUSINESS_ERROR` | Loja inativa, dia de negócio fechado, ou o pedido não cumpre uma regra de validação ativada para o seu vendor (`ORDER_INVARIANT_VIOLATION`) |
+| `404` | `NOT_FOUND` | A loja não existe |
+| `401` | `UNAUTHORIZED` | API key inválida, vencida ou revogada |
+| `403` | `FORBIDDEN` | API key sem escopo `orders:write` ou não associada à sua conta |
+| `409` | `CONFLICT` / `DUPLICATE_ORDER` | O pedido já existia para o seu vendor. `data` traz `id`, `externalOrderId` e `status` do existente |
+
+<Info>
+  Toda requisição fica registrada no Fire com o corpo e o motivo da rejeição, inclusive as
+  rejeitadas. Se você reenviar um pedido que já foi criado, a resposta é `409` e ele não é duplicado.
+</Info>
+
+<RequestExample>
+```bash cURL
+curl -X POST https://app.fire.rest/api/v1/external/orders \
+  -H "x-api-key: $FIRE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderId": "ORD-000123",
+    "orderCode": "ORD-000123",
+    "accountId": 11,
+    "account": "",
+    "createdAt": "2026-10-29 14:57:41",
+    "selectedShippingMethod": "pickup",
+    "client": { "uid": "customer-0001", "name": "CONSUMIDOR", "lastName": "FINAL" },
+    "store": { "id": "11.6.1350.50", "code": "K000", "vendorId": "11.6.1350" },
+    "channel": { "uid": "c784d4ba-23c7-4929-b2f0-1a1960d9cdc2", "code": "KIOSK" },
+    "service": { "uid": "726c4892-48b9-45da-b066-2a8e83d2cb78", "code": "Dine-In" },
+    "order": {
+      "products": [{
+        "productId": "7abdd4e5-d685-43ff-ba79-5e8b2f700b5b",
+        "product": "12 Tiras de Frango",
+        "quantity": 1,
+        "price": {
+          "unitPrice": { "currencyCode": "BRL", "subtotalWithoutTaxes": 64.9, "taxValue": 0, "total": 64.9 },
+          "totalPrice": { "currencyCode": "BRL", "subtotalWithoutTaxes": 64.9, "taxValue": 0, "total": 64.9 }
+        },
+        "modifierGroups": []
+      }]
+    },
+    "payments": {
+      "totals": [{ "currencyCode": "BRL", "total": 64.9 }],
+      "paymentMethods": [{ "processor": "CREDIT", "currencyCode": "BRL", "transactionStatus": "APPROVED", "totalBill": 64.9 }]
+    }
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "id": "6f1c2b9e-3a1d-4c55-9b7e-0d2f6a7c8e10",
+    "external_order_id": "ORD-000123",
+    "status": "COMPLETED",
+    "payment_status": "SUCCEEDED",
+    "business_day_date": "2026-10-29",
+    "created_at": "2026-10-29T14:57:44.330Z"
+  }
+}
+```
+
+```json 400
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "orderCode is required and must be a non-empty string"
+}
+```
+
+```json 409
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "DUPLICATE_ORDER",
+  "message": "Order with external id ORD-000123 already exists for this vendor.",
+  "data": { "id": "6f1c2b9e-3a1d-4c55-9b7e-0d2f6a7c8e10", "externalOrderId": "ORD-000123", "status": "COMPLETED" }
+}
+```
+</ResponseExample>

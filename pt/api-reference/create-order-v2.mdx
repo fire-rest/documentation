@@ -1,0 +1,282 @@
+---
+title: "Criar pedido (v2)"
+api: "POST https://app.fire.rest/api/v2/external/orders"
+description: "Cria um pedido no Fire a partir do PDV, do quiosque ou de um integrador de agregadores, com a mesma estrutura de pedido que já enviam hoje."
+authMethod: "bearer"
+---
+
+Cria um pedido no Fire. O **PDV**, o **quiosque** e os **integradores de agregadores** o usam para
+enviar suas vendas diretamente ao Fire, **sem mudar o corpo** que já montam hoje: mudam apenas a URL,
+a credencial e a forma de ler a resposta.
+
+Esta é a **versão 2**: recebe a estrutura de pedidos de PDV e quiosque e a de agregadores. Se o seu
+sistema já envia os pedidos no formato Fire, use [Criar pedido (v1)](/pt/api-reference/create-order).
+As duas versões estão vigentes e terminam no mesmo lugar: mesmas validações, mesma resposta.
+
+O Fire reconhece o tipo de pedido pelo `channel.uid` do corpo:
+
+- Se o canal é de um agregador (iFood, 99Food, Keeta, Rappi), o corpo é o de
+  [Injetar pedido](/pt/api-reference/orders) (camelCase, com preços e totais).
+- Qualquer outro canal (PDV, quiosque) usa a estrutura de PDV e quiosque descrita abaixo
+  (snake_case, só com o preço unitário: o Fire calcula os totais).
+
+Depois de criado, o pedido segue o mesmo ciclo de qualquer pedido do Fire: impostos, dia de negócio,
+documento fiscal e [eventos](/pt/events/overview).
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  Sua API key do Fire com escopo `orders:write`. Também é aceito `Authorization: Bearer <api_key>`.
+  A key **deve estar associada a um vendor**: a conta do pedido vem desse vendor. Uma key sem vendor
+  é rejeitada com `403`. Não é preciso enviar o header `account`; se chegar, é ignorado.
+</ParamField>
+
+## Identidade do cliente (PDV e quiosque)
+
+Envie **exatamente um** destes dois headers. Se não enviar nenhum, ou enviar os dois, o pedido é
+rejeitado com `400` `VALIDATION_ERROR`. Pedidos de agregadores não os usam.
+
+<ParamField header="anonymous_customer_uid" type="string">
+  Identificador da sessão anônima do equipamento (PDV ou quiosque). É o caso habitual.
+</ParamField>
+
+<ParamField header="customer_uid" type="string">
+  Identificador de um cliente registrado.
+</ParamField>
+
+## Corpo — PDV e quiosque
+
+<ParamField body="order_code" type="string" required>
+  Código único do pedido no seu sistema. Se já existir um pedido com esse código para o seu vendor,
+  a resposta é `409`.
+</ParamField>
+
+<ParamField body="vendor_uid" type="string" required>Vendor do pedido (ex.: `11.6.1350`).</ParamField>
+
+<ParamField body="catalog_uid" type="string" required>Catálogo do canal de venda.</ParamField>
+
+<ParamField body="status" type="string">
+  `COMPLETED` se a venda já está fechada; `OPEN` se ainda aguarda cobrança. Um pedido que não chega
+  `COMPLETED` + `SUCCEEDED` fica pendente de pagamento.
+</ParamField>
+
+<ParamField body="payment_status" type="string">`SUCCEEDED` se já foi cobrado.</ParamField>
+
+<ParamField body="channel" type="object" required>
+  Canal de venda. O seu `uid` decide como o corpo é interpretado.
+  <Expandable title="channel">
+    <ParamField body="uid" type="string" required>UID do canal no Fire.</ParamField>
+    <ParamField body="code" type="string" required>Código do canal (ex.: `POS`, `KIOSK`).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="service" type="object" required>
+  Serviço da venda.
+  <Expandable title="service">
+    <ParamField body="uid" type="string" required>UID do serviço no Fire.</ParamField>
+    <ParamField body="code" type="string" required>Código do serviço (ex.: `Dine-In`, `Takeaway`).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="store" type="object" required>
+  Loja da venda.
+  <Expandable title="store">
+    <ParamField body="uid" type="string" required>UID da loja.</ParamField>
+    <ParamField body="code" type="string" required>Código da loja.</ParamField>
+    <ParamField body="name" type="string" required>Nome da loja.</ParamField>
+    <ParamField body="vendor_uid" type="string" required>Vendor da loja.</ParamField>
+    <ParamField body="vendor_name" type="string" required>Nome do vendor.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="fulfillment" type="object" required>
+  Forma de entrega e catálogo.
+  <Expandable title="fulfillment">
+    <ParamField body="method" type="string" required>`POS` ou `KIOSK`.</ParamField>
+    <ParamField body="catalog_uid" type="string" required>Catálogo. Deve estar habilitado para a sua conta.</ParamField>
+    <ParamField body="details" type="object">Dados da entrega, ex.: `buzzer_name` (nome para chamar o cliente).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="device" type="object">
+  Equipamento que registrou a venda: `uid`, `name`, `metadata`.
+</ParamField>
+
+<ParamField body="operator" type="object">
+  Caixa ou operador: `uid`, `name`, `session` (`uid`, `start_timestamp`, `end_timestamp`).
+  `null` no quiosque.
+</ParamField>
+
+<ParamField body="customer" type="object">
+  Dados do cliente: `uid`, `name`, `last_name`, `phone` (obrigatórios se você enviar o objeto),
+  `email`, `gov_id_type`, `gov_id_number`.
+</ParamField>
+
+<ParamField body="billing" type="object">Dados de faturamento: `gov_id_type`, `gov_id_number`, `business_name`.</ParamField>
+
+<ParamField body="metadata" type="object">
+  Dados adicionais da venda, ex.: `display_code` (número para chamar o pedido) e os dados do
+  quiosque ou do PDV.
+</ParamField>
+
+<ParamField body="order_lines" type="object[]" required>
+  Produtos do pedido.
+  <Expandable title="order_lines[]">
+    <ParamField body="hash" type="string" required>Identificador da linha dentro do pedido.</ParamField>
+    <ParamField body="item_id" type="string" required>UID do produto no catálogo.</ParamField>
+    <ParamField body="item_description" type="string" required>Nome do produto.</ParamField>
+    <ParamField body="item_type" type="string" required>Tipo de item (ex.: `PRODUCT`).</ParamField>
+    <ParamField body="quantity" type="string" required>Quantidade, como texto (`"1"`).</ParamField>
+    <ParamField body="selected_currency" type="string" required>Moeda (ex.: `BRL`).</ParamField>
+    <ParamField body="vendor_uid" type="string" required>Vendor.</ParamField>
+    <ParamField body="store_uid" type="string" required>Loja.</ParamField>
+    <ParamField body="fulfillment" type="object" required>`method` e `catalog_uid`, como no pedido.</ParamField>
+    <ParamField body="price" type="object" required>
+      Só o preço unitário: `unit_price[]` com `currency_code`, `gross_price`, `net_price`, `taxes`,
+      `taxes_value`, `discount_value`, `subtotal_before_taxes` e `discounts`. Os valores vão como
+      texto (`"14.9"`). O Fire calcula o total da linha e do pedido.
+    </ParamField>
+    <ParamField body="modifier_groups" type="object[]" required>
+      Grupos de modificadores (`uid`, `description`, `selected_modifiers[]`). Cada modificador tem a
+      mesma forma de uma linha. `[]` se não houver.
+    </ParamField>
+    <ParamField body="additional_info" type="object">Códigos do produto, ex.: `code`, `external_code`, `ncm`.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="payment_methods" type="object[]" required>
+  Pagamentos do pedido.
+  <Expandable title="payment_methods[]">
+    <ParamField body="uid" type="string" required>UID do meio de pagamento.</ParamField>
+    <ParamField body="method" type="string" required>Meio de pagamento (ex.: `CASH`, `CREDIT`, `DEBIT`).</ParamField>
+    <ParamField body="currency_code" type="string" required>Moeda.</ParamField>
+    <ParamField body="total" type="string" required>Valor pago, como texto.</ParamField>
+    <ParamField body="details" type="object">
+      Detalhe da transação: `processor`, `transaction_status` (`APPROVED`, `PENDING`),
+      `transaction_type`, `transaction_id`, `tid`, `authorization_code`, `total_bill`,
+      `customer_cash_amount`, `change_amount`, `card`, `acquirer`, `transaction_date`. Um pagamento
+      `PENDING` deixa o pedido aberto, aguardando cobrança.
+    </ParamField>
+    <ParamField body="metadata" type="object">Dados do autorizador do pagamento.</ParamField>
+  </Expandable>
+</ParamField>
+
+## Corpo — agregadores
+
+O mesmo corpo de [Injetar pedido](/pt/api-reference/orders), sem mudanças. O Fire o identifica como
+pedido de agregador pelo `channel.uid` e o registra fechado e pago.
+
+## Resposta
+
+<ResponseField name="success" type="boolean">`true` quando o pedido foi criado.</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="id" type="string">ID do pedido no Fire. Use-o para consultar, atualizar ou cancelar o pedido.</ResponseField>
+    <ResponseField name="external_order_id" type="string">O `order_code` que você enviou.</ResponseField>
+    <ResponseField name="status" type="string">`COMPLETED` ou `OPEN`.</ResponseField>
+    <ResponseField name="payment_status" type="string">`SUCCEEDED` ou `PENDING`.</ResponseField>
+    <ResponseField name="business_day_date" type="string">Dia de negócio da loja, `YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="created_at" type="string">Data de criação no Fire (ISO 8601).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Erros
+
+| HTTP | `error` / `code` | Quando |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Falta o código do pedido, o corpo não pode ser lido (PDV e quiosque: `details[]` detalha cada problema; agregadores: a mensagem diz o que falta), os headers de cliente faltam ou vieram os dois, ou o canal não está habilitado para o seu vendor |
+| `400` | `BUSINESS_ERROR` | Loja inativa, dia de negócio fechado, ou o pedido não cumpre uma regra de validação ativada para o seu vendor (`ORDER_INVARIANT_VIOLATION`) |
+| `404` | `NOT_FOUND` | A loja não existe |
+| `401` | `UNAUTHORIZED` | API key inválida, vencida ou revogada |
+| `403` | `FORBIDDEN` | API key sem escopo `orders:write` ou não associada a um vendor |
+| `409` | `CONFLICT` / `DUPLICATE_ORDER` | O pedido já existia para o seu vendor. `data` traz `id`, `externalOrderId` e `status` do existente |
+
+<Info>
+  Toda requisição fica registrada no Fire com o corpo e o motivo da rejeição, inclusive as
+  rejeitadas. Se você reenviar um pedido que já foi criado, a resposta é `409` e ele não é duplicado.
+</Info>
+
+<RequestExample>
+```bash PDV ou quiosque
+curl -X POST https://app.fire.rest/api/v2/external/orders \
+  -H "x-api-key: $FIRE_API_KEY" \
+  -H "anonymous_customer_uid: device-session-0001" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "order_code": "BR-K000-05-1793063248",
+    "vendor_uid": "11.6.1350",
+    "catalog_uid": "5",
+    "status": "COMPLETED",
+    "payment_status": "SUCCEEDED",
+    "channel": { "uid": "c784d4ba-23c7-4929-b2f0-1a1960d9cdc2", "code": "KIOSK" },
+    "service": { "uid": "726c4892-48b9-45da-b066-2a8e83d2cb78", "code": "Dine-In" },
+    "store": { "uid": "11.6.1350.50", "code": "K000", "name": "Tienda demo", "vendor_uid": "11.6.1350", "vendor_name": "Vendor demo" },
+    "fulfillment": { "method": "KIOSK", "catalog_uid": "5", "details": { "buzzer_name": "Cliente" } },
+    "customer": { "uid": "device-session-0001", "name": "CONSUMIDOR", "last_name": "FINAL", "phone": "" },
+    "metadata": { "display_code": "48K" },
+    "order_lines": [{
+      "hash": "hash_0",
+      "item_id": "7abdd4e5-d685-43ff-ba79-5e8b2f700b5b",
+      "item_description": "12 Tiras de Frango",
+      "item_type": "PRODUCT",
+      "quantity": "1",
+      "selected_currency": "BRL",
+      "vendor_uid": "11.6.1350",
+      "store_uid": "11.6.1350.50",
+      "fulfillment": { "method": "KIOSK", "catalog_uid": "5" },
+      "price": { "unit_price": [{ "currency_code": "BRL", "gross_price": "64.9", "net_price": "64.9", "taxes": [], "taxes_value": "0", "discount_value": "0", "subtotal_before_taxes": "64.9", "discounts": [] }] },
+      "modifier_groups": []
+    }],
+    "payment_methods": [{
+      "uid": "80242d0c-3bdd-4e8a-8ec2-eb250230b4e9",
+      "method": "CREDIT",
+      "currency_code": "BRL",
+      "total": "64.9",
+      "details": { "processor": "Tarjeta", "transaction_status": "APPROVED", "transaction_type": "CREDIT", "transaction_id": "BR-K000-05-1793063248", "tid": "TF000000", "authorization_code": "0000000000000", "total_bill": "64.9", "currency_code": "BRL", "exact_payment": false, "customer_cash_amount": "0", "mid": "", "voucher": "", "reference_number": "", "card": null, "acquirer": null, "transaction_date": { "date": "2026-10-26T22:08:00-03:00", "time_zone_name": "America/Sao_Paulo", "time_zone_type": "3" } }
+    }]
+  }'
+```
+
+```bash Agregador
+curl -X POST https://app.fire.rest/api/v2/external/orders \
+  -H "x-api-key: $FIRE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d @ifood-order.json   # mesmo corpo de "Injetar pedido"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "id": "6f1c2b9e-3a1d-4c55-9b7e-0d2f6a7c8e10",
+    "external_order_id": "BR-K000-05-1793063248",
+    "status": "COMPLETED",
+    "payment_status": "SUCCEEDED",
+    "business_day_date": "2026-10-26",
+    "created_at": "2026-10-27T01:08:00.405Z"
+  }
+}
+```
+
+```json 409
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "DUPLICATE_ORDER",
+  "message": "Order with external id BR-K000-05-1793063248 already exists for this vendor.",
+  "data": { "id": "6f1c2b9e-3a1d-4c55-9b7e-0d2f6a7c8e10", "externalOrderId": "BR-K000-05-1793063248", "status": "COMPLETED" }
+}
+```
+
+```json 400
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [{ "code": "custom", "path": [], "message": "customer_uid or anonymous_customer_uid is required" }]
+}
+```
+</ResponseExample>
