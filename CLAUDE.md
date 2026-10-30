@@ -88,6 +88,10 @@ Antes de escribir o editar una entrada en `*/changelog.mdx`, leé
 `.claude/skills/changelog-entry/SKILL.md`: formato, tono, cuándo advertir y las reglas
 del correo. Lo de abajo es el resumen mínimo.
 
+El changelog anuncia **todo cambio que alguien nota**, no solo los de integración: una
+pantalla nueva del Backoffice, POS, KDS, BOH, Kiosco o Ecommerce también entra. Cada
+entrada dice debajo del título para quién es (`**For:**` / `**Para:**`).
+
 ## Changelog — el formato dispara correos, no lo rompas
 Al publicar una entrada en `*/changelog.mdx` hay un envío de email atrás
 (`.github/workflows/changelog-newsletter.yml`). Reglas que el script asume:
