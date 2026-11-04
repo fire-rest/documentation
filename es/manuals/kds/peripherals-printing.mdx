@@ -1,6 +1,6 @@
 ---
 title: "Periféricos, impresión y validación"
-description: "Configura teclados y dispositivos de entrada del KDS, la impresión listo-para-retiro y la cancelación de órdenes, y valida la tienda con el KDS Map antes de salir a producción."
+description: "Configura teclados y dispositivos de entrada del KDS, la impresión al enviar y la cancelación de órdenes, y valida la tienda con el KDS Map antes de salir a producción."
 ---
 
 Esta página cubre la configuración restante — teclados, impresión y cancelación — y cómo validar la tienda antes de abrir la cocina.
@@ -49,56 +49,87 @@ También puedes crear o duplicar un layout desde **Store → KDS Map** (`/kds/ad
 
 ## Impresión y cancelación
 
-Hay **tres conceptos distintos**. No se configuran todos en el mismo lugar.
+La impresión y la cancelación se configuran en la configuración de la tienda: **KDS → Todas las tiendas → [tienda] → Configuración** (`/kds/admin/stores/{storeId}/settings`). La página tiene siete pestañas — **General**, **Pantallas**, **Ruteo y líneas**, **Impresión**, **Lista de espera**, **Cancelación** y **Etiquetas** — y una sola barra de guardado para todas: una pestaña con cambios muestra un punto, y **Guardar configuración** guarda todas las pestañas a la vez. **Descartar** vuelve a lo guardado.
+
+<Warning>
+  La barra de guardado no avisa si sales por un link del menú con cambios sin guardar. Guarda antes de pasar a otra página.
+</Warning>
 
 ### 1. Impresión al enviar (tienda)
 
-**Qué hace:** cuando el operador envía en la **estación de impresión**, fire-kds puede imprimir **Comanda**, **Factura fiscal**, o ambas — siempre **una estación por tienda**, para que una pantalla multiestación no imprima dos veces.
+**Qué hace:** cuando un cocinero envía en una **estación de impresión**, fire-kds imprime la **Comanda** (ticket de cocina), la **Factura fiscal**, o ambas.
 
-**Dónde vive la regla:** **KDS → All Stores → [tienda] → Settings** → **Bump printing (store)**, o **fire-kds → Settings → KDS → Print on bump** (solo admins). Elige **By screen** o **By station**, los documentos, el orden de impresión, **Copies** y **Fiscal timing** (`Async (bump first)` o `Sync (wait for print)`).
+**Dónde vive la regla:** pestaña **Impresión** → **Imprimir al despachar**, o **fire-kds → Configuración → KDS tienda** (solo admins). Elige las estaciones **Por pantalla** (elige una pantalla y luego cuáles de sus estaciones imprimen) o **Por estación** (cualquier estación de la tienda), los documentos, el **Orden de impresión**, las **Copias** (1 a 10) y el **Timing de impresión fiscal** (`Async (bump first)` o `Sync (wait for print)`).
 
-**Dónde se arma la impresora:** solo en el dispositivo KDS, **Printer for this screen**. El backoffice ya no guarda el nombre de la cola en los ajustes de tienda.
+<Frame>
+  <img src="/images/manuals/kds/peripherals-printing/05-store-printing.png" alt="Pestaña Impresión: impresión al enviar, impresoras por pantalla e impresora del Operator Board" />
+</Frame>
+
+Puedes elegir **más de una estación**: cada una imprime con su propio envío. Una tienda puede imprimir la comanda en Armado y la factura fiscal en Despacho, por ejemplo.
 
 <Frame>
   <img src="/images/manuals/kds/peripherals-printing/04-bump-printing-store.png" alt="Tarjeta de impresión al enviar de la tienda con modo pantalla o estación y documentos" />
 </Frame>
 
+**Dónde se arma la impresora:** en cada pantalla que muestra una estación de impresión — en la pestaña **Impresión**, **Impresoras de pantalla** (interruptor **Activa** y escribe el nombre de la impresora), o en el propio dispositivo KDS, **Impresora de esta pantalla**. Debajo de cada estación de impresión, la pestaña te dice en qué pantalla **Imprime en**, o avisa **Sin impresora activa en sus pantallas** / **No se muestra en ninguna pantalla**.
+
 <Warning>
-  Activar la regla de tienda sin armar una impresora en una pantalla **activa** que hospeda esa estación no imprime nada. El dashboard puede mostrar **Bump printing needs attention**.
+  El nombre de la impresora debe coincidir **exactamente** con el del Agente Fire — letras, espacios y mayúsculas. Un nombre distinto no imprime nada, y el envío igual se completa.
+</Warning>
+
+**Fire arma los documentos.** La factura fiscal y la comanda llegan ya armadas desde Fire (la [API de impresión de Fire](/es/api-reference/print-order-document)); el KDS solo las envía a la impresora. Eso significa:
+
+- La comanda es el **pedido completo**, no solo las líneas de la estación, y sus etiquetas siguen el **país de la tienda**, no el idioma de la pantalla.
+- Un cambio de plantilla o un país nuevo no necesita una actualización del KDS.
+- La factura se imprime aunque el documento fiscal todavía esté pendiente.
+
+<Warning>
+  La [credencial Fire](/es/manuals/kds/fire-credentials) de la cuenta debe tener el scope **`printing:read`** (se ve como **Impresión Lectura** en Gestión de API). Sin él, Fire responde `403` y **no se imprime nada** — ni comanda ni factura.
 </Warning>
 
 <Note>
-  Las tiendas que aún corren la regla vieja de listo-retiro / por pantalla ven un aviso **legacy** hasta que actives el bloque nuevo **Print on bump**. No asumas que ambas políticas están apagadas.
+  Las tiendas que aún corren la regla vieja por pantalla ven **Todavía se usan reglas de impresión anteriores** hasta que actives **Imprimir al despachar**. No asumas que ambas políticas están apagadas.
 </Note>
 
 **Qué se necesita para que funcione:**
 
-1. Una estación de impresión elegida (por pantalla o por estación).
-2. Al menos un documento seleccionado.
-3. Una pantalla KDS **activa** vinculada a esa estación.
-4. Agente Fire corriendo en ese dispositivo — [Windows](/es/manuals/fire-agent/installation) o [Android](/es/manuals/fire-agent/android). fire-kds prueba primero la URL de la plataforma y **cae a la otra**.
-5. **Nombre** de impresora idéntico al del agente / cola del SO.
+1. Al menos una estación de impresión y un documento.
+2. Una pantalla KDS **activa** que muestre cada estación de impresión, con una impresora armada.
+3. Agente Fire corriendo en ese dispositivo — [Windows](/es/manuals/fire-agent/installation) o [Android](/es/manuals/fire-agent/android). fire-kds prueba primero la URL de la plataforma y **cae a la otra**. Si falta el agente, la configuración de impresión muestra **Descargar Fire Agent** cuando la cuenta tiene un [link de descarga](/es/manuals/kds/account-settings#descarga-de-fire-agent).
+4. La credencial Fire con `printing:read`.
 
 <Frame>
   <img src="/images/manuals/kds/peripherals-printing/02-ready-pickup-printing.png" alt="Modal Printer for this screen del KDS para armar el nombre de la cola" />
 </Frame>
 
-### 2. Cancelación de órdenes (en la app fire-kds)
+<Info>
+  Una pantalla puede quedar **sin impresora**: guarda el campo de impresora vacío y esa pantalla deja de imprimir al enviar. En macOS, el Agente Fire responde "ok" para una impresora que no es una impresora de red real; ahora el KDS lo trata como **no impreso**, así el ticket no parece impreso cuando no salió nada.
+</Info>
+
+### 2. Cancelación de órdenes
 
 **Qué hace:** permite al operador cancelar una orden desde el KDS (ícono en el ticket → confirmación).
 
-**Dónde se configura:** en la **app fire-kds**, menú superior → **"Cancelación de órdenes…"** (un modal en el dispositivo). **No** está en el backoffice hoy.
+**Dónde se configura:** pestaña **Cancelación** de la configuración de la tienda, o **fire-kds → Cancelación de órdenes…** en el dispositivo.
+
+<Frame>
+  <img src="/images/manuals/kds/peripherals-printing/06-store-cancellation.png" alt="Pestaña Cancelación: interruptor de la tienda y pantallas que pueden cancelar" />
+</Frame>
 
 | Nivel | Config | Efecto |
 |---|---|---|
-| Tienda | Interruptor maestro | Si está off, ninguna pantalla puede cancelar. |
-| Pantalla | Opt-in por pantalla | Cada pantalla se habilita por separado. |
+| Tienda | **Permitir cancelación en esta tienda** | Si está off, ninguna pantalla puede cancelar, sin importar su propio interruptor. |
+| Pantalla | **Pantallas que pueden cancelar** | Cada pantalla se habilita por separado. |
 
-**Varias pantallas pueden tener la cancelación habilitada** a la vez (no hay límite de "solo una" como en la impresión listo-retiro). Además requiere que la orden tenga un ID externo XMART para el adapter de cancelación, y un operador con un rol válido en la tienda.
+Varias pantallas pueden cancelar a la vez. Qué **motivos** pueden elegir los operadores se define una sola vez para toda la cuenta, en [Configuración de cuenta](/es/manuals/kds/account-settings#motivos-de-cancelación-en-el-kds). Además la orden necesita su ID externo XMART, y el operador un rol válido en la tienda.
 
-### 3. Impresión fiscal desde el teclado
+### 3. Facturas fiscales encoladas
 
-La acción **`PRINT_PENDING_FISCAL_INVOICES`** se asigna en el **layout de teclado**, no en la sección de impresión listo-retiro. No compite con la regla de "una pantalla" (son flujos distintos) y depende de la integración fiscal del país/tienda en fire-kds.
+Cuando la impresora falla después de un envío, la factura fiscal queda en cola. **Imprimir facturas encoladas** (menú del KDS, o la tecla `PRINT_PENDING_FISCAL_INVOICES`) imprime solo la cola del **día de negocio actual**: lo que quedó de días anteriores sigue guardado pero no se imprime desde ahí. Para reimprimir una factura más vieja, usa el [Tablero de operador](/es/manuals/kds/operator-board).
+
+### 4. Impresora del tablero de operador
+
+La pestaña **Impresión** también tiene la **Impresora del Operator Board**: la impresora que usa el PC del supervisor para reimprimir e imprimir automáticamente la factura fiscal y el ticket de delivery. Es independiente de las impresoras de pantalla. Ver [Tablero de operador](/es/manuals/kds/operator-board#imprimir-desde-el-tablero-de-operador).
 
 ## Validar la configuración: KDS Map
 
@@ -111,7 +142,7 @@ El mapa muestra:
 - Pantallas y estaciones vinculadas.
 - Estaciones sin pantalla (alertas).
 - Dispositivos de entrada y layouts de teclado.
-- Tarjeta de impresión listo-para-retiro.
+- **Impresoras de pantalla**: qué pantallas tienen una impresora armada.
 - Salud general de la config.
 
 <Frame>
@@ -129,8 +160,8 @@ El mapa muestra:
 - [ ] **Cocina simple (alternativa):** una estación `KITCHEN` + fallback; **Producción requerida = Sí**; sin mappings.
 - [ ] **Cocina multi-línea:** mappings solo a estaciones **producción**; ASSEMBLY/DISPATCH vía convergencia, no en mappings.
 - [ ] (Opcional) Teclado: dispositivo + layout por pantalla que lo use.
-- [ ] (Opcional) **Print on bump:** una estación de impresión, documentos elegidos, impresora armada en una pantalla activa.
-- [ ] (Opcional) Cancelación: habilitada en fire-kds en la tienda + las pantallas que la necesiten.
+- [ ] (Opcional) **Imprimir al despachar:** estaciones de impresión y documentos elegidos, una impresora armada en una pantalla activa para cada una, y la credencial Fire con `printing:read`.
+- [ ] (Opcional) Cancelación: habilitada para la tienda y las pantallas que la necesiten (pestaña **Cancelación**).
 - [ ] KDS Map sin alertas críticas.
 - [ ] Prueba con una orden real o seed: los ítems llegan a la pantalla/estación esperada.
 
@@ -151,6 +182,8 @@ El mapa muestra:
 | Layouts de teclado | `/kds/admin/keyboard-layouts` |
 | Mapa KDS de la tienda | `/kds/admin/stores/{storeId}/kds-map` |
 | Ajustes de tienda | `/kds/admin/stores/{storeId}/settings` |
+| Configuración de cuenta | `/kds/admin/account-settings` |
+| Pedidos por tienda | `/kds/admin/store-orders` |
 
 <Check>
   Con el KDS Map limpio y el checklist completo, la tienda está lista para abrir fire-kds en la cocina.
