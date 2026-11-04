@@ -1,86 +1,80 @@
 ---
 title: "Como o fiscal funciona no Fire"
-description: "Os dois atos de um documento fiscal (numeração e autorização), os dois blocos que eles deixam no pedido e as duas formas pelas quais um documento chega ao Fire."
+description: "A integração fiscal com e sem gateway: quem fala com quem, o que muda entre os dois caminhos e o que cada um deixa no pedido."
 ---
 
-Todo documento fiscal no Fire passa por **dois atos separados**, em momentos diferentes, e cada um deixa o seu próprio bloco no pedido. A maior parte da confusão vem de misturá-los, então esta página os nomeia uma vez e todas as outras páginas fiscais partem dela.
+O Fire não fala com o órgão fiscal. Quem emite e obtém o veredito é o seu **provedor fiscal**: o Fire entrega a venda a ele, recebe o resultado e o publica no pedido e nos eventos.
 
-## Os dois atos
+Há duas formas de integrá-lo, e elas diferem em uma única coisa: **se o caixa precisa dos números fiscais antes de injetar o pedido.**
 
-| | Ato 1 — Numeração | Ato 2 — Autorização |
+<img className="block dark:hidden" src="/images/fiscal/fiscal-with-and-without-gateway-pt-light.svg" alt="O caixa fala com o Fire e o Fire com o provedor fiscal. Com gateway, o caixa pede os números antes de injetar. Sempre, o caixa injeta o pedido, o Fire entrega a venda ao provedor, o provedor a envia ao órgão fiscal e avisa o veredito ao Fire." />
+<img className="hidden dark:block" src="/images/fiscal/fiscal-with-and-without-gateway-pt-dark.svg" alt="O caixa fala com o Fire e o Fire com o provedor fiscal. Com gateway, o caixa pede os números antes de injetar. Sempre, o caixa injeta o pedido, o Fire entrega a venda ao provedor, o provedor a envia ao órgão fiscal e avisa o veredito ao Fire." />
+
+O caixa só fala com o Fire, e o Fire com o provedor. Da injeção em diante, os dois caminhos são iguais.
+
+## Sem gateway: a integração base
+
+O caixa cobra e injeta o pedido. Não precisa saber nada de fiscal.
+
+O Fire entrega a venda ao provedor com um [Integration Flow](/pt/events/integration-flows), e o provedor reporta o resultado com o [callback fiscal](/pt/api-reference/fiscal-callback), repetindo o `event.id` do evento que recebeu.
+
+Ao cobrar, o caixa não tem números fiscais e `data.fiscalRepresentation` viaja como `null`.
+
+**O provedor implementa:** um endpoint que recebe o evento e o envio do callback fiscal.
+
+## Com gateway: o mesmo, mais um passo antes
+
+Quando o comprovante precisa sair impresso com seus identificadores no momento da venda, o caixa pede os números ao Fire e o Fire os pede ao provedor. O caixa os imprime e depois injeta o pedido com o mesmo `orderCode`. Se o pedido já estava aberto porque é cobrado depois, o caixa numera ao cobrar. O caixa nunca fala com o provedor.
+
+<Warning>
+  **Numerado não é autorizado.** Os números impressos dizem o que foi impresso. O veredito do órgão chega depois, pelo mesmo callback do caminho sem gateway.
+</Warning>
+
+**O provedor implementa também:** o [endpoint síncrono de numeração](/pt/fiscal-providers/contract), por país. Hoje o Fire o suporta no Equador e na Colômbia, e ele é ativado por vendor: em um mesmo país pode haver vendors com e sem gateway.
+
+## Online e offline
+
+O caminho é o mesmo. Muda o modo que o provedor informa em `authorizationMode`:
+
+| | Online | Offline (contingência) |
 |---|---|---|
-| **Quando** | Antes de o pedido existir, no caixa | Segundos ou minutos depois da venda |
-| **Quem o inicia** | O ponto de venda pede identificadores ao Fire | O provedor fiscal reporta o veredito do órgão |
-| **Como chega ao Fire** | Requisição de [numeração fiscal](/pt/api-reference/fiscal-documents-v2) | [Callback fiscal](/pt/api-reference/fiscal-callback) (ou PlugNotas, no Brasil) |
-| **Bloco no pedido** | `data.fiscalRepresentation` | `data.fiscal.authority` |
+| **O órgão responde** | Normalmente em segundos ou minutos | Mais tarde, até horas, quando a conexão volta |
+| **O comprovante** | É impresso normalmente | É válido e pode levar legenda: `printing.reason` é `ISSUED_OFFLINE` |
+| **Caixa → Fire → provedor** | Igual | Igual |
+| **Como o veredito volta** | Callback fiscal | Callback fiscal |
+
+## O que muda e o que não muda
+
+| | Sem gateway | Com gateway |
+|---|---|---|
+| **O caixa chama a numeração** | Não é necessário. Se chamar, recebe `NOT_APPLICABLE` e segue | Sim, antes de injetar |
+| **Números disponíveis ao cobrar** | Não | Sim |
+| **O caixa depende do provedor** | Não | Sim. Se falhar, decide a política da conta: `CONTINUE` ou `REFUND` |
+| **`fiscalRepresentation`** | `null` | Com o bloco de numeração |
+| **Como o provedor recebe a venda** | Integration Flow | Integration Flow |
+| **Como o veredito volta** | Callback fiscal | Callback fiscal |
+| **`data.fiscal.authority` e eventos** | Mesma forma | Mesma forma |
+
+## Cancelamento
+
+Também não muda no essencial. O pedido é cancelado no Fire, sai `order.cancelled`, um flow o entrega ao provedor e este confirma com um callback `cancelled`, com seu próprio `eventId`. Isso produz `order.reversed`.
+
+Com gateway, o caixa também pede os números do documento de cancelamento com `operation: "CANCEL"`.
+
+## Os dois blocos do pedido
+
+Um documento fiscal pode deixar dois blocos no pedido, e cada um responde a uma pergunta diferente. A maior parte da confusão vem de misturá-los.
+
+| | `data.fiscalRepresentation` | `data.fiscal.authority` |
+|---|---|---|
 | **Pergunta que responde** | *O que foi impresso?* | *O que o órgão decidiu?* |
+| **Quando aparece** | Só com gateway, quando o caixa numerou | Nos dois caminhos, quando o callback chega |
+| **Como chega ao Fire** | Requisição de [numeração fiscal](/pt/api-reference/fiscal-documents-v2) | [Callback fiscal](/pt/api-reference/fiscal-callback) |
 | **Muda depois?** | Só quando um novo documento é numerado (uma nota de crédito) | Sim: autorizado, depois cancelado |
 
 <Warning>
   **`fiscalRepresentation` nunca diz que o documento foi autorizado.** Ele guarda os números impressos no caixa. O veredito do órgão é `fiscal.authority`, e o status atual é `fiscal.status` nos eventos fiscais, `lastKnown.fiscal.status` nos demais eventos. Os três podem legitimamente discordar por um tempo.
 </Warning>
-
-## Duas formas de um documento chegar ao Fire
-
-<Tabs>
-  <Tab title="Países com gateway (hoje Equador e Colômbia)">
-    Os dois atos acontecem. O caixa numera primeiro pelo Fire, imprime, injeta o pedido, e o provedor depois reporta o veredito pelo callback fiscal.
-
-    - `data.fiscalRepresentation` fica preenchido desde o momento em que o pedido existe.
-    - `data.fiscal.authority` aparece quando o callback chega.
-    - `fiscal.providerCode` é `generic`.
-  </Tab>
-  <Tab title="PlugNotas (Brasil)">
-    **Não há Ato 1.** O Fire emite a NFC-e / NF-e pelo PlugNotas depois da venda e fica sabendo do veredito da SEFAZ diretamente pelo PlugNotas — sem callback fiscal, sem requisição de numeração.
-
-    - `data.fiscalRepresentation` é `null`.
-    - `data.fiscal.authority` aparece quando a SEFAZ autoriza.
-    - `fiscal.providerCode` é `plugnotas`.
-    - `authority.providerIdentity` e `authority.providerMetadata` são `null`: o PlugNotas não envia nenhum dos dois. Um cancelamento mantém os valores do documento anterior.
-  </Tab>
-</Tabs>
-
-Outros países também podem reportar pelo callback fiscal sem numerar antes. O que importa para um consumidor é o mesmo em todos os casos: **o veredito é sempre `fiscal.authority`, com a mesma forma**, seja qual for o caminho por onde entrou.
-
-## O ciclo completo
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant POS as Ponto de venda
-    participant Fire
-    participant Prov as Provedor fiscal
-    participant Auth as Órgão fiscal
-    participant You as Consumidor de eventos
-
-    rect rgba(99, 102, 241, 0.12)
-    Note over POS,Fire: Ato 1 — numeração (apenas países com Gateway)
-    POS->>Fire: requisição de numeração fiscal (orderCode)
-    Fire->>Prov: pede identificadores
-    Prov-->>Fire: document + graphic + provider + metadata
-    Fire-->>POS: identificadores a imprimir
-    POS->>Fire: injeta o pedido (mesmo orderCode)
-    Fire-->>You: order.completed — data.fiscalRepresentation
-    end
-
-    rect rgba(16, 185, 129, 0.12)
-    Note over Prov,You: Ato 2 — autorização (todos os países)
-    Note over Prov,Fire: No Brasil o provedor é o PlugNotas e não há callback
-    Prov->>Auth: envia o documento
-    Auth-->>Prov: veredito
-    Prov->>Fire: callback fiscal (eventType, eventId)
-    Fire-->>Prov: 202 Accepted
-    Fire-->>You: order.invoiced — data.fiscal.authority
-    end
-
-    rect rgba(245, 158, 11, 0.12)
-    Note over POS,You: Cancelamento
-    Note over POS,Fire: Pedido cancelado no Fire (POS, backoffice ou adaptador)
-    Fire-->>You: order.cancelled — documento como estava
-    Prov->>Fire: callback fiscal eventType: cancelled (seu próprio eventId)
-    Fire-->>You: order.reversed — cancellation.fiscal.authority
-    end
-```
 
 O que acontece entre o callback e os eventos — qual evento dispara para cada resultado e como cada campo trafega — está em [Do callback aos eventos](/pt/fiscal/callback-to-events).
 
@@ -106,9 +100,9 @@ O mesmo fato recebe nomes diferentes dependendo de onde você o lê. Eles não s
     O contrato que o seu provedor envia.
   </Card>
   <Card title="Numeração a partir do caixa" icon="cash-register" href="/pt/guides/fiscal-integration">
-    O Ato 1, passo a passo, para pontos de venda e quiosques.
+    O passo do gateway, para pontos de venda e quiosques.
   </Card>
   <Card title="Tornar-se provedor fiscal" icon="plug" href="/pt/fiscal-providers/overview">
-    O que um provedor implementa nos dois atos.
+    O que um provedor implementa em cada caminho.
   </Card>
 </CardGroup>
