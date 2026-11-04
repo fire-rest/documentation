@@ -1,6 +1,6 @@
 ---
 name: changelog-entry
-description: Escribir una entrada del changelog de Fire Docs en EN/ES/PT. Usar siempre que haya que anunciar un cambio de API, de evento, una guía nueva o un manual — y antes de tocar en|es|pt/changelog.mdx. Cubre formato, tono, cuándo advertir y las reglas del correo que se dispara.
+description: Escribir una entrada del changelog de Fire Docs en EN/ES/PT. Usar siempre que haya que anunciar un cambio que alguien nota — de API, de evento, de una pantalla del producto, una guía o un manual — y antes de tocar en|es|pt/changelog.mdx. Cubre formato, tono, cuándo advertir y las reglas del correo que se dispara.
 ---
 
 # Escribir una entrada del changelog
@@ -28,6 +28,8 @@ Nada nuevo por encima del primer `## ` — ahí vive el bloque de suscripción.
 ```mdx
 ## 2 August 2026 — `order.opened` and the deferred-payment blocks
 
+**For:** Integrations
+
 <Una o dos oraciones: qué cambió y a quién le importa. Sin preámbulo.>
 
 - **`campo.exacto`** — qué es, qué hace, qué tiene que hacer el lector.
@@ -40,6 +42,19 @@ Updated in **EN / ES / PT**.
 ordene bien; el tema para que el asunto del correo diga algo. Fecha en el idioma de cada
 archivo (`2 de agosto de 2026` en ES y PT).
 
+**Para quién:** la primera línea después del título dice qué público lo nota, para que cada
+lector vea de entrada si le toca. Uno o varios, separados por ` · `:
+
+| EN (`**For:**`) | ES (`**Para:**`) | PT (`**Para:**`) | Quién lo lee |
+|---|---|---|---|
+| Integrations | Integraciones | Integrações | Quien consume eventos o APIs |
+| Backoffice | Backoffice | Backoffice | Quien configura el negocio en el panel |
+| POS | POS | POS | Cajeros y supervisores de tienda |
+| KDS | KDS | KDS | Cocina y quien configura las pantallas |
+| BOH | BOH | BOH | Inventario, compras y recetas |
+| Kiosk | Kiosco | Quiosque | Quien opera y configura kioscos |
+| Ecommerce | Ecommerce | Ecommerce | Quien opera la tienda online |
+
 **Orden:** estrictamente del más nuevo al más viejo. Antes de commitear, mirá que la
 fecha de arriba sea la mayor. Hoy el archivo tiene entradas de julio metidas entre las
 de junio — no repitas eso.
@@ -51,11 +66,15 @@ de junio — no repitas eso.
 | Campos nuevos en un evento o endpoint | Refactors internos |
 | Cambios de contrato y de versión | Correcciones de tipeo en la doc |
 | Eventos nuevos o eliminados | Cambios de infraestructura sin efecto visible |
-| Guías y manuales nuevos | Reordenar la navegación |
-| Comportamiento que cambia lo que el lector debe hacer | Nada que el integrador no pueda notar |
+| Pantallas nuevas del Backoffice, POS, KDS, BOH, Kiosco o Ecommerce | Reordenar la navegación |
+| Comportamiento de una pantalla que cambia lo que alguien hace o ve | Pantallas internas del equipo FIRE |
+| Reportes nuevos o con números que se calculan distinto | Nada que nadie pueda notar |
+| Guías y manuales nuevos | |
 
-El criterio: **¿un integrador tiene que hacer algo distinto, o entender algo nuevo?** Si
-no, no va.
+El criterio: **¿alguien —quien integra o quien opera el negocio— tiene que hacer algo
+distinto, o entender algo nuevo?** Si sí, va, aunque no toque ninguna API. Si no, no va.
+Un cambio de producto sin manual también se anuncia: con lo que cambió y, si existe, el
+enlace al manual que lo explica.
 
 ## Tono
 
@@ -113,6 +132,7 @@ todo lo demás. Decí qué se rompe, por qué, y qué hay que hacer.
 - [ ] Todo lo mencionado está enlazado
 - [ ] Cero `<Warning>` salvo riesgo real en producción; como mucho un `<Note>`
 - [ ] Si rompe compatibilidad, dice `**Breaking**` y va primero
+- [ ] Debajo del título, la línea `**For:**` / `**Para:**` con el público
 - [ ] Cierra con `Updated in **EN / ES / PT**.` (o su traducción)
 
 Para previsualizar el correo antes de que salga:

@@ -10,6 +10,18 @@ Un manual de usuario no describe botones: explica **qué problema resuelve la pa
 
 Referencia viva hecha con esta skill: `en|es|pt/manuals/backoffice/price-lists.mdx`.
 
+## Qué pantallas llevan manual
+
+**Toda pantalla que usa una persona del negocio tiene manual**, en una página propia o como
+sección de otra. Las pantallas de detalle y edición van con su pantalla principal.
+
+No llevan manual las pantallas internas del equipo FIRE (administración de la plataforma,
+herramientas de diagnóstico). Cuando una pantalla queda sin manual a propósito, se dice en el
+PR o en el issue, con el motivo: así la decisión se puede revisar.
+
+Cuando sale una pantalla nueva o cambia lo que hace, su manual se escribe o actualiza en el
+mismo trabajo, y el cambio se anuncia en el changelog con su público (ver `changelog-entry`).
+
 ## Antes de escribir: usá el producto
 
 No se puede documentar bien algo que no se usó. Antes de la primera línea:
