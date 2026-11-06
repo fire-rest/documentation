@@ -74,6 +74,7 @@ x-api-key: <provider's api key>
 ```
 POST {baseUrl}/api/v1/fiscal/ec/prekeys      Ecuador
 POST {baseUrl}/api/v1/fiscal/co/prekeys      Colombia
+POST {baseUrl}/api/v1/fiscal/ar/prekeys      Argentina
 ```
 
 **A single integration.** The provider receives one `baseUrl` and one credential; the routes are
@@ -697,6 +698,7 @@ The response has **two parts with different rules**:
   "retryable": false,
   "authorizationMode": "ONLINE",
   "issuedAt": "2026-08-12T16:55:29Z",
+  "documentNumber": "001-020-000000123",
 
   "document": { "…": "YOUR country's block — see 5.2" },
 
@@ -712,6 +714,21 @@ Everything above is the same for any country. **`document` is the only thing tha
 that is why it is elided here: its contents are in [5.2](#52-document--the-numbered-document),
 with one section per country. If you are implementing Ecuador, the block that concerns you is
 Ecuador's and no other.
+
+### `documentNumber` — the visible number
+
+**The receipt number exactly as it is printed, already assembled.** It is the number FIRE stores
+on the order, prints on the ticket and publishes in the events. It goes at the **root** of the
+response, with the same name and in the same place as in the
+[result callback](/en/api-reference/fiscal-callback): both entry points declare the number the
+same way, and `document` stays as your country's block.
+
+| Country | `documentNumber` at the root |
+|---|---|
+| Argentina | **Required.** Without it the numbering is rejected: FIRE does not look for the number inside `document` |
+| Ecuador, Colombia | **Send it.** For now, if it is missing, FIRE falls back to `document.numeroComprobante`. That fallback is temporary and will be removed once every integration sends the root field |
+
+If you send both and they differ, **the root one wins**.
 
 <Info>
   **`country` travels even though it is in the route.** It is not redundancy: FIRE compares
@@ -874,6 +891,43 @@ not travel as `null`: it simply is not there.
       It is not an edge case: in real restaurant operations it is the majority of sales.
     </Warning>
   </Tab>
+
+  <Tab title="Argentina (AR) — ARCA">
+    ```json
+    "documentNumber": "00001-00012345",
+    "document": {
+      "cae": "74256178925412",
+      "caea": "74256178925412",
+      "fechaVtoCae": "2026-05-31",
+      "puntoVenta": 1,
+      "numeroComprobante": 12345,
+      "tipoComprobante": 1,
+      "nroTransaccion": "2610271418499045001"
+    },
+    "graphic": { "qr": "https://www.afip.gob.ar/fe/qr/?p=eyJ2ZXIiOjF9…" }
+    ```
+
+    **In Argentina, `document` is yours.** FIRE does not validate it, does not require any key and
+    does not convert types: it stores it **as is** and publishes it on the order and in the
+    events. If `puntoVenta` arrives as a number, it stays a number.
+
+    What FIRE needs to operate travels at the **root**:
+
+    | Field | Rule |
+    |---|---|
+    | `documentNumber` | **Required.** The visible number, already assembled and exactly as printed — for example `00001-00012345` (point of sale and number). FIRE prints it and stores it on the order without reformatting it |
+    | `issuedAt`, `authorizationMode` | As in every country |
+    | `graphic.qr` | The ARCA QR, already assembled |
+
+    <Note>
+      **`documentNumber` is also the key for cancellations.** To cancel, FIRE looks up the sale's
+      invoice by that number. That is why it is required: without it, a credit note would have
+      nothing to reference.
+    </Note>
+
+    Argentina **does not send `ambiente`**, so FIRE does not compare it against the vendor's
+    environment.
+  </Tab>
 </Tabs>
 
 #### Why the block belongs to the country and is not a common model
@@ -896,8 +950,9 @@ What was requested is already stated by `status`.
 the SEFAZ's `protocolo`. That arrives via the callback; declaring it here condemns it to always
 come as `null`.
 
-**It does not carry `authorizationMode` or `issuedAt`.** They are common to every country and live
-at the root of the response.
+**It does not carry `authorizationMode`, `issuedAt` or `documentNumber`.** They are common to every
+country and live at the root of the response. Ecuador and Colombia still send `numeroComprobante`
+inside their block; the one that counts is the root `documentNumber`.
 
 ### 5.3 `graphic` — what is printable
 
@@ -1122,8 +1177,9 @@ the wrong taxpayer is not fixed with a deploy.
 
 **`metadata` is opaque in both directions and cannot override domain fields.**
 
-**The authority's codes do not travel in the contract.** No `documentTypeCode: "01"`,
-`tipoComprobante` or equivalents. The provider derives them from `operation` + `country`.
+**The authority's codes do not travel in the request.** No `documentTypeCode: "01"`,
+`tipoComprobante` or equivalents. The provider derives them from `operation` + `country`. In the
+response, if your regime uses them, they go inside `document`.
 
 **The contract is versioned.** A breaking change requires a new version of the endpoint and a
 coexistence window; the meaning of an existing field is not changed.
@@ -1144,6 +1200,9 @@ Returning additional identifiers in the callback is optional and welcome, but no
   [5.2](#52-document--the-numbered-document). It is the same document told twice, and if the names
   diverge, reconciling both paths stops being comparing fields and becomes translating, which is
   where mistakes slip in.
+
+  The same goes for the number: **`documentNumber` goes at the root on both entry points.** In
+  Argentina, the callback carries the same `document` as the numbering.
 </Note>
 
 <Warning>
