@@ -5,7 +5,7 @@ description: "Inbound endpoint your fiscal provider POSTs to when a fiscal docum
 authMethod: "bearer"
 ---
 
-This endpoint is **inbound** — your fiscal provider POSTs to it whenever a fiscal document is authorized, rejected, denied, cancelled, or errors out. It is the **canonical, multi-country fiscal callback API** that accepts payloads from BR, CO, EC, CL, AR, VE. Fire validates the payload, stores the authority's verdict on the order, and dispatches `order.invoiced` / `order.reversed` to your Integration Flows — for every country. What you send here is what the event consumers read: see [From the callback to the events](#from-the-callback-to-the-events).
+This endpoint is **inbound** — your fiscal provider POSTs to it whenever a fiscal document is authorized, rejected or cancelled, or its printable representation is ready. It is the **canonical, multi-country fiscal callback API** that accepts payloads from BR, CO, EC, CL, AR, VE. Fire validates the payload, stores the authority's verdict on the order, and dispatches `order.invoiced` / `order.reversed` to your Integration Flows — for every country. What you send here is what the event consumers read: see [From the callback to the events](#from-the-callback-to-the-events).
 
 <Note>
   **This endpoint is asynchronous.** Fire authenticates, runs the source-of-truth + tenant guard, deduplicates, pre-marks the order as `processing`, and **enqueues** the callback — then returns **`202 Accepted`** with a `webhookEventId` (typically in under 100&nbsp;ms). The `fiscal_documents` / `orders.fiscal` update happens a moment later in a background worker (usually within ~2&nbsp;seconds). To check the processing outcome, poll [`GET /v1/webhooks/events/{webhookEventId}`](#checking-the-outcome). Client-fixable problems (bad payload, wrong `eventId`, wrong tenant, action reusing another event's id) are rejected **synchronously** with `4xx` **before** the `202`.
@@ -55,12 +55,18 @@ The body is a JSON object with these top-level fields. **Everything canonical li
   - `fiscal_graphic` — the provider is delivering the **representación gráfica** (the printable artifact) for the document. **It is not an approval** and not a terminal state — see [The `fiscal_graphic` state](#the-fiscal_graphic-state) below.
   - `authorized` — the fiscal authority approved the document
   - `cancelled` — a previously authorized document was cancelled
-  - `rejected` — the document was rejected (validation, schema, signature)
-  - `denied` — the authority denied the request (typically a permanent business rule failure)
-  - `error` — a non-recoverable error occurred at the provider or authority
+  - `rejected` — the document was not issued. Say why in `failure`: `scope: "FUNCTIONAL"` when the authority refused it, with its `code` and `message`; `scope: "TECHNICAL"` when a technical failure prevented it (provider or authority unreachable, timeout).
 
-  When `eventType` is `fiscal_graphic`, `authorized` or `cancelled`, the `document` field is **required**. When it is `rejected`, `denied`, or `error`, the `failure` field is **required** instead.
+  When `eventType` is `fiscal_graphic`, `authorized` or `cancelled`, the `document` field is **required**. When it is `rejected`, the `failure` field is **required** instead.
 </ParamField>
+
+<Warning>
+  **Change — 2026-11-08: `denied` and `error` are no longer accepted.** A callback with either one gets `400 VALIDATION_ERROR` and nothing is stored. Send `rejected` instead:
+  - instead of `denied`: `rejected` with `failure.code` and `failure.message` from the authority;
+  - instead of `error`: `rejected` with `failure.scope: "TECHNICAL"`.
+
+  Documents stored before this change may still show `denied` or `error` as their status in the events and in the order listing.
+</Warning>
 
 <ParamField body="providerEventId" type="string" required>
   Your provider's own id for this delivery. Stored for audit/forensics — **it is not the idempotency key**. Fire deduplicates on `(orderId, eventId)` — a different `eventType` on the same pair returns `409`, except `fiscal_graphic` and retries after a failure (see [Retries and rejected cancellations](#retries-and-rejected-cancellations)) — so you may safely send a fresh `providerEventId` on every retry without creating duplicates. Use the provider's native event id if available; otherwise a UUID.
@@ -175,7 +181,7 @@ What each regime calls its document goes in `docSubtype`, and that one is **open
 </ParamField>
 
 <ParamField body="failure" type="object">
-  Why there is NO document. **Required** when `eventType` is `rejected`, `denied` or `error`.
+  Why there is NO document. **Required** when `eventType` is `rejected`.
 
   **Formerly named `error`**, and it now carries the same shape as the fiscal numbering response.
 
@@ -184,7 +190,7 @@ What each regime calls its document goes in `docSubtype`, and that one is **open
       Optional provider/authority error code (e.g. `DIAN_42`, `cStat_204`).
     </ParamField>
     <ParamField body="scope" type="string">
-      `TECHNICAL` or `FUNCTIONAL`. This is what the channel branches on: with `TECHNICAL` the document may still be issued and the receipt prints "pending"; with `FUNCTIONAL` the authority rejected its content and it will not be issued.
+      `TECHNICAL` or `FUNCTIONAL`. This is what the channel branches on: with `TECHNICAL` the document may still be issued and the receipt prints "pending"; with `FUNCTIONAL` the authority rejected its content and it will not be issued. A technical failure is sent as `rejected` with `scope: "TECHNICAL"` — it replaces the retired `error`.
     </ParamField>
     <ParamField body="message" type="string" required>
       Human-readable message. At least 1 character.
@@ -207,7 +213,7 @@ What each regime calls its document goes in `docSubtype`, and that one is **open
 
 ### What is required, per event
 
-| Field | `authorized` | `cancelled` | `fiscal_graphic` | `rejected` · `denied` · `error` |
+| Field | `authorized` | `cancelled` | `fiscal_graphic` | `rejected` |
 |---|---|---|---|---|
 | `document` | required | required | required | — |
 | `documentType` | `SALE_INVOICE` | `CREDIT_NOTE` | — | — |
@@ -534,7 +540,7 @@ The required shape of `document` depends on `country`. **`document` carries ONLY
 
 - **It is not an approval.** Receiving `fiscal_graphic` says nothing about whether the authority approved the document. Fire stores the graphic and the document stays non-terminal.
 - **It is optional.** If your provider has no graphic for a document, send `authorized` (or any terminal state) **directly** — no `fiscal_graphic` is required first. Both flows are valid.
-- **It can share the `eventId` with its outcome.** The graphic and the terminal result belong to the same action, so you may send `fiscal_graphic` and then `authorized` / `rejected` / `denied` / `cancelled` reusing the **same** `eventId`. That is not a conflict and never returns `409` — see [Idempotency & scenarios](#idempotency-&-scenarios).
+- **It can share the `eventId` with its outcome.** The graphic and the terminal result belong to the same action, so you may send `fiscal_graphic` and then `authorized` / `rejected` / `cancelled` reusing the **same** `eventId`. That is not a conflict and never returns `409` — see [Idempotency & scenarios](#idempotency-&-scenarios).
 - **It requires `document` and a non-empty `graphic`.** The graphic representation is what the till prints — the QR, the TED, the encoded access key — and it travels in the root `graphic`. The PDF and the XML are the files of the authorized document and arrive with `authorized`.
 - **It triggers no outbound flow event.** `order.invoiced` and `order.reversed` remain tied to `authorized` and `cancelled` respectively. The graphic only changes the document's state.
 
@@ -573,11 +579,11 @@ The required shape of `document` depends on `country`. **`document` carries ONLY
 }
 ```
 
-### Negative outcomes (`rejected`, `denied`, `error`)
+### Negative outcome (`rejected`)
 
 For non-authorized states, omit `document` (or send it as `null`) and provide `failure`. `country` still applies (it validates routing); the document itself is not required because there is no authorized artifact — and neither are `documentType`/`docSubtype`, since there is no document to type.
 
-**A negative outcome stores no receipt data.** If you send `documentNumber`, `providerDocId`, `issuedAt`, `authorizedAt`, amounts, `pdfUrl`, `xmlUrl` or `graphic` with `rejected`, `denied` or `error`, Fire ignores them: only `documentType`, `docSubtype`, the country's `document` keys, `failure`, `provider` and `metadata` are kept. A document that already had receipt data keeps it.
+**A negative outcome stores no receipt data.** If you send `documentNumber`, `providerDocId`, `issuedAt`, `authorizedAt`, amounts, `pdfUrl`, `xmlUrl` or `graphic` with `rejected`, Fire ignores them: only `documentType`, `docSubtype`, the country's `document` keys, `failure`, `provider` and `metadata` are kept. A document that already had receipt data keeps it.
 
 ```json Rejected
 {
@@ -590,6 +596,7 @@ For non-authorized states, omit `document` (or send it as `null`) and provide `f
   "document": null,
   "failure": {
     "code": "DIAN_42",
+    "scope": "FUNCTIONAL",
     "message": "CUFE inválido"
   },
   "provider": { "name": "fiscal-provider", "version": "2026.09.1", "reference": "REF-CO-REJ-002" },
@@ -597,16 +604,33 @@ For non-authorized states, omit `document` (or send it as `null`) and provide `f
 }
 ```
 
+```json Rejected — technical failure
+{
+  "country": "CO",
+  "eventType": "rejected",
+  "providerEventId": "evt-co-3",
+  "occurredAt": "2026-04-26T14:32:11.000Z",
+  "orderId": "550e8400-e29b-41d4-a716-446655440000",
+  "eventId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "document": null,
+  "failure": {
+    "code": "TIMEOUT",
+    "scope": "TECHNICAL",
+    "message": "The authority did not answer in time"
+  }
+}
+```
+
 ### Retries and rejected cancellations
 
-**A failed issuance can be retried.** If you reported `rejected`, `denied` or `error` and then retry with the authority, send the new result with the **same `eventId`** — the issuance's. Fire accepts it and the flow continues normally: if the new result is `authorized`, `order.invoiced` is dispatched. If the retry fails again, the new reason replaces the previous one.
+**A failed issuance can be retried.** If you reported `rejected` and then retry with the authority, send the new result with the **same `eventId`** — the issuance's. Fire accepts it and the flow continues normally: if the new result is `authorized`, `order.invoiced` is dispatched. If the retry fails again, the new reason replaces the previous one.
 
 ```text
 rejected (eventId E1)  →  authorized (eventId E1)   ✓ applied, order.invoiced dispatched
-rejected (eventId E1)  →  error (eventId E1)        ✓ new reason stored
+rejected (eventId E1)  →  rejected (eventId E1)     ✓ new reason stored
 ```
 
-**Cancellation rejected by the authority.** When Fire asks you to void an authorized invoice (`order.cancelled` event), the order is left "cancelling". If the authority **does not accept the cancellation**, send `rejected`, `denied` or `error` with the `eventId` of **that** cancellation and the reason in `failure`. Fire reads it as a failed cancellation: **the invoice remains valid** (the order goes back to `authorized`, with the reason in `error`) and no event is dispatched. If you later retry and the authority accepts it, send `cancelled` with the same `eventId` and `order.reversed` is dispatched.
+**Cancellation rejected by the authority.** When Fire asks you to void an authorized invoice (`order.cancelled` event), the order is left "cancelling". If the authority **does not accept the cancellation**, send `rejected` with the `eventId` of **that** cancellation and the reason in `failure`. Fire reads it as a failed cancellation: **the invoice remains valid** (the order goes back to `authorized`, with the reason in `error`) and no event is dispatched. If you later retry and the authority accepts it, send `cancelled` with the same `eventId` and `order.reversed` is dispatched.
 
 ```text
 order.cancelled (eventId C1)  →  rejected (C1)   → the invoice stays authorized
@@ -692,6 +716,14 @@ The body carries **two distinct ids** so there is no ambiguity: `eventId` is the
 }
 ```
 
+```json 400 — eventType no longer accepted
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "eventType \"error\" is no longer accepted: send \"rejected\" with failure.scope \"TECHNICAL\""
+}
+```
+
 ```json 401 — missing or invalid API key
 {
   "success": false,
@@ -767,12 +799,13 @@ This is the full behavior matrix — every combination you can send:
 | New `(orderId, eventId)` | **`202`** · `duplicate: false` — enqueued |
 | Same `(orderId, eventId)` with the same `eventType` resent (any `providerEventId`) | **`202`** · `duplicate: true` — existing record returned, **not** re-enqueued |
 | `fiscal_graphic` then a terminal state on the **same `eventId`** | **`202`** both times — the graphic is a step of the same action, not a conflict |
-| A failure (`rejected`, `denied` or `error`) then another outcome with the **same `eventId`** (e.g. `authorized` after a retry) | **`202`** — it is a retry of the same issuance and is applied |
+| A `rejected` then another outcome with the **same `eventId`** (e.g. `authorized` after a retry) | **`202`** — it is a retry of the same issuance and is applied |
 | The same failure resent with the **same `eventId`** (e.g. a second `rejected` with another reason) | **`202`** · `duplicate: false` — processed, the new reason is stored. A failure dispatches no events, so reprocessing it is harmless |
 | Same `(orderId, eventId)` but **different terminal `eventType`** (e.g. `cancelled` echoing the `authorized`'s `eventId`) | **`409`** — rejected. Use the event that belongs to *this* action |
 | `eventId` not emitted by Fire for this `orderId` | **`400`** — wrong/invented `eventId` |
 | Order/event not under your API key's account + vendor | **`403`** |
 | Malformed payload (Zod), missing required fields | **`400`** |
+| `eventType` `denied` or `error` (retired on 2026-11-08) | **`400`** `VALIDATION_ERROR` — send `rejected` instead |
 | Missing / invalid API key | **`401`** |
 | Auth store momentarily unreachable | **`503`** — transient, **retry** |
 
@@ -805,7 +838,7 @@ The `202` only enqueues the event. A background worker then picks it up — with
 
 1. **The fiscal document is updated** with the new status and the authority's identifiers.
 2. **The verdict is stored on the order**, structured: canonical fields, `amounts`, `countryData` and `graphic` — and appended to the order's fiscal history.
-3. **An outbound event is dispatched, for every country**: `order.invoiced` for `eventType=authorized`, `order.reversed` for `eventType=cancelled`. Active Integration Flows for that event run and POST to your endpoint. `fiscal_graphic`, `rejected`, `denied` and `error` update the state but emit no event.
+3. **An outbound event is dispatched, for every country**: `order.invoiced` for `eventType=authorized`, `order.reversed` for `eventType=cancelled`. Active Integration Flows for that event run and POST to your endpoint. `fiscal_graphic` and `rejected` update the state but emit no event.
 
 ## From the callback to the events
 
