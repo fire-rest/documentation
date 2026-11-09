@@ -1,0 +1,611 @@
+---
+title: "Inyectar orden (partners)"
+api: "POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders"
+description: "Recibe en Fire una orden de X-MART Gateway, en formato Fire. La tienda sale del cuerpo y la cuenta se resuelve desde la tienda."
+authMethod: "bearer"
+---
+
+Inyecta en Fire una orden que llega desde **X-MART Gateway**. Es el adapter dedicado a ese
+integrador: el cuerpo es el mismo, en formato Fire, que el de
+[Crear orden (v1)](/es/api-reference/create-order), y la orden pasa por el mismo núcleo: mismas
+validaciones, mismo día de negocio, mismos impuestos, mismo documento fiscal y mismos
+[eventos](/es/events/overview).
+
+Lo que cambia respecto de `create-order`:
+
+- **La tienda sale del cuerpo.** Fire la busca por `store.code` + `store.vendorId`. La ruta no
+  lleva el código de tienda, aunque cuelga de `/stores/`.
+- **La cuenta se resuelve desde la tienda**, no desde la API key ni desde el `accountId` del
+  cuerpo.
+- **El canal numérico legacy se traduce.** Si la orden no trae `channel.code` pero sí `channelId`
+  (el id numérico con el que X-MART junta canal y servicio), Fire lo traduce a canal + servicio.
+  Si no lo reconoce, la orden se crea igual.
+- **La respuesta `201` trae `_adapter: "xmart"`.**
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire (`pk_live_...`) con scope `orders:write`. También se acepta
+  `Authorization: Bearer pk_live_...`; si llegan los dos, gana `x-api-key`. La key **debe estar
+  asociada a una cuenta y a un vendor**: una key sin cuenta se rechaza con `403`.
+</ParamField>
+
+<ParamField header="Content-Type" type="string" required>
+  `application/json`.
+</ParamField>
+
+## Cuerpo
+
+El cuerpo es el JSON de la orden, **sin envoltura** (no `{ "payload": { ... } }`). Los montos van
+como números decimales (`22.9`). Los campos que no figuran en esta página no provocan error.
+
+### Primer nivel
+
+<ParamField body="orderId" type="string" required>
+  Identificador de la orden en tu sistema (el **id externo**). Junto con `store.vendorId` es la
+  clave de duplicados: ver [Duplicados](#duplicados). Es el id que después usas para
+  [cancelar](/es/api-reference/cancel-order-partners).
+</ParamField>
+
+<ParamField body="orderCode" type="string" required>
+  Código legible de la orden. No puede venir vacío. **No es único**: dos órdenes pueden compartir
+  `orderCode`; los duplicados se detectan por `orderId`.
+</ParamField>
+
+<ParamField body="accountId" type="number" required>
+  Número de la cuenta. Tiene que ser un número (`100`, no `"100"`). Fire resuelve la cuenta de la
+  orden desde la tienda, no desde este campo.
+</ParamField>
+
+<ParamField body="account" type="string" required>
+  Nombre de la cuenta.
+</ParamField>
+
+<ParamField body="createdAt" type="string" required>
+  Fecha de la venta en tu sistema, por ejemplo `2026-04-17T15:41:55.000Z`. No define el día de
+  negocio: la orden toma el día de negocio abierto de la tienda.
+</ParamField>
+
+<ParamField body="selectedShippingMethod" type="string" required>
+  `delivery` o `pickup`, en minúscula. Cualquier otro valor (incluido `DELIVERY`) es `400`.
+</ParamField>
+
+<ParamField body="store" type="object" required>
+  La tienda de la orden.
+  <Expandable title="store">
+    <ParamField body="code" type="string" required>Código de la tienda. Junto con `vendorId`, identifica la tienda.</ParamField>
+    <ParamField body="vendorId" type="string | number" required>Vendor de la tienda. Hace falta porque un mismo código de tienda puede existir en varios países.</ParamField>
+    <ParamField body="id" type="string | number" required>Id de la tienda en tu sistema. Se guarda como referencia externa; no se usa para buscar la tienda.</ParamField>
+    <ParamField body="name" type="string">Nombre de la tienda. Solo se usa si la tienda no tiene nombre cargado en Fire.</ParamField>
+    <ParamField body="vendorName" type="string">Nombre del vendor, si Fire no lo tiene registrado.</ParamField>
+    <ParamField body="latitude" type="number">Latitud. Tiene prioridad sobre la ubicación cargada en Fire.</ParamField>
+    <ParamField body="longitude" type="number">Longitud. Ídem.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="client" type="object" required>
+  El cliente.
+  <Expandable title="client">
+    <ParamField body="uid" type="string" required>Identificador del cliente. Acepta `""`. En los canales `KIOSK`, `COUNTER` y `POS`, Fire lo trata como un cliente anónimo.</ParamField>
+    <ParamField body="name" type="string" required>Nombre.</ParamField>
+    <ParamField body="lastName" type="string" required>Apellido.</ParamField>
+    <ParamField body="email" type="string">Correo.</ParamField>
+    <ParamField body="phone" type="string">Teléfono.</ParamField>
+    <ParamField body="govIdType" type="string">Tipo de documento (`CPF`, `CNPJ`, `CEDULA`, `RUC`, `FINAL_CONSUMER`…).</ParamField>
+    <ParamField body="govIdNumber" type="string">Número de documento.</ParamField>
+    <ParamField body="govIdTypeExternal" type="string">Tipo de documento en tu sistema.</ParamField>
+    <ParamField body="externalId" type="string">Id del cliente en tu sistema.</ParamField>
+    <ParamField body="additionalInfo" type="object">Datos adicionales del cliente.</ParamField>
+    <ParamField body="billingInformation" type="object">Datos de facturación. Ver [Datos fiscales](#datos-fiscales).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="channel" type="object">
+  El canal de venta. Es la fuente principal del canal: ver [Canal y servicio](#canal-y-servicio).
+  <Expandable title="channel">
+    <ParamField body="code" type="string">Código del canal (`KIOSK`, `APP`, `WEB`…).</ParamField>
+    <ParamField body="uid" type="string">UID del canal.</ParamField>
+    <ParamField body="metadata" type="object">Metadata adicional.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="service" type="object">
+  El servicio (fulfillment) de la orden.
+  <Expandable title="service">
+    <ParamField body="code" type="string">Código del servicio (`DINE_IN`, `TAKEAWAY`, `DELIVERY`…).</ParamField>
+    <ParamField body="uid" type="string">UID del servicio.</ParamField>
+    <ParamField body="metadata" type="object">Metadata adicional.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="channelId" type="number">
+  Legacy. Id numérico de X-MART que junta canal y servicio. Solo se usa si falta `channel.code`.
+</ParamField>
+
+<ParamField body="channelName" type="string">
+  Legacy. Último recurso para el código de canal, si no hay `channel.code` ni `channelId`
+  reconocido.
+</ParamField>
+
+<ParamField body="device" type="object">
+  El equipo que tomó la orden.
+  <Expandable title="device">
+    <ParamField body="uid" type="string">UID del equipo. Identifica la estación de la orden.</ParamField>
+    <ParamField body="name" type="string">Nombre del equipo.</ParamField>
+    <ParamField body="platform" type="string">Plataforma (`android`, …).</ParamField>
+    <ParamField body="metadata" type="object">Metadata adicional (por ejemplo `ip`).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="operator" type="object">
+  La persona que tomó la orden en la caja.
+  <Expandable title="operator">
+    <ParamField body="uid" type="string">UID del operador.</ParamField>
+    <ParamField body="name" type="string">Nombre para mostrar del operador.</ParamField>
+    <ParamField body="session" type="object">
+      Sesión activa.
+      <Expandable title="session">
+        <ParamField body="uid" type="string">UID de la sesión.</ParamField>
+      </Expandable>
+    </ParamField>
+    <ParamField body="metadata" type="object">Metadata adicional del operador.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="orderComment" type="string">Comentario de la orden.</ParamField>
+
+<ParamField body="additionalInfo" type="object">
+  Datos adicionales. Fire lee `orderCode` (el código que muestra la cocina) y, para kioscos,
+  `kiosk.buzzer_name`, `kiosk.ip`, `kiosk.invoice_email` y `kiosk.invoice_print`.
+</ParamField>
+
+<ParamField body="shippingMethod" type="object">
+  Datos de entrega y retiro. Ver [Entrega y retiro](#entrega-y-retiro).
+</ParamField>
+
+<ParamField body="order" type="object" required>
+  `products[]` con al menos un producto. Ver [Productos](#productos).
+</ParamField>
+
+<ParamField body="payments" type="object" required>
+  `totals[]` y `paymentMethods[]`, con al menos un elemento cada uno. Ver [Pagos](#pagos).
+</ParamField>
+
+### Canal y servicio
+
+La fuente principal es `channel.code` para el canal y `service.code` para el servicio. Si falta
+`channel.code` y llega `channelId`, Fire traduce ese id numérico a canal + servicio según la
+configuración de canales de Fire. Si no hay `channel.code`, ni `channelId` reconocido, el canal
+sale de `channelName`; y si no hay `service.code`, el servicio sale de lo traducido o de
+`selectedShippingMethod`.
+
+La resolución del canal **nunca rechaza la orden**: un `channelId` que Fire no reconoce no es un
+error.
+
+### Productos
+
+`order.products[]` necesita al menos un producto.
+
+<ParamField body="order.products[]" type="object[]" required>
+  <Expandable title="products[]">
+    <ParamField body="productId" type="string" required>Id del producto.</ParamField>
+    <ParamField body="product" type="string" required>Nombre del producto.</ParamField>
+    <ParamField body="quantity" type="integer" required>Cantidad. Entero positivo.</ParamField>
+    <ParamField body="price" type="object" required>
+      `unitPrice` y `totalPrice`, los dos obligatorios. `totalPrice` va ya multiplicado por
+      `quantity`.
+      <Expandable title="unitPrice / totalPrice">
+        <ParamField body="currencyCode" type="string" required>Moneda.</ParamField>
+        <ParamField body="total" type="number" required>Precio con impuestos.</ParamField>
+        <ParamField body="subtotalWithoutTaxes" type="number">Precio sin impuestos. Es la base del impuesto y del descuento.</ParamField>
+        <ParamField body="discountsValue" type="number">Descuento de la línea, como monto.</ParamField>
+        <ParamField body="taxesPercentage" type="number">Porcentaje de impuesto (camino de un solo impuesto). Con este campo, Fire recalcula el impuesto sobre la base.</ParamField>
+        <ParamField body="taxValue" type="number">Monto total de impuestos.</ParamField>
+        <ParamField body="taxes" type="object[]">
+          Impuestos detallados (`name`, `rate`, `amount`, `base`, `metadata`). Si vienen, tienen
+          prioridad sobre `taxesPercentage`.
+        </ParamField>
+      </Expandable>
+    </ParamField>
+    <ParamField body="modifierGroups" type="object[]">
+      Grupos de modificadores. Cada grupo lleva `id` (obligatorio), `description` y
+      `selectedModifiers[]`; **cada modificador tiene la misma forma que un producto**
+      (`productId`, `product`, `quantity`, `price`) y puede tener sus propios `modifierGroups`.
+      El precio de un modificador es aparte del de su producto.
+    </ParamField>
+    <ParamField body="type" type="string" default="PRODUCT">`PRODUCT`, `COMBO` o `PACKAGING`; en modificadores, `MODIFIER` o `PRODUCT`.</ParamField>
+    <ParamField body="rewardId" type="string | null">Código de la recompensa o promoción, si aplica.</ParamField>
+    <ParamField body="productComment" type="string">Comentario del producto.</ParamField>
+    <ParamField body="additionalInfo" type="object">Códigos del producto, por ejemplo `externalCode`, NCM o CFOP.</ParamField>
+  </Expandable>
+</ParamField>
+
+### Pagos
+
+<ParamField body="payments.totals[]" type="object[]" required>
+  Totales de la orden. Al menos uno.
+  <Expandable title="totals[]">
+    <ParamField body="currencyCode" type="string" required>Moneda. Una entrada en `Points` (canje de puntos) no cuenta como total de la orden.</ParamField>
+    <ParamField body="total" type="number" required>Total de la orden, sin envío ni cargos extra.</ParamField>
+    <ParamField body="subtotalWithoutTaxes" type="number">Subtotal sin impuestos.</ParamField>
+    <ParamField body="taxValue" type="number">Impuestos.</ParamField>
+    <ParamField body="discountsValue" type="number">Descuento de la orden.</ParamField>
+    <ParamField body="taxes" type="object[]">Impuestos detallados (`amount` y `base`).</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="payments.paymentMethods[]" type="object[]" required>
+  Los pagos de la orden. Al menos uno.
+  <Expandable title="paymentMethods[]">
+    <ParamField body="method" type="string">
+      **El método de pago**: el código del método de la cuenta, en mayúscula (`CASH`, `CREDIT`,
+      `DEBIT`, `DIGITAL`, `IFOOD`…). Opcional, pero **recomendado**. Si falta, Fire lo deduce del
+      catálogo de procesadores de la cuenta y, si el procesador no está ahí, usa `processor` en
+      mayúscula. Nunca se rechaza una orden por esto.
+    </ParamField>
+    <ParamField body="processor" type="string" required>
+      **Quién procesó el cobro**: por ejemplo `PIX` o el agregador. Se guarda tal cual, sin pasar a
+      mayúscula, y viaja así en los eventos. Los procesadores de cada método se publican en
+      [Configuración de métodos de pago (v2)](/es/api-reference/payment-methods-config-v2).
+    </ParamField>
+    <ParamField body="currencyCode" type="string" required>Moneda.</ParamField>
+    <ParamField body="transactionStatus" type="string" required>
+      Estado del pago. `APPROVED` lo aprueba; decide el estado de la orden: ver
+      [Estado de la orden](#estado-de-la-orden).
+    </ParamField>
+    <ParamField body="totalBill" type="number" required>Monto cobrado con este pago. Número, no string.</ParamField>
+    <ParamField body="changeAmount" type="number | null">
+      Vuelto. Acepta un número o un string numérico (`"38.03"`); negativo es `400`. Para pagos
+      que no son en efectivo, `0`.
+    </ParamField>
+    <ParamField body="customerCashAmount" type="string | number">Efectivo entregado por el cliente.</ParamField>
+    <ParamField body="exactPayment" type="boolean" default="false">Si el cliente pagó el monto exacto.</ParamField>
+    <ParamField body="paymentMethodCode" type="string">
+      Código del método en tu sistema. `AGGREGATOR_DISCOUNT` marca un descuento que paga el
+      agregador: ver abajo. Si falta, se usa `externalPaymentMethodId`.
+    </ParamField>
+    <ParamField body="externalPaymentMethodId" type="string">Alternativa a `paymentMethodCode`.</ParamField>
+    <ParamField body="transactionId" type="string">Id de la transacción.</ParamField>
+    <ParamField body="referenceNumber" type="string | null">Número de referencia.</ParamField>
+    <ParamField body="transactionType" type="string">Tipo de transacción.</ParamField>
+    <ParamField body="authorizationCode" type="string">Código de autorización.</ParamField>
+    <ParamField body="transactionDate" type="object">Fecha de la transacción: `date`, `timeZoneName`, `timeZoneType`.</ParamField>
+    <ParamField body="mid" type="string | null">MID del comercio.</ParamField>
+    <ParamField body="tid" type="string | null">TID del terminal.</ParamField>
+    <ParamField body="voucher" type="string | null">Comprobante.</ParamField>
+    <ParamField body="acquirer" type="object">Adquirente: `code`, `name`, `cnpj` y otras claves que necesites.</ParamField>
+    <ParamField body="card" type="object | null">Datos de la tarjeta (por ejemplo `brand`, `bin`).</ParamField>
+    <ParamField body="cardBrand" type="string | null">Marca de la tarjeta. Se guarda dentro de `card`.</ParamField>
+    <ParamField body="externalCardBrandId" type="string | null">Id de la marca en el procesador. Se guarda dentro de `card`.</ParamField>
+    <ParamField body="idAuth" type="string | null">Número de autorización (NFC-e).</ParamField>
+    <ParamField body="receiptCustomer" type="string | null">Vía del cliente del comprobante.</ParamField>
+    <ParamField body="receiptMerchant" type="string | null">Vía del comercio del comprobante.</ParamField>
+    <ParamField body="additionalInfo" type="object">Datos adicionales del pago.</ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="payments.shippingCost[]" type="object[]">
+  Costo de envío (`total`, `subtotalWithoutTaxes`, `taxValue`, `currencyCode`…). Tiene que ser un
+  array; otro valor se ignora.
+</ParamField>
+
+<ParamField body="payments.extraCharges[]" type="object[]">Cargos extra, con la misma forma.</ParamField>
+
+<ParamField body="payments.discounts[]" type="object[]">Descuentos de la orden.</ParamField>
+
+<ParamField body="payments.metadata.fiscal" type="object">
+  Totales fiscales de Brasil (`vNF`, `vBC`, `vICMS`, `vPIS`, `vCOFINS`, `vTotTrib`…), como números.
+</ParamField>
+
+**Un PIX** va como `method: "DIGITAL"` + `processor: "PIX"`:
+
+```json
+{ "method": "DIGITAL", "processor": "PIX", "currencyCode": "BRL", "transactionStatus": "APPROVED", "totalBill": 22.9, "changeAmount": 0 }
+```
+
+**Descuento del agregador.** Una entrada con `paymentMethodCode: "AGGREGATOR_DISCOUNT"` no es un
+pago real: es un descuento que financia el agregador (por ejemplo iFood). Va en
+`paymentMethods[]` junto a los pagos reales y su `totalBill` cuenta en la suma de pagos; queda
+fuera del cierre de caja y del documento fiscal.
+
+**Efectivo.** En un pago `CASH` con `customerCashAmount`, el efectivo entregado tiene que cubrir
+la cuenta y `changeAmount` tiene que ser la diferencia.
+
+### Entrega y retiro
+
+`shippingMethod` lleva uno o los dos bloques; Fire guarda los que lleguen. El costo de envío no va
+aquí, va en `payments.shippingCost[]`.
+
+<ParamField body="shippingMethod.delivery" type="object">
+  Todos los campos son opcionales: `latitude`, `longitude`, `reference`, `country`, `city`,
+  `number`, `addressName`, `deliveryDate`, `mainStreet`, `secondaryStreet`, `propertyId`,
+  `zipCode`, `observationsAddress`, `numberContactAddress`, `nickName` y
+  `metadata.deliveryConfirmationCode`.
+</ParamField>
+
+<ParamField body="shippingMethod.pickup" type="object">
+  Todos los campos son opcionales: `storeAddress`, `scheduledTime`, `pickupDate`, `prepDate`,
+  `prepTimeUnit`, `prepTime`, `carryOutOptions`, `propertyId`.
+</ParamField>
+
+### Datos fiscales
+
+Los datos del comprador para el documento fiscal salen de `client.billingInformation` y, si ahí
+no están, de `client`:
+
+| Clave de `billingInformation` | Uso |
+|---|---|
+| `govIdType` | Tipo de documento. Tiene prioridad sobre `client.govIdType` |
+| `govIdNumber` | Número de documento. Tiene prioridad sobre `client.govIdNumber` |
+| `name`, luego `businessName` | Nombre. Si falta, `client.name` + `client.lastName` |
+| `email` | Correo. Si falta, `client.email` |
+| `address` | Dirección |
+
+El teléfono sale solo de `client.phone`.
+
+**Consumidor final.** Si el tipo es `FINAL_CONSUMER` o el documento no es válido —en Brasil, CPF o
+CNPJ de 11 o 14 dígitos; en los demás países, entre 6 y 13 caracteres alfanuméricos—, Fire trata
+al comprador como consumidor final y descarta lo que vino del canal (`CONSUMIDOR`,
+`00000000000`, correos genéricos). Si la cuenta tiene configurados datos de consumidor final,
+Fire usa esos.
+
+## Estado de la orden
+
+El `transactionStatus` de los pagos (sin distinguir mayúsculas) decide el estado con que nace la
+orden y qué evento sale:
+
+| `transactionStatus` de los pagos | `status` | `payment_status` | Evento |
+|---|---|---|---|
+| Todos `APPROVED` | `COMPLETED` | `SUCCEEDED` | [`order.completed`](/es/events/order-completed) |
+| Alguno `REJECTED`, `FAILED` o `CANCELLED` | `OPEN` | `FAILED` | [`order.opened`](/es/events/order-opened) |
+| Otro (`PENDING`, `AUTHORIZED`…) | `OPEN` | `PENDING` | [`order.opened`](/es/events/order-opened) |
+
+Solo `APPROVED` aprueba: un pago `AUTHORIZED` deja la orden abierta. Toda orden nueva dispara
+exactamente uno de los dos eventos. Si el evento no se puede encolar, la orden se crea igual.
+
+## Duplicados
+
+La clave de duplicados es **`orderId` + `store.vendorId`**. Si reenvías una orden que ya entró, la
+respuesta es `409` con `code: "DUPLICATE_ORDER"` y `data` trae `id`, `externalOrderId` y `status`
+de la orden existente. **Trátalo como "ya ingerida", no como una falla:** no se reescribe la orden
+ni se vuelven a emitir eventos.
+
+El mismo `orderId` con otro `store.vendorId` es otra orden. No hay header `Idempotency-Key`.
+
+<Note>
+  Las reglas de validación de la orden corren antes del chequeo de duplicado. Si una orden entró
+  cuando una regla todavía no rechazaba y la reenvías después de que se active, recibes el `400`
+  de esa regla en lugar del `409`.
+</Note>
+
+## Respuesta
+
+<ResponseField name="success" type="boolean">`true` cuando la orden se creó.</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="id" type="string">ID de la orden en Fire.</ResponseField>
+    <ResponseField name="external_order_id" type="string">El `orderId` que enviaste.</ResponseField>
+    <ResponseField name="status" type="string">`COMPLETED` u `OPEN`.</ResponseField>
+    <ResponseField name="payment_status" type="string">`SUCCEEDED`, `PENDING` o `FAILED`.</ResponseField>
+    <ResponseField name="business_day_date" type="string">Día de negocio abierto de la tienda, `YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="created_at" type="string">Fecha de creación en Fire (ISO 8601).</ResponseField>
+    <ResponseField name="_adapter" type="string">Siempre `"xmart"`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+Las claves del `201` van en snake_case; el `data` del `409` de duplicado, en camelCase.
+
+## Errores
+
+Todo error trae `success: false`, `error` (la categoría) y `message`; algunos traen `code`, `data`
+o `details`. Este endpoint **no responde `422`**: los rechazos de negocio son `400`
+`BUSINESS_ERROR`.
+
+| HTTP | `error` / `code` | Cuándo |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | Falta `orderCode` o viene vacío; también con cuerpo vacío o JSON inválido. `message`: `orderCode is required and must be a non-empty string` |
+| `400` | `VALIDATION_ERROR` | El cuerpo no tiene el formato. `details` lista cada problema con su `path` |
+| `401` | `UNAUTHORIZED` | Falta la API key, no empieza con `pk_live_`, o está vencida o revocada |
+| `403` | `FORBIDDEN` | API key sin scope `orders:write`, o no asociada a una cuenta |
+| `404` | `NOT_FOUND` | No hay tienda con ese `store.code` + `store.vendorId`. `message`: `Store not found with ID <code>` |
+| `400` | `BUSINESS_ERROR` | Tienda inactiva o no publicada. `message`: `Store <code> is not active or not published. …` |
+| `400` | `BUSINESS_ERROR` | Día de negocio cerrado. `message`: `Store <code> business day is not open. …` |
+| `400` | `BUSINESS_ERROR` + `details.code: ORDER_INVARIANT_VIOLATION` | La orden no cumple una regla de validación activada para tu vendor. Ver abajo |
+| `409` | `CONFLICT` / `DUPLICATE_ORDER` | La orden ya existía para ese vendor. Ver [Duplicados](#duplicados) |
+| `400` | `DOMAIN_ERROR` o `BUSINESS_ERROR` con `message` que empieza por `Failed to` | Falla interna de Fire, no de tu orden |
+| `503` | `SERVICE_UNAVAILABLE` | No se pudo verificar la API key en ese momento |
+| `500` | `INTERNAL_SERVER_ERROR` | Error inesperado |
+
+### Rechazo por reglas de validación
+
+Cada vendor puede activar, por canal, reglas que revisan la orden antes de guardarla. Una orden que
+pasa la validación del formato puede igual rechazarse aquí. El rechazo no agrega claves a la raíz:
+todo lo nuevo va en `details`.
+
+| `details.violations[].category` | Qué pasó |
+|---|---|
+| `TAX_MISSING` | Un producto o modificador con precio no trae impuestos |
+| `TAX_MALFORMED` | Impuestos incompletos (sin `name`, `rate`, `amount` o `base`), que no suman el total de impuestos, o el mismo impuesto escrito de dos formas |
+| `ORDER_NOT_BALANCED` | Los productos no suman el total de la orden |
+| `PRODUCT_NOT_MAPPED` | Un producto sin `additionalInfo.externalCode` |
+| `CASH_CHANGE_INVALID` | Un pago en efectivo con el vuelto incoherente |
+
+Cada violación trae `invariant`, `category` (estable, para automatizar), `path` (la ruta dentro del
+cuerpo que enviaste, como `order.products[0]`), `expected` y `received` en decimales, y `message`.
+En `ORDER_NOT_BALANCED`, `lines` dice cuánto suma cada producto.
+
+<Note>
+  Pasar la validación del formato no garantiza que la orden se acepte. El ejemplo de esta página no
+  trae `taxes[]` por producto: con la regla de impuestos activada para tu vendor, se rechazaría con
+  `TAX_MISSING`.
+</Note>
+
+```json
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "message": "Order rejected — 1 problem. [I6] order.products: the products add up to 73.70 but the order total is 75.70 (difference 2.00). A product, an option or a price is missing.",
+  "details": {
+    "code": "ORDER_INVARIANT_VIOLATION",
+    "orderCode": "AGG-KEETA-K066-…",
+    "externalOrderId": "…",
+    "violations": [
+      { "invariant": "I6", "category": "ORDER_NOT_BALANCED", "path": "order.products", "expected": "75.70", "received": "73.70",
+        "message": "…", "lines": [{ "path": "order.products[0]", "externalCode": "30033", "name": "…", "total": "73.70" }] }
+    ]
+  }
+}
+```
+
+### Cuándo reintentar
+
+| Respuesta | Qué hacer |
+|---|---|
+| `201` | Nada. |
+| `409` `DUPLICATE_ORDER` | **No reintentar**: la orden ya está. Usar `data.id`. |
+| `400` `VALIDATION_ERROR`, `400` con `ORDER_INVARIANT_VIOLATION`, `401`, `403`, `404` | Corregir y reenviar con el mismo `orderId`. Un reintento idéntico falla igual. |
+| `400` `BUSINESS_ERROR` por tienda inactiva o día cerrado | Reintentar cuando cambie el estado. Tras abrir el día, la tienda puede tardar hasta 30 segundos en aceptar órdenes. |
+| `400` con `message` que empieza por `Failed to`, `503`, `500` | Reintentar con backoff. Es seguro: si la orden ya había entrado, la respuesta es `409`. |
+
+<Info>
+  Toda petición autenticada queda registrada en Fire con su cuerpo y su resultado, también las
+  rechazadas.
+</Info>
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Cancelar orden (partners)" icon="ban" href="/es/api-reference/cancel-order-partners">
+    Cancela una orden inyectada por su `orderId`.
+  </Card>
+  <Card title="Elegibilidad de cancelación" icon="circle-question" href="/es/api-reference/cancellation-eligibility">
+    Pregunta si la orden se puede cancelar antes de intentarlo.
+  </Card>
+  <Card title="Motivos de cancelación" icon="list" href="/es/api-reference/cancellation-reasons">
+    Los motivos que hay que ofrecer al cancelar.
+  </Card>
+  <Card title="Crear orden (v1)" icon="plus" href="/es/api-reference/create-order">
+    El mismo cuerpo y el mismo núcleo, fuera del adapter de X-MART.
+  </Card>
+  <Card title="Configuración de métodos de pago (v2)" icon="credit-card" href="/es/api-reference/payment-methods-config-v2">
+    Qué `method` y qué `processor` mandar en cada pago.
+  </Card>
+</CardGroup>
+
+<RequestExample>
+```bash cURL
+curl -X POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders \
+  -H "x-api-key: $FIRE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderId": "7805610b-97cf-461f-a2d6-d86f63a80833",
+    "orderCode": "OC-br-001-1778030579028-fb449125",
+    "accountId": 100,
+    "account": "KFC Brasil",
+    "createdAt": "2026-04-17T15:41:55.000Z",
+    "selectedShippingMethod": "pickup",
+    "client": {
+      "uid": "N6TUwtuXFDOPtaq0rbY1njCXsPH2",
+      "name": "CONSUMIDOR",
+      "lastName": "FINAL",
+      "phone": "2222222",
+      "govIdType": "FINAL_CONSUMER",
+      "govIdNumber": "00000000000"
+    },
+    "store": {
+      "id": "a4019cad-bbac-4269-9f8d-f29654e92c45",
+      "code": "BR-SP-001",
+      "vendorId": "100.2.1",
+      "name": "KFC EXP SHOPPING VILA OLÍMPIA V3"
+    },
+    "channel": { "uid": "c784d4ba-23c7-4929-b2f0-1a1960d9cdc2", "code": "KIOSK", "metadata": {} },
+    "service": { "uid": "726c4892-48b9-45da-b066-2a8e83d2cb78", "code": "DINE_IN", "metadata": {} },
+    "device": { "uid": "38e17b63dead6d59", "name": "KIOSK", "platform": "android", "metadata": { "ip": "10.32.43.194" } },
+    "operator": { "uid": "16ca9b25-fba0-4705-bfb4-ef1f1968", "name": "Operador 1", "session": { "uid": "sess-ef1f1968" } },
+    "order": {
+      "products": [
+        {
+          "productId": "39d1bd7fcd45c52f0c824364c2c0cfc402bd72b046cfaaec276a0131908dbf20",
+          "product": "Crunch Salad + Batata Pequena + Refri",
+          "quantity": 1,
+          "price": {
+            "unitPrice": { "currencyCode": "BRL", "total": 22.9, "subtotalWithoutTaxes": 19.74 },
+            "totalPrice": { "currencyCode": "BRL", "total": 22.9, "subtotalWithoutTaxes": 19.74 }
+          },
+          "modifierGroups": []
+        }
+      ]
+    },
+    "payments": {
+      "totals": [
+        { "currencyCode": "BRL", "total": 22.9, "taxValue": 3.16, "subtotalWithoutTaxes": 19.74 }
+      ],
+      "paymentMethods": [
+        {
+          "method": "DIGITAL",
+          "processor": "PIX",
+          "currencyCode": "BRL",
+          "transactionStatus": "APPROVED",
+          "totalBill": 22.9,
+          "changeAmount": 0,
+          "transactionId": "BR-K082-94-1776440456"
+        }
+      ],
+      "metadata": {
+        "fiscal": {
+          "vBC": 22.9, "vNF": 22.9, "vICMS": 0.92, "vPIS": 0.38, "vCOFINS": 1.74,
+          "vIBSUF": 0.01, "vIBSMun": 0, "vCBS": 0.11, "vTotTrib": 3.16
+        }
+      }
+    }
+  }'
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "success": true,
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "external_order_id": "7805610b-97cf-461f-a2d6-d86f63a80833",
+    "status": "COMPLETED",
+    "payment_status": "SUCCEEDED",
+    "business_day_date": "2026-04-17",
+    "created_at": "2026-04-17T15:41:56.120Z",
+    "_adapter": "xmart"
+  }
+}
+```
+
+```json 400
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "message": "Store BR-SP-001 business day is not open. Current BD date: 2026-04-16 (closed)"
+}
+```
+
+```json 404
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "message": "Store not found with ID BR-SP-001"
+}
+```
+
+```json 409
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "DUPLICATE_ORDER",
+  "message": "Order with external id 7805610b-97cf-461f-a2d6-d86f63a80833 already exists for this vendor.",
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "externalOrderId": "7805610b-97cf-461f-a2d6-d86f63a80833",
+    "status": "COMPLETED"
+  }
+}
+```
+</ResponseExample>
