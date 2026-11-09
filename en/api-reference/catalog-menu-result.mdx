@@ -1,0 +1,156 @@
+---
+title: "Menu result"
+api: "POST https://app.fire.rest/api/v1/webhooks/channel-provider/menu-result"
+description: "Inbound endpoint your system POSTs to in order to report the final result of a menu Fire sent you with menu.updated. Fire marks that delivery as synced or failed."
+authMethod: "bearer"
+---
+
+This endpoint is **inbound**: your system POSTs to it when it finishes processing a [`menu.updated`](/en/events/menu-updated) that Fire sent it. With that, the delivery of that terna (store × channel × fulfillment type) becomes **Synced** or **Failed** in the Backoffice, with the detail you send.
+
+## When to use it
+
+There are two ways to work with a catalog delivery. It is set per integration, on the channel provider in the Backoffice, with the **Confirms by callback** option (per kind: menu, products, store):
+
+| How your system works | What you do | How the delivery looks |
+|---|---|---|
+| Your response to the delivery **is the final result** (`2xx` = applied, `4xx`/`5xx` = rejected) | Nothing else. | **Synced** with the `2xx` response; **Failed** otherwise. |
+| Your response only says **"received, processing"** — *Confirms by callback* enabled for menu | When you finish, you call this endpoint. | **Pending** until the callback; **Synced** with `success`, **Failed** with `failed`. |
+
+While the callback has not arrived, the delivery shows **Pending**. It does not close by itself: each callback closes only its own delivery, and a late one is still applied.
+
+<Note>
+  **This endpoint is asynchronous.** Fire authenticates, validates the `eventId`, deduplicates and **queues** the result — then responds **`202 Accepted`**. The delivery is updated a moment later. Problems you can fix (invalid body, unknown `eventId` or one of another kind, wrong key) are rejected **synchronously** with `4xx` **before** the `202`.
+</Note>
+
+## Authentication
+
+This endpoint requires a **vendor-scoped API key with the `webhooks:catalog` scope** (bound to the account **and** the vendor). The key can only report results of deliveries of its own vendor.
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `webhooks:catalog` scope. Generate it from **Developers → API Management** for the account and vendor whose deliveries you will report.
+</ParamField>
+
+## Request body
+
+<ParamField body="eventId" type="string" required>
+  UUID of the delivery: the `event.id` of the envelope of the `menu.updated` you received. Echo it exactly; never make it up.
+
+  - An `eventId` that is not from a Fire delivery is rejected with `400`. Fire recognizes them for **at least 7 days**: respond within that window.
+  - The `eventId` of another kind of delivery (for example, a store's) is rejected with `400`: each kind goes to its own endpoint.
+  - An `eventId` of another vendor is rejected with `403`.
+  - A **redelivery** of the same menu arrives with a new `event.id`: respond with that one.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  Final result: `success` or `failed`.
+</ParamField>
+
+<ParamField body="message" type="string">
+  Text for the operator, up to 2000 characters. Shown in the Backoffice next to the delivery.
+</ParamField>
+
+<ParamField body="errors" type="object[]">
+  With `failed`, the detail per product. Up to 2000 elements.
+
+  <Expandable title="errors[]">
+    <ParamField body="productId" type="string">
+      Id of the product that failed (`products[].id` in the menu). Optional: an error of the whole menu goes without `productId`.
+    </ParamField>
+    <ParamField body="code" type="string" required>
+      Your error code (up to 100 characters), for example `PRICE_MISSING`.
+    </ParamField>
+    <ParamField body="message" type="string" required>
+      Error description, up to 2000 characters.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```json Success
+{
+  "eventId": "8f2c1d0e-3b4a-4c5d-9e6f-7a8b9c0d1e2f",
+  "status": "success"
+}
+```
+
+```json Failure
+{
+  "eventId": "8f2c1d0e-3b4a-4c5d-9e6f-7a8b9c0d1e2f",
+  "status": "failed",
+  "message": "Menu rejected",
+  "errors": [
+    { "productId": "1f2a3b4c-5d6e-4f7a-8b9c-0d1e2f3a4b5c", "code": "PRICE_MISSING", "message": "Product has no price" }
+  ]
+}
+```
+
+</CodeGroup>
+
+```bash
+curl -X POST "https://app.fire.rest/api/v1/webhooks/channel-provider/menu-result" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: pk_live_xxx" \
+  -d '{ "eventId": "8f2c1d0e-3b4a-4c5d-9e6f-7a8b9c0d1e2f", "status": "success" }'
+```
+
+The result closes **only** that delivery: that terna, in your integration. The vendor's other deliveries do not change.
+
+## Response
+
+<ResponseField name="success" type="boolean">`true`.</ResponseField>
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="received" type="boolean">`true`: the result was recorded.</ResponseField>
+    <ResponseField name="duplicate" type="boolean">`true` if you had already sent the same `eventId` with the same `status`. It has no effect.</ResponseField>
+    <ResponseField name="eventId" type="string">The `eventId` you sent.</ResponseField>
+    <ResponseField name="webhookEventId" type="string">Id of the callback record in Fire. Keep it if you need to ask for support.</ResponseField>
+    <ResponseField name="status" type="string">`queued`: the result is applied a moment later.</ResponseField>
+    <ResponseField name="firstReceivedAt" type="string">When it was first received (ISO 8601 UTC).</ResponseField>
+    <ResponseField name="message" type="string">Informational text.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json 202 Accepted
+{
+  "success": true,
+  "data": {
+    "received": true,
+    "duplicate": false,
+    "eventId": "8f2c1d0e-3b4a-4c5d-9e6f-7a8b9c0d1e2f",
+    "webhookEventId": "c0ffee00-1234-4abc-9def-000000000001",
+    "status": "queued",
+    "firstReceivedAt": "2026-11-09T20:02:05.120Z",
+    "message": "Event accepted and queued for processing."
+  }
+}
+```
+
+### Response codes
+
+| HTTP | When | Retry? |
+|---|---|---|
+| `202` | Recorded (new or repeated). | No. |
+| `400` | Invalid body, `eventId` unknown, no longer recognized or of another kind of delivery. | No: fix the request. |
+| `401` | The API key is missing or invalid. | No: check the key. |
+| `403` | The key lacks `webhooks:catalog`, is not bound to a vendor, or the delivery belongs to another vendor. | No: check the key. |
+| `5xx` | Fire error. | Yes, with growing backoff. |
+
+## Repeats and result changes
+
+- **The same callback repeated** (same `eventId` and same `status`) has no effect: it responds `202` with `"duplicate": true`. You can retry safely.
+- **Another result for the same `eventId`** (for example, `success` and then `failed`) replaces the previous one: **the latest wins**.
+- Each result counts once per `eventId`: if you report `success`, then `failed` and `success` again, the third is a duplicate and `failed` stays. Report the final result only once.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="menu.updated" icon="utensils" href="/en/events/menu-updated">
+    The event whose result this endpoint reports.
+  </Card>
+  <Card title="Product result" icon="tag" href="/en/api-reference/catalog-product-result">
+    The same mechanism for `product.updated`.
+  </Card>
+</CardGroup>
