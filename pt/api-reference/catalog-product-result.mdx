@@ -1,0 +1,118 @@
+---
+title: "Resultado de produtos"
+api: "POST https://app.fire.rest/api/v1/webhooks/channel-provider/product-result"
+description: "Endpoint de entrada ao qual o seu sistema faz POST para informar o resultado final de uma mudança de produtos que o Fire enviou com product.updated, no geral ou por produto e canal."
+authMethod: "bearer"
+---
+
+Este endpoint é **de entrada**: o seu sistema faz POST nele quando termina de processar um [`product.updated`](/pt/events/product-updated) que o Fire enviou (um desligamento, um religamento ou uma mudança de preço). Com isso, a entrega fica **Synced** ou **Failed** no Backoffice — e a tela Esgotados mostra o resultado de cada produto.
+
+## Quando usar
+
+Usa-se quando a sua integração tem a opção **Confirma por callback** ativada para produtos, no provedor de canal do Backoffice. Caso contrário, a sua resposta `2xx` à entrega já é o resultado final e não é preciso chamar nada. O detalhe dos dois modos está em [Resultado de cardápio → Quando usar](/pt/api-reference/catalog-menu-result#quando-usar).
+
+<Note>
+  **Este endpoint é assíncrono.** Responde **`202 Accepted`** assim que o resultado é registrado; a entrega é atualizada um instante depois. Os problemas que você pode corrigir são rejeitados com `4xx` **antes** do `202`.
+</Note>
+
+## Autenticação
+
+<ParamField header="x-api-key" type="string" required>
+  A sua API key vendor-scoped do Fire com scope `webhooks:catalog`, vinculada à conta e ao vendor. Só pode informar resultados de entregas do seu próprio vendor.
+</ParamField>
+
+## Corpo da requisição
+
+<ParamField body="eventId" type="string" required>
+  UUID da entrega: o `event.id` do envelope do `product.updated` que você recebeu. Um `eventId` desconhecido ou de outro tipo de entrega é rejeitado com `400` (o Fire os reconhece por **pelo menos 7 dias**); um de outro vendor, com `403`. Uma reentrega chega com um `event.id` novo: responda com esse.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  Resultado geral: `success` ou `failed`.
+</ParamField>
+
+<ParamField body="message" type="string">
+  Texto para o operador, até 2000 caracteres.
+</ParamField>
+
+<ParamField body="results" type="object[]">
+  O resultado por produto e canal, até 5000 elementos. **Sem `results`, o `status` geral vale para toda a entrega.**
+
+  <Expandable title="results[]">
+    <ParamField body="productId" type="string" required>
+      Id do produto (`products[].id` do evento).
+    </ParamField>
+    <ParamField body="channel" type="string" required>
+      Código do canal, como vem em `targets[].channels[].channel.code` (por exemplo, `KIOSK`).
+    </ParamField>
+    <ParamField body="status" type="string" required>
+      `success` ou `failed` para esse produto nesse canal.
+    </ParamField>
+    <ParamField body="code" type="string">
+      O seu código de erro (até 100 caracteres), por exemplo `NOT_FOUND`.
+    </ParamField>
+    <ParamField body="message" type="string">
+      Descrição, até 2000 caracteres.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Exemplos
+
+<CodeGroup>
+
+```json Tudo aplicado
+{
+  "eventId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+  "status": "success"
+}
+```
+
+```json Por produto
+{
+  "eventId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+  "status": "failed",
+  "results": [
+    { "productId": "1f2a3b4c-5d6e-4f7a-8b9c-0d1e2f3a4b5c", "channel": "KIOSK", "status": "success" },
+    { "productId": "0e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "channel": "KIOSK", "status": "failed", "code": "NOT_FOUND", "message": "Unknown product" }
+  ]
+}
+```
+
+</CodeGroup>
+
+```bash
+curl -X POST "https://app.fire.rest/api/v1/webhooks/channel-provider/product-result" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: pk_live_xxx" \
+  -d '{ "eventId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f", "status": "success" }'
+```
+
+## Resposta
+
+A mesma de [Resultado de cardápio → Resposta](/pt/api-reference/catalog-menu-result#resposta): `202 Accepted` com `received`, `duplicate`, `eventId`, `webhookEventId`, `status: "queued"`, `firstReceivedAt` e `message`.
+
+| HTTP | Quando | Tentar de novo? |
+|---|---|---|
+| `202` | Registrado (novo ou repetido). | Não. |
+| `400` | Corpo inválido, `eventId` desconhecido, não mais reconhecido ou de outro tipo de entrega. | Não: corrija a requisição. |
+| `401` | Falta a API key ou ela não é válida. | Não: revise a chave. |
+| `403` | A chave não tem `webhooks:catalog`, não está vinculada a um vendor, ou a entrega é de outro vendor. | Não: revise a chave. |
+| `5xx` | Erro do Fire. | Sim, com espera crescente. |
+
+## Repetições e mudanças de resultado
+
+- **O mesmo callback repetido** (mesmo `eventId` e mesmo `status`) não tem efeito: `202` com `"duplicate": true`.
+- **Outro resultado para o mesmo `eventId`** substitui o anterior: **fica o último**.
+- Informe o resultado final uma única vez.
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="product.updated" icon="tag" href="/pt/events/product-updated">
+    O evento cujo resultado este endpoint informa.
+  </Card>
+  <Card title="Resultado de cardápio" icon="utensils" href="/pt/api-reference/catalog-menu-result">
+    O mesmo mecanismo para `menu.updated`, com o detalhe de cada caso.
+  </Card>
+</CardGroup>

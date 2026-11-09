@@ -1,0 +1,105 @@
+---
+title: "Store result"
+api: "POST https://app.fire.rest/api/v1/webhooks/channel-provider/store-result"
+description: "Inbound endpoint your system POSTs to in order to report the final result of a store Fire sent you with store.updated. Fire marks that publication as synced or failed in your integration."
+authMethod: "bearer"
+---
+
+This endpoint is **inbound**: your system POSTs to it when it finishes processing a [`store.updated`](/en/events/store-updated) that Fire sent it. With that, the store's publication in your integration becomes **Synced** or **Failed** in the Backoffice (Stores → Publications).
+
+## When to use it
+
+It is used when your integration has the **Confirms by callback** option enabled for store, on the channel provider in the Backoffice. Otherwise, your `2xx` response to the delivery is already the final result. The two modes are detailed in [Menu result → When to use it](/en/api-reference/catalog-menu-result#when-to-use-it).
+
+<Note>
+  **This endpoint is asynchronous.** It responds **`202 Accepted`** as soon as the result is recorded; the publication is updated a moment later. Problems you can fix are rejected with `4xx` **before** the `202`.
+</Note>
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your vendor-scoped Fire API key with the `webhooks:catalog` scope, bound to the account and the vendor. It can only report results of deliveries of its own vendor.
+</ParamField>
+
+## Request body
+
+<ParamField body="eventId" type="string" required>
+  UUID of the delivery: the `event.id` of the envelope of the `store.updated` you received. An `eventId` that is unknown or of another kind of delivery is rejected with `400` (Fire recognizes them for **at least 7 days**); one of another vendor, with `403`. A redelivery arrives with a new `event.id`: respond with that one.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  Final result: `success` or `failed`.
+</ParamField>
+
+<ParamField body="message" type="string">
+  Text for the operator, up to 2000 characters.
+</ParamField>
+
+<ParamField body="errors" type="object[]">
+  With `failed`, the detail per store field. Up to 500 elements.
+
+  <Expandable title="errors[]">
+    <ParamField body="field" type="string">
+      The store field that failed (for example, `operationSchedule`). Optional.
+    </ParamField>
+    <ParamField body="code" type="string" required>
+      Your error code (up to 100 characters).
+    </ParamField>
+    <ParamField body="message" type="string" required>
+      Description, up to 2000 characters.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Examples
+
+<CodeGroup>
+
+```json Success
+{
+  "eventId": "6a0d2c4e-91b3-4c55-8e0e-0f8c1a2b3c4d",
+  "status": "success"
+}
+```
+
+```json Failure
+{
+  "eventId": "6a0d2c4e-91b3-4c55-8e0e-0f8c1a2b3c4d",
+  "status": "failed",
+  "message": "Store not updated",
+  "errors": [
+    { "field": "operationSchedule", "code": "INVALID_SCHEDULE", "message": "endTime before startTime" }
+  ]
+}
+```
+
+</CodeGroup>
+
+## Response
+
+The same as [Menu result → Response](/en/api-reference/catalog-menu-result#response): `202 Accepted` with `received`, `duplicate`, `eventId`, `webhookEventId`, `status: "queued"`, `firstReceivedAt` and `message`.
+
+| HTTP | When | Retry? |
+|---|---|---|
+| `202` | Recorded (new or repeated). | No. |
+| `400` | Invalid body, `eventId` unknown, no longer recognized or of another kind of delivery. | No: fix the request. |
+| `401` | The API key is missing or invalid. | No: check the key. |
+| `403` | The key lacks `webhooks:catalog`, is not bound to a vendor, or the delivery belongs to another vendor. | No: check the key. |
+| `5xx` | Fire error. | Yes, with growing backoff. |
+
+## Repeats and result changes
+
+- **The same callback repeated** (same `eventId` and same `status`) has no effect: `202` with `"duplicate": true`.
+- **Another result for the same `eventId`** replaces the previous one: **the latest wins**.
+- Report the final result only once.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="store.updated" icon="store" href="/en/events/store-updated">
+    The event whose result this endpoint reports.
+  </Card>
+  <Card title="Menu result" icon="utensils" href="/en/api-reference/catalog-menu-result">
+    The same mechanism for `menu.updated`, with the detail of each case.
+  </Card>
+</CardGroup>

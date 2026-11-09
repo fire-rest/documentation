@@ -1,0 +1,244 @@
+---
+title: "product.updated"
+description: "Cambió la disponibilidad o el precio de productos en una tienda — solo los productos que cambiaron, y solo la parte que cambió, con las ternas donde aplica."
+---
+
+<Note>
+  **Disponibilidad limitada.** Este evento está en despliegue y se habilita por cuenta. Consulta con tu contacto en Fire si ya aplica a la tuya.
+</Note>
+
+<Warning>
+  Este es el evento `product.updated` de **Integration Flows**, documentado en esta página. **No** es el webhook de integraciones de agregadores con el mismo nombre que se describe en [Referencia de webhooks → `product.updated`](/es/webhook-reference/product-updated): ese es el formato de las integraciones existentes, tiene otra forma y no cambia. Este evento también cubre lo que allí son [`product.availability_changed`](/es/webhook-reference/product-availability-changed) y [`product.price_updated`](/es/webhook-reference/product-price-updated), con una diferencia: un cambio hecho en el editor de precios y disponibilidad viaja **solo para la terna que se editó**, no para todas las tiendas donde aparece el producto.
+</Warning>
+
+`product.updated` es un **parche**: trae solo los productos que cambiaron y, de cada uno, solo el bloque que cambió (`availability` o `pricing`). Lo que no viene, no cambió. Aplícalo sobre el menú que ya tienes de cada terna, el que te llegó en [`menu.updated`](/es/events/menu-updated).
+
+Sale **uno por acción y por tienda**: un agotado en una tienda es un evento, con todas las ternas (**canal × tipo de servicio**) de esa tienda donde aplica. Un cambio en el editor de precios y disponibilidad trae una sola terna: la que se editó.
+
+## Condición de disparo
+
+| Acción | `changes` | Qué trae cada producto |
+|---|---|---|
+| Agotar productos en una tienda (pantalla Agotados) | `["availability"]` | `availability` con `OUT_OF_STOCK` y su vencimiento |
+| Reponer a mano, o vence el agotado | `["availability"]` | `availability` con `AVAILABLE` |
+| Activar u ocultar un producto en el editor de precios y disponibilidad | `["availability"]` | `availability` con `AVAILABLE` o `HIDDEN`, **solo para la terna editada** |
+| Cambiar precios en el editor de precios y disponibilidad | `["price"]` | `pricing`, solo las partes que cambian, **solo para la terna editada** |
+
+- **Desde Agotados**, viajan todas las ternas de la tienda donde el producto **se vende**: un canal que no lo tiene en su menú no recibe el cambio. Si ninguna terna lo vende, no se emite nada.
+- **Desde el editor**, `targets[0].channels` trae una sola terna: la editada. Las otras ternas que comparten ese menú o esa lista de precios reciben el cambio en su próximo [`menu.updated`](/es/events/menu-updated).
+- Un cambio de precio emite también el [`menu.updated`](/es/events/menu-updated) de esa terna, con el mismo `groupId`.
+- Un flow limitado a ciertos canales recibe el evento cuando toca **al menos uno** de ellos — y lo recibe **completo**, con todas las ternas. Elige las tuyas desde `targets[].channels`.
+
+| | |
+|---|---|
+| Cobertura | Todos los países, en las cuentas donde el evento está habilitado |
+| Unidad | Una acción en una tienda |
+| Id de la acción | `data.groupId` — el mismo en todos los eventos de esa acción |
+| Id de la entrega | `event.id`, como en todos los eventos (la ejecución del flow) |
+| Entidad | `_meta.triggerEntityId` es el UUID de la tienda (`targets[0].store.uid`) |
+
+## Ejemplo — agotar un producto
+
+```json
+{
+  "event": {
+    "id": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+    "type": "product.updated",
+    "emittedAt": "2026-11-09T21:44:03.118Z",
+    "createdAt": "2026-11-09T21:44:03.402Z"
+  },
+  "data": {
+    "account": "1",
+    "country": "EC",
+    "groupId": "6d7e8f9a-0b1c-4d2e-9f3a-4b5c6d7e8f90",
+    "changes": ["availability"],
+    "targets": [
+      {
+        "store": {
+          "uid": "b3d2a1f0-6e21-4c3a-9f5d-7a8b9c0d1e2f",
+          "number": 805,
+          "code": "EC-UIO-805",
+          "name": "Laboratorio",
+          "locationInfo": { "timezone": "America/Guayaquil", "currencyCode": "USD" }
+        },
+        "channels": [
+          {
+            "channel": { "uid": "d5f4c3b2-8043-4e5c-9b7f-9c0d1e2f3a4b", "code": "KIOSK" },
+            "fulfillment": { "service": { "uid": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "code": "DINE_IN" } },
+            "menuSyncId": "9c2fa148-6e27-4b66-ac9f-ab1e42115907"
+          },
+          {
+            "channel": { "uid": "d5f4c3b2-8043-4e5c-9b7f-9c0d1e2f3a4b", "code": "KIOSK" },
+            "fulfillment": { "service": { "uid": "f1a2b3c4-5d6e-4f70-8192-a3b4c5d6e7f8", "code": "TAKEAWAY" } },
+            "menuSyncId": "5351847a-58fb-4eb5-a291-4f8006dba241"
+          }
+        ]
+      }
+    ],
+    "products": [
+      {
+        "id": "1f2a3b4c-5d6e-4f7a-8b9c-0d1e2f3a4b5c",
+        "availability": { "status": "OUT_OF_STOCK", "outOfStockUntil": "2026-11-09T22:43:50.000Z" }
+      }
+    ]
+  },
+  "_meta": {
+    "executionId": "3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f",
+    "flowId": "9a2b3c4d-7e8f-4a1b-9c2d-3e4f5a6b7c8d",
+    "flowName": "Agotados a mi sistema",
+    "attempt": "1",
+    "triggerEntityId": "b3d2a1f0-6e21-4c3a-9f5d-7a8b9c0d1e2f"
+  }
+}
+```
+
+`store` está abreviado: es el bloque completo, igual que en [`menu.updated`](/es/events/menu-updated#contexto).
+
+Al reponer llega el mismo evento con `{ "status": "AVAILABLE", "outOfStockUntil": null }`.
+
+## Ejemplo — cambio de precio
+
+```json
+{
+  "event": { "id": "…", "type": "product.updated", "emittedAt": "…", "createdAt": "…" },
+  "data": {
+    "account": "1",
+    "country": "EC",
+    "groupId": "a3f7c2d1-84be-4e10-9b3a-2c5d6e7f8091",
+    "changes": ["price"],
+    "targets": [ { "store": { "…": "…" }, "channels": [ { "channel": { "…": "…" }, "fulfillment": { "…": "…" }, "menuSyncId": "5351847a-58fb-4eb5-a291-4f8006dba241" } ] } ],
+    "products": [
+      {
+        "id": "1f2a3b4c-5d6e-4f7a-8b9c-0d1e2f3a4b5c",
+        "pricing": {
+          "price": 0.75,
+          "anchorPrice": 0,
+          "anchorPricePercentage": 0,
+          "isTaxInclusive": true,
+          "taxRate": 0.15,
+          "startingPrice": null,
+          "modifiers": [
+            { "modifierGroupId": "7a8b9c0d1e2f3a4b", "price": 1, "isTaxInclusive": true, "taxRate": 0.15,
+              "minimumQuantity": 0, "maximumQuantity": 1, "defaultQuantity": 0, "displayType": "RADIO" }
+          ]
+        }
+      },
+      {
+        "id": "0e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7",
+        "pricing": { "startingPrice": 6.09 }
+      }
+    ],
+    "modifierGroups": [
+      { "id": "7a8b9c0d1e2f3a4b", "title": { "es-EC": "Elige tu bebida" }, "description": null, "displayType": "LIST",
+        "modifierIds": ["1f2a3b4c-5d6e-4f7a-8b9c-0d1e2f3a4b5c"], "minimumQuantity": 1, "maximumQuantity": 1,
+        "chargeAboveQuantity": null, "metadata": {} }
+    ]
+  }
+}
+```
+
+## Referencia de `data.*`
+
+<ResponseField name="account" type="string">Cuenta de Fire.</ResponseField>
+<ResponseField name="country" type="string">País de la tienda, ISO de 2 letras.</ResponseField>
+<ResponseField name="groupId" type="string">UUID de la **acción**. Un cambio de precio comparte `groupId` con los `menu.updated` que emite.</ResponseField>
+<ResponseField name="changes" type="string[]">Qué cambió: `availability` o `price`. Pueden aparecer valores nuevos; ignora los que no conozcas.</ResponseField>
+
+<ResponseField name="targets" type="array">
+  Dónde aplica: un elemento por tienda (hoy siempre uno).
+
+  <Expandable title="targets[]">
+    <ResponseField name="store" type="object">La tienda: el mismo bloque que en [`menu.updated`](/es/events/menu-updated#contexto).</ResponseField>
+    <ResponseField name="channels" type="array">
+      **Cada terna afectada**: `{ channel: { uid, code }, fulfillment: { service: { uid, code } }, menuSyncId }`. El cambio aplica a todas las que vienen en esta lista; `menuSyncId` es la terna de tu copia del menú.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="products" type="array">
+  Los productos que cambiaron. Cada uno trae `id` y **solo** el bloque que cambió.
+
+  <Expandable title="products[]">
+    <ResponseField name="id" type="string">Id del producto (`products[].id` del menú).</ResponseField>
+    <ResponseField name="availability" type="object">
+      Con `changes: ["availability"]`. `status`: `AVAILABLE`, `OUT_OF_STOCK` o `HIDDEN`. `outOfStockUntil`: vencimiento del agotado (ISO 8601 UTC), o `null` si no tiene o si está disponible.
+    </ResponseField>
+    <ResponseField name="pricing" type="object">
+      Con `changes: ["price"]`. Los mismos campos que `pricing` en el menú (sin `modifierGroupIds` ni `recommendationsIds`), pero solo los que cambian. Ver [Cómo aplicar un cambio de precio](#cómo-aplicar-un-cambio-de-precio).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="modifierGroups" type="array">
+  **Solo en cambios de precio.** Los grupos citados en `products[].pricing.modifiers`, con la misma forma que en el menú, para que sepas de qué grupo se habla.
+</ResponseField>
+
+## Disponibilidad
+
+| `availability.status` | Significado | `outOfStockUntil` |
+|---|---|---|
+| `OUT_OF_STOCK` | Agotado desde la pantalla Agotados | Vencimiento del agotado, o `null` si no tiene |
+| `AVAILABLE` | Repuesto (a mano o al vencer) o activado en el editor | `null` |
+| `HIDDEN` | Desactivado en el editor de precios y disponibilidad | `null`, o el vencimiento de un agotado vigente si el producto también está apagado |
+
+Al reponer, **borra el vencimiento** que tenías guardado: `outOfStockUntil` llega en `null`.
+
+## Cómo aplicar un cambio de precio
+
+Un cambio de precio puede tocar más productos que el editado, y cada uno trae lo suyo:
+
+| Quién aparece | Qué trae | Por qué |
+|---|---|---|
+| El producto que se editó | `pricing` con `price`, `anchorPrice`, `anchorPricePercentage`, `isTaxInclusive`, `taxRate`, `startingPrice` y `modifiers` | Cambió su precio. |
+| Opciones de un grupo donde cambió algún precio | Solo `pricing.modifiers`, la lista **completa** | Cambió su precio como opción, o el de otra opción del mismo grupo. |
+| Productos padre (combos) | Solo `pricing.startingPrice` | Su "Desde" depende de las opciones. |
+
+- Mezcla **campo por campo** sobre lo que ya tienes. Lo que no viene, no cambió.
+- Las **listas se reemplazan enteras** (por ejemplo, `modifiers`).
+- En un parche de precio, **`anchorPrice: 0` significa "sin oferta"**: quita el precio tachado.
+- Si un parche cita un grupo que todavía no tienes, espera el `menu.updated` de la misma acción (mismo `groupId`): con él queda todo consistente.
+
+## Entrega y orden
+
+- **En orden por tienda.** Dentro de un flow, los `product.updated` de **una misma tienda** se entregan de a uno, en el orden en que se emitieron; las tiendas distintas avanzan en paralelo. Entre un `product.updated` y un `menu.updated` no hay orden garantizado: ordena por `event.emittedAt` y, ante la duda, el último `menu.updated` de la terna es la verdad completa.
+- **Aplicarlo dos veces deja lo mismo**: trae valores absolutos (estado, precio). Para deduplicar, usa `data.groupId` + `data.changes` + `targets[0].store.uid` (y, en los eventos del editor, `targets[0].channels[0].menuSyncId`); `event.id` identifica la entrega, no el hecho (ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado)).
+- **Si tu sistema procesa en diferido**, puedes informar el resultado por producto con el [callback de resultado de productos](/es/api-reference/catalog-product-result).
+
+## Handler de ejemplo
+
+```js
+async function onProductUpdated(event, data) {
+  for (const target of data.targets) {
+    for (const terna of target.channels) {
+      const menu = await db.menus.get(terna.menuSyncId);
+      if (!menu) continue; // todavía no recibiste el menú de esa terna
+
+      for (const patch of data.products) {
+        const product = menu.products.find((p) => p.id === patch.id);
+        if (!product) continue;
+        if (patch.availability) Object.assign(product.availability, patch.availability);
+        if (patch.pricing) Object.assign(product.pricing, patch.pricing); // las listas se reemplazan enteras
+      }
+      await db.menus.save(terna.menuSyncId, menu);
+    }
+  }
+}
+```
+
+## Errores comunes
+
+- **No es el producto completo.** Un producto del evento trae solo el bloque que cambió; no borres lo que no viene.
+- **Aplica en todas las ternas de `targets[].channels`.** El mismo agotado vale para cada canal y tipo de servicio listado.
+- **`HIDDEN` no es `OUT_OF_STOCK`.** Oculto por decisión del menú vs agotado temporal.
+- **Al reponer, limpia `outOfStockUntil`.** Si no, el vencimiento viejo queda guardado.
+
+## Eventos relacionados
+
+<CardGroup cols={2}>
+  <Card title="menu.updated" icon="utensils" href="/es/events/menu-updated">
+    El menú completo de cada terna, con el modelo de producto que usa este evento.
+  </Card>
+  <Card title="Callback de resultado de productos" icon="reply" href="/es/api-reference/catalog-product-result">
+    Informa a Fire el resultado final por producto, si procesas en diferido.
+  </Card>
+</CardGroup>
