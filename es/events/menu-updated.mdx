@@ -19,6 +19,7 @@ A esa combinación la llamamos **terna**: **tienda × canal × tipo de servicio*
 
 - **Sincronizar el menú** de una o varias ternas (por ejemplo, desde Asignación de menús) emite **un** `menu.updated` **por terna**.
 - **Guardar un cambio de precio** en el editor de precios y disponibilidad emite el `menu.updated` de la terna editada, además del [`product.updated`](/es/events/product-updated) de precio. Las otras ternas que comparten ese menú reciben el cambio en su próxima sincronización.
+- **Quitar la asignación** del menú o de la lista de precios de una terna emite un `menu.updated` de **retiro**: el último menú que recibió esa terna, con `menu.menus[0].status: "INACTIVE"`. Ver [Retiro](#retiro).
 
 Todos los eventos que salen de una misma acción comparten `data.groupId`.
 
@@ -341,7 +342,7 @@ El **orden de las categorías** es el de `menus[0].categoryIds`.
 | `name` | Nombre del menú en el catálogo. `description` siempre es `null`. |
 | `schedules` | Horario de venta **efectivo** de la terna, ya resuelto (tienda → canal → tipo de servicio). `null` = 24/7. |
 | `categoryIds[]` | Las categorías, en orden de pantalla. |
-| `status` | `ACTIVE` o `INACTIVE`; hoy siempre `ACTIVE`. |
+| `status` | `ACTIVE` en una sincronización; `INACTIVE` en un [retiro](#retiro). |
 | `metadata.catalogMenuId` | Id del menú del catálogo asignado a la terna. Varias ternas pueden compartir menú. |
 | `metadata.store` | Copia de `store.metadata`, para quien lee el menú guardado sin el evento a mano. `{}` si la tienda no tiene datos. |
 
@@ -361,6 +362,16 @@ El formato es el mismo en el menú, la categoría y el producto:
 - Un horario que cruza la medianoche viene **partido** en dos días (viernes `22:00:00–23:59:59` y sábado `00:00:00–02:00:00`). Un cierre a las `00:00` viene como `23:59:59`.
 - `null` en lugar de la lista = sin restricción.
 
+## Retiro
+
+Cuando a una terna se le quita el menú o la lista de precios, se queda sin menú para vender. Fire lo avisa con un `menu.updated` de retiro:
+
+- Trae el **último menú que recibió** esa terna, sin cambios, con `menu.menus[0].status: "INACTIVE"`.
+- Tiene su propio `data.groupId`, así que la deduplicación no lo confunde con el menú anterior.
+- Sale solo si la terna ya había recibido un menú con productos. Una terna que nunca recibió menú no recibe retiro.
+
+**Qué hacer:** deja de mostrar y de vender ese menú en esa terna. Si después le vuelven a asignar un menú, el siguiente `menu.updated` llega con `status: "ACTIVE"` y lo reemplaza como siempre.
+
 ## Entrega y orden
 
 - **El menú manda.** Cada `menu.updated` trae el estado completo de la terna: el último reemplaza todo lo anterior. Entre un menú y el siguiente, [`product.updated`](/es/events/product-updated) aplica los cambios rápidos.
@@ -375,6 +386,13 @@ El formato es el mismo en el menú, la categoría y el producto:
 async function onMenuUpdated(event, data) {
   const key = `${data.groupId}:${data.menuSyncId}`;
   if (await db.appliedMenus.exists(key)) return; // ya aplicado
+
+  // Retiro — la terna se quedó sin menú a la venta
+  if (data.menu.menus[0].status === "INACTIVE") {
+    await db.menus.deactivate(data.menuSyncId, { emittedAt: event.emittedAt });
+    await db.appliedMenus.add(key);
+    return;
+  }
 
   // Reemplazo total — el evento trae el menú completo de la terna
   await db.menus.replace(data.menuSyncId, {
@@ -394,7 +412,7 @@ async function onMenuUpdated(event, data) {
 - **No muestres los productos `optionOnly`.** Existen solo como opción de un grupo.
 - **El agotado viaja en el producto.** `availability.status: "OUT_OF_STOCK"` con su `outOfStockUntil`: no hay una lista aparte.
 - **Los ids de copia de grupo pueden cambiar** si cambian los precios que los generan. Toma siempre los del último menú.
-- **No hay evento de "menú eliminado".** Un menú deja de actualizarse; si necesitas detectar bajas, compáralo con tu propio registro.
+- **El retiro llega como `menu.updated`.** No hay un evento de "menú eliminado": revisa `menu.menus[0].status`. Con `INACTIVE` la terna ya no tiene menú a la venta (ver [Retiro](#retiro)).
 
 ## Eventos relacionados
 
