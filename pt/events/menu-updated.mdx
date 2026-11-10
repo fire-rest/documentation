@@ -19,6 +19,7 @@ Chamamos essa combinação de **terna**: **loja × canal × tipo de serviço** (
 
 - **Sincronizar o cardápio** de uma ou várias ternas (por exemplo, em Atribuição de cardápios) emite **um** `menu.updated` **por terna**.
 - **Salvar uma mudança de preço** no editor de preços e disponibilidade emite o `menu.updated` da terna editada, além do [`product.updated`](/pt/events/product-updated) de preço. As outras ternas que compartilham esse cardápio recebem a mudança na próxima sincronização.
+- **Remover a atribuição** do cardápio ou da lista de preços de uma terna emite um `menu.updated` de **retirada**: o último cardápio que essa terna recebeu, com `menu.menus[0].status: "INACTIVE"`. Veja [Retirada](#retirada).
 
 Todos os eventos de uma mesma ação compartilham `data.groupId`.
 
@@ -341,7 +342,7 @@ A **ordem das categorias** é a de `menus[0].categoryIds`.
 | `name` | Nome do cardápio no catálogo. `description` é sempre `null`. |
 | `schedules` | Horário de venda **efetivo** da terna, já resolvido (loja → canal → tipo de serviço). `null` = 24/7. |
 | `categoryIds[]` | As categorias, na ordem de exibição. |
-| `status` | `ACTIVE` ou `INACTIVE`; hoje sempre `ACTIVE`. |
+| `status` | `ACTIVE` em uma sincronização; `INACTIVE` em uma [retirada](#retirada). |
 | `metadata.catalogMenuId` | Id do cardápio do catálogo atribuído à terna. Várias ternas podem compartilhar cardápio. |
 | `metadata.store` | Cópia de `store.metadata`, para quem lê o cardápio salvo sem o evento em mãos. `{}` se a loja não tiver dados. |
 
@@ -361,6 +362,16 @@ O formato é o mesmo no cardápio, na categoria e no produto:
 - Um horário que cruza a meia-noite vem **dividido** em dois dias (sexta `22:00:00–23:59:59` e sábado `00:00:00–02:00:00`). Um fechamento às `00:00` vem como `23:59:59`.
 - `null` no lugar da lista = sem restrição.
 
+## Retirada
+
+Quando o cardápio ou a lista de preços de uma terna é desatribuído, a terna fica sem cardápio para vender. O Fire avisa com um `menu.updated` de retirada:
+
+- Traz o **último cardápio que essa terna recebeu**, sem mudanças, com `menu.menus[0].status: "INACTIVE"`.
+- Tem o seu próprio `data.groupId`, então a deduplicação não o confunde com o cardápio anterior.
+- Só é enviado se a terna já tinha recebido um cardápio com produtos. Uma terna que nunca recebeu cardápio não recebe retirada.
+
+**O que fazer:** pare de mostrar e de vender esse cardápio nessa terna. Se depois um cardápio for atribuído de novo, o próximo `menu.updated` chega com `status: "ACTIVE"` e o substitui como sempre.
+
 ## Entrega e ordem
 
 - **O cardápio manda.** Cada `menu.updated` traz o estado completo da terna: o último substitui tudo o que veio antes. Entre um cardápio e o seguinte, [`product.updated`](/pt/events/product-updated) aplica as mudanças rápidas.
@@ -375,6 +386,13 @@ O formato é o mesmo no cardápio, na categoria e no produto:
 async function onMenuUpdated(event, data) {
   const key = `${data.groupId}:${data.menuSyncId}`;
   if (await db.appliedMenus.exists(key)) return; // já aplicado
+
+  // Retirada — a terna ficou sem cardápio à venda
+  if (data.menu.menus[0].status === "INACTIVE") {
+    await db.menus.deactivate(data.menuSyncId, { emittedAt: event.emittedAt });
+    await db.appliedMenus.add(key);
+    return;
+  }
 
   // Substituição total — o evento traz o cardápio completo da terna
   await db.menus.replace(data.menuSyncId, {
@@ -394,7 +412,7 @@ async function onMenuUpdated(event, data) {
 - **Não mostre os produtos `optionOnly`.** Eles existem só como opção de um grupo.
 - **O esgotado viaja no produto.** `availability.status: "OUT_OF_STOCK"` com seu `outOfStockUntil`: não há uma lista à parte.
 - **Os ids de cópia de grupo podem mudar** se mudarem os preços que os geram. Use sempre os do último cardápio.
-- **Não há evento de "cardápio excluído".** Um cardápio deixa de ser atualizado; se você precisa detectar remoções, compare com o seu próprio registro.
+- **A retirada chega como `menu.updated`.** Não há evento de "cardápio excluído": confira `menu.menus[0].status`. Com `INACTIVE` a terna não tem mais cardápio à venda (veja [Retirada](#retirada)).
 
 ## Eventos relacionados
 

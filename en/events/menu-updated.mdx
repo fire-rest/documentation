@@ -19,6 +19,7 @@ We call that combination a **terna**: **store × channel × fulfillment type** (
 
 - **Synchronizing the menu** of one or more ternas (for example, from Menu assignments) emits **one** `menu.updated` **per terna**.
 - **Saving a price change** in the prices and availability editor emits the `menu.updated` of the edited terna, besides the price [`product.updated`](/en/events/product-updated). The other ternas sharing that menu get the change in their next synchronization.
+- **Removing the assignment** of a terna's menu or price list emits a **withdrawal** `menu.updated`: the last menu that terna received, with `menu.menus[0].status: "INACTIVE"`. See [Withdrawal](#withdrawal).
 
 Every event produced by the same action shares `data.groupId`.
 
@@ -341,7 +342,7 @@ The **category order** is the one in `menus[0].categoryIds`.
 | `name` | Menu name in the catalog. `description` is always `null`. |
 | `schedules` | The terna's **effective** sales schedule, already resolved (store → channel → fulfillment type). `null` = 24/7. |
 | `categoryIds[]` | The categories, in display order. |
-| `status` | `ACTIVE` or `INACTIVE`; always `ACTIVE` today. |
+| `status` | `ACTIVE` on a synchronization; `INACTIVE` on a [withdrawal](#withdrawal). |
 | `metadata.catalogMenuId` | Id of the catalog menu assigned to the terna. Several ternas can share a menu. |
 | `metadata.store` | A copy of `store.metadata`, for whoever reads the stored menu without the event at hand. `{}` when the store has no data. |
 
@@ -361,6 +362,16 @@ The format is the same in the menu, the category and the product:
 - A schedule that crosses midnight comes **split** into two days (Friday `22:00:00–23:59:59` and Saturday `00:00:00–02:00:00`). A close at `00:00` comes as `23:59:59`.
 - `null` instead of the list = no restriction.
 
+## Withdrawal
+
+When a terna's menu or price list is unassigned, the terna is left with no menu to sell. Fire announces it with a withdrawal `menu.updated`:
+
+- It carries the **last menu that terna received**, unchanged, with `menu.menus[0].status: "INACTIVE"`.
+- It has its own `data.groupId`, so deduplication does not mistake it for the previous menu.
+- It is sent only if the terna had already received a menu with products. A terna that never received a menu gets no withdrawal.
+
+**What to do:** stop showing and selling that menu on that terna. If a menu is assigned to it again later, the next `menu.updated` arrives with `status: "ACTIVE"` and replaces it as usual.
+
 ## Delivery and order
 
 - **The menu wins.** Each `menu.updated` carries the terna's complete state: the latest one replaces everything before it. Between one menu and the next, [`product.updated`](/en/events/product-updated) applies quick changes.
@@ -375,6 +386,13 @@ The format is the same in the menu, the category and the product:
 async function onMenuUpdated(event, data) {
   const key = `${data.groupId}:${data.menuSyncId}`;
   if (await db.appliedMenus.exists(key)) return; // already applied
+
+  // Withdrawal — the terna has no menu on sale anymore
+  if (data.menu.menus[0].status === "INACTIVE") {
+    await db.menus.deactivate(data.menuSyncId, { emittedAt: event.emittedAt });
+    await db.appliedMenus.add(key);
+    return;
+  }
 
   // Full replacement — the event carries the terna's whole menu
   await db.menus.replace(data.menuSyncId, {
@@ -394,7 +412,7 @@ async function onMenuUpdated(event, data) {
 - **Do not show `optionOnly` products.** They exist only as an option of a group.
 - **Out-of-stock travels in the product.** `availability.status: "OUT_OF_STOCK"` with its `outOfStockUntil`: there is no separate list.
 - **Group copy ids can change** if the prices that produce them change. Always take the ones from the latest menu.
-- **There is no "menu deleted" event.** A menu stops being updated; if you need to detect removals, compare against your own records.
+- **A withdrawal arrives as `menu.updated`.** There is no "menu deleted" event: check `menu.menus[0].status`. With `INACTIVE` the terna has no menu on sale anymore (see [Withdrawal](#withdrawal)).
 
 ## Related events
 
