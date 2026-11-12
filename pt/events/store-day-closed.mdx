@@ -5,14 +5,14 @@ description: "Uma loja fechou seu dia de negócio — um evento thin com a ident
 
 <Tabs>
   <Tab title="v1 · current">
-    Você está vendo o contrato **atual (v1)** de `store.business_day_closed` — um **payload thin**: identidade do fechamento, timing, `closedBy` e uma **`store` mínima**. Já não carrega as métricas agregadas do dia, os breakdowns nem o detalhe de anomalias — isso você consulta por `businessDayId` quando precisar.
+    Você está vendo o contrato **atual (v1)** de `store.business_day_closed` — um **payload thin**: identidade do fechamento, timing, `closedBy` e uma **`store` mínima**. Já não carrega as métricas agregadas do dia, os breakdowns nem o detalhe de anomalias — os pagamentos e o caixa do dia são lidos em [Fechamento do dia](/pt/api-reference/business-day-close).
   </Tab>
   <Tab title="v0 · deprecated">
     <Warning>O contrato **v0** (o snapshot completo com `sales`/`metrics`/breakdowns embutidos) está **deprecado** — mantido apenas como referência histórica. Abra aqui: [store.business_day_closed — v0](/pt/events-v0/store-day-closed).</Warning>
   </Tab>
 </Tabs>
 
-`store.business_day_closed` dispara quando o pipeline automático de fechamento de dia do Fire termina de construir o snapshot imutável do dia operacional de uma loja. O payload é **thin**: carrega a **identidade** do fechamento (`businessDayId`), o **timing**, **quem fechou** e uma **ref mínima de loja** — o suficiente para reagir a "o dia fechou" e fazer o match do seu lado. Os agregados pesados (vendas, métricas, breakdowns por canal/pagamento, detalhe de force-closed e cancelamentos) vivem no snapshot e são obtidos por `businessDayId` — **não** vêm embutidos no evento.
+`store.business_day_closed` dispara quando o pipeline automático de fechamento de dia do Fire termina de construir o snapshot imutável do dia operacional de uma loja. O payload é **thin**: carrega a **identidade** do fechamento (`businessDayId`), o **timing**, **quem fechou** e uma **ref mínima de loja** — o suficiente para reagir a "o dia fechou" e fazer o match do seu lado. Os agregados pesados **não** vêm embutidos no evento. Os pagamentos do dia (por meio, processador e bandeira do cartão) e o caixa por turno são lidos em [Fechamento do dia](/pt/api-reference/business-day-close), com `store.code` e `businessDayDate`.
 
 Diferente dos eventos a nível pedido, este é um evento **a nível loja**: um por loja fechada, não um por pedido.
 
@@ -34,7 +34,7 @@ O Fire emite `store.business_day_closed` uma vez por snapshot `(storeId, busines
 
 ## O que vem em `trigger.data`
 
-Um payload **thin**: identidade (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`, `closedAt`), o `closedBy` resolvido, e uma ref mínima de `store` (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). Sem métricas, breakdowns nem arrays de anomalias — consulte o snapshot por `businessDayId` se precisar do detalhe.
+Um payload **thin**: identidade (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`, `closedAt`), o `closedBy` resolvido, e uma ref mínima de `store` (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). Sem métricas, breakdowns nem arrays de anomalias — para pagamentos e caixa, chame [Fechamento do dia](/pt/api-reference/business-day-close) com `store.code` e `businessDayDate`.
 
 ## Exemplo — payload real (sanitizado)
 
@@ -76,7 +76,7 @@ Um payload **thin**: identidade (`businessDayId`, `businessDayDate`, `timezone`,
 ### Identidade e temporal
 
 <ResponseField name="businessDayId" type="string">
-  UUID do snapshot de dia de negócio persistido na base do Fire. Também aparece como `_meta.triggerEntityId`. Use-o como chave de idempotência do seu lado — reenvios do mesmo fechamento compartilham o mesmo `businessDayId` — e como chave de lookup para buscar os agregados do dia na API de snapshots do Fire quando precisar.
+  UUID do snapshot de dia de negócio persistido na base do Fire. Também aparece como `_meta.triggerEntityId`. Use-o como chave de idempotência do seu lado — reenvios do mesmo fechamento compartilham o mesmo `businessDayId` — e para cruzá-lo com o `businessDayId` que [Fechamento do dia](/pt/api-reference/business-day-close) devolve.
 </ResponseField>
 <ResponseField name="businessDayDate" type="string">
   Data de calendário que o fechamento representa, no fuso da loja (ex. `"2026-03-31"`). **Não** a data UTC em que o evento disparou.
@@ -152,15 +152,15 @@ async function onStoreDayClosed(data) {
     },
   });
 
-  // 3. Precisa dos agregados do dia (sales, metrics, anomalias)? Busque por businessDayId.
-  //    NÃO estão neste evento — consulte a API de snapshots do Fire on demand.
-  // const snapshot = await fire.businessDay.get(businessDayId);
+  // 3. Precisa dos pagamentos e do caixa do dia? NÃO estão neste evento:
+  //    GET /api/v2/external/stores/{store.code}/business-days/{businessDayDate}
+  // const day = await fire.get(`/api/v2/external/stores/${store.code}/business-days/${businessDayDate}`);
 }
 ```
 
 ## Erros comuns
 
-- **As métricas do dia NÃO estão neste evento.** `sales`, `metrics`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders` e `metadata` já não viajam inline. Se você dependia deles, busque o snapshot por `businessDayId`.
+- **As métricas do dia NÃO estão neste evento.** `sales`, `metrics`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders` e `metadata` já não viajam inline. Os pagamentos por meio e o caixa estão em [Fechamento do dia](/pt/api-reference/business-day-close); os demais agregados não são expostos pela API.
 - **`snapshotId` foi renomeado para `businessDayId`.** Se você parseava `data.snapshotId`, mude para `data.businessDayId` (mesmo valor — o id da linha do snapshot).
 - **`closedBy.uid` pode ser o nil UUID `"00000000-0000-0000-0000-000000000000"`** — em fechamentos system onde a conta não configurou um system user. Detecte fechamentos system com `closedBy.type === "system"`, não parseando o `uid`.
 - **`businessDayDate` é a data de calendário da loja, não UTC.** Interprete-a com `timezone`.

@@ -1,0 +1,266 @@
+---
+title: "Cierre de día"
+api: "GET https://app.fire.rest/api/v2/external/stores/{storeId}/business-days/{date}"
+description: "Leé el cierre de día de una tienda: cobros por medio, procesador y marca de tarjeta, y el cuadre de caja de cada turno."
+authMethod: "key"
+---
+
+<Warning>
+  **API de partner.** Este endpoint está pensado para integradores de plataforma. Los clientes estándar de Fire no tienen acceso directo — contactá a tu account manager si necesitás esta integración.
+</Warning>
+
+Devuelve un día de negocio ya cerrado de una tienda: **cómo se cobró** — agrupado por medio de pago, después por procesador y después por marca de tarjeta, con el efectivo que entregaron los clientes y el vuelto — y **cómo cuadró la caja** en cada turno: fondo inicial, efectivo cobrado, retiros, efectivo contado y la diferencia.
+
+El evento [`store.business_day_closed`](/es/events/store-day-closed) es liviano a propósito: te dice qué día cerró, cuándo y quién lo cerró. El detalle se lee en este endpoint, con la tienda y la fecha.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con el scope `business-days:read`. La key **tiene que ser vendor-scoped** (cuenta + vendor) — una key sin `vendorId` se rechaza con `403`.
+
+  La tienda se busca dentro de la cuenta y el vendor de tu key. Una tienda de otro responde `404`, igual que una que no existe.
+</ParamField>
+
+## Parámetros
+
+<ParamField path="storeId" type="string" required>
+  El UUID de la tienda en Fire **o** su código de tienda (`K000`, sin distinguir mayúsculas). El código no es ambiguo porque la API key fija el vendor; si dos tiendas de tu vendor comparten código, la respuesta es `409 AMBIGUOUS_STORE_CODE` y usás el UUID.
+</ParamField>
+
+<ParamField path="date" type="string" required>
+  Día de negocio, `YYYY-MM-DD`, en el calendario local de la tienda.
+</ParamField>
+
+## Request
+
+<RequestExample>
+```http Por código de tienda
+GET https://app.fire.rest/api/v2/external/stores/K000/business-days/2026-11-10
+x-api-key: <your_api_key>
+```
+</RequestExample>
+
+## Respuesta
+
+Todos los montos van en **decimales de la moneda** (`22.90`, no `229000`).
+
+<ResponseField name="success" type="boolean">Siempre `true` en un `200`.</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="businessDayId" type="string">Identificador del cierre — el mismo `businessDayId` que lleva el evento `store.business_day_closed`.</ResponseField>
+    <ResponseField name="businessDayDate" type="string">`YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="status" type="string">Siempre `CLOSED`.</ResponseField>
+    <ResponseField name="timezone" type="string">Zona horaria IANA de la tienda.</ResponseField>
+    <ResponseField name="openedAt" type="string | null">ISO 8601.</ResponseField>
+    <ResponseField name="closedAt" type="string">ISO 8601.</ResponseField>
+    <ResponseField name="closedBy" type="object">`type` (`system` o `user`, en minúscula, igual que el evento), `uid` y `name`.</ResponseField>
+    <ResponseField name="store" type="object">`uid`, `code`, `externalId`, `countryCode`, `currencyCode`.</ResponseField>
+    <ResponseField name="currencies" type="object[]">
+      Una entrada por moneda. Lo normal es una sola: la del día. Un turno reportado en otra moneda suma una entrada para ella, con `payments: null`.
+      <Expandable title="currency">
+        <ResponseField name="currency" type="string">ISO 4217.</ResponseField>
+        <ResponseField name="ordersCount" type="integer | null">Órdenes cobradas del día en esta moneda. `null` fuera de la moneda del día.</ResponseField>
+        <ResponseField name="payments" type="object | null">
+          Solo órdenes cobradas, en la moneda del día.
+          <Expandable title="payments">
+            <ResponseField name="count" type="integer">Cantidad de pagos.</ResponseField>
+            <ResponseField name="total" type="number">Total cobrado.</ResponseField>
+            <ResponseField name="byMethod" type="object[]">
+              De mayor a menor total.
+              <Expandable title="method">
+                <ResponseField name="method" type="string">Código del medio, en mayúscula (`CASH`, `CREDIT`, `DIGITAL`…).</ResponseField>
+                <ResponseField name="name" type="string">Nombre en el catálogo de medios de pago de tu cuenta; el código si el medio no está cargado.</ResponseField>
+                <ResponseField name="count" type="integer">Pagos.</ResponseField>
+                <ResponseField name="total" type="number">Total. Los procesadores suman exactamente esto.</ResponseField>
+                <ResponseField name="percentage" type="number">Parte del total del día, en %.</ResponseField>
+                <ResponseField name="cash" type="object | null">
+                  Solo en `CASH`. `null` en los demás medios.
+                  <Expandable title="cash">
+                    <ResponseField name="receivedFromCustomers" type="number">Efectivo que entregaron los clientes.</ResponseField>
+                    <ResponseField name="changeGiven" type="number">Vuelto entregado. El `changeAmount` que mandó tu POS o, si no lo mandó, `max(0, entregado − cobrado)`.</ResponseField>
+                    <ResponseField name="paymentsWithoutReceived" type="integer">Pagos en efectivo que llegaron sin el monto entregado. **No** están en las dos sumas de arriba.</ResponseField>
+                  </Expandable>
+                </ResponseField>
+                <ResponseField name="processors" type="object[] | null">
+                  Quién procesó el cobro.
+                  <Expandable title="processor">
+                    <ResponseField name="processor" type="string | null">Código, en mayúscula (`PIX`, `CIELO`, `NEQUI`). `null` = el pago no trajo procesador, o trajo el mismo código que el medio (`CASH` / `CASH`).</ResponseField>
+                    <ResponseField name="name" type="string | null">Nombre en el catálogo; el código si no está.</ResponseField>
+                    <ResponseField name="count" type="integer">Pagos.</ResponseField>
+                    <ResponseField name="total" type="number">Total.</ResponseField>
+                    <ResponseField name="brands" type="object[] | null">
+                      Marcas de tarjeta (`card.brand` de cada pago): `brand`, `count`, `total`. Vacío cuando ningún pago del procesador trajo marca (efectivo, PIX). Si algunos sí, los que no la trajeron se agrupan en `brand: null` — no se esconden.
+                    </ResponseField>
+                  </Expandable>
+                </ResponseField>
+              </Expandable>
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+        <ResponseField name="cash" type="object">
+          <Expandable title="cash">
+            <ResponseField name="summary" type="object">
+              `expectedCashSales` (efectivo cobrado en el día; `null` fuera de la moneda del día), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` y `netDiscrepancy` (suma de las diferencias de los turnos — negativo quiere decir que falta plata).
+            </ResponseField>
+            <ResponseField name="shifts" type="object[]">
+              Uno por cierre de turno reportado con [Conciliaciones de efectivo](/es/api-reference/cash-reconciliations-v2), incluidos los reportados después de cerrado el día.
+              <Expandable title="shift">
+                <ResponseField name="reconciliationId" type="string">Identificador del cierre de turno.</ResponseField>
+                <ResponseField name="apiVersion" type="integer">`1` o `2`: el contrato con que entró. Cambia cómo se lee `declaredCash` (ver abajo).</ResponseField>
+                <ResponseField name="sessionExternalId" type="string | null">El id de turno de tu POS (v2).</ResponseField>
+                <ResponseField name="terminalUid" type="string | null">Terminal.</ResponseField>
+                <ResponseField name="operator" type="object">`uid` y `name` del cajero.</ResponseField>
+                <ResponseField name="shiftStart" type="string | null">ISO 8601.</ResponseField>
+                <ResponseField name="shiftEnd" type="string | null">ISO 8601.</ResponseField>
+                <ResponseField name="openingBalance" type="number | null">Fondo inicial. En v2 entra en `systemCash`. En v1 es informativo: puede venir o no, y **no** entra en `systemCash`.</ResponseField>
+                <ResponseField name="expectedCashSales" type="number">Efectivo cobrado durante el turno.</ResponseField>
+                <ResponseField name="withdrawalsTotal" type="number">Efectivo retirado durante el turno. Siempre `0` en v1.</ResponseField>
+                <ResponseField name="systemCash" type="number">Lo que debería haber en el cajón. v2: fondo + cobrado − retiros. v1: cobrado.</ResponseField>
+                <ResponseField name="declaredCash" type="number">Lo contado. v2: el cajón completo, con el fondo. v1: neto, sin el fondo.</ResponseField>
+                <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negativo = faltante.</ResponseField>
+                <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` u `OVERAGE`.</ResponseField>
+                <ResponseField name="reason" type="string">Motivo declarado por el POS.</ResponseField>
+                <ResponseField name="notes" type="string | null">Texto libre.</ResponseField>
+                <ResponseField name="withdrawals" type="object[]">`amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) y `notes`.</ResponseField>
+                <ResponseField name="authorization" type="object | null">`approvedBy` y `approvedAt` cuando un supervisor aprobó la diferencia.</ResponseField>
+                <ResponseField name="postClose" type="boolean">`true` cuando el turno se reportó después de cerrado el día.</ResponseField>
+                <ResponseField name="reportedAt" type="string">ISO 8601.</ResponseField>
+              </Expandable>
+            </ResponseField>
+            <ResponseField name="unreconciledOperators" type="object[] | null">Cajeros que cobraron efectivo en esta moneda y no reportaron su cierre de turno: `uid` y `name`. `[]` = todos cerraron. `null` = no se sabe: el cierre no tiene resumen de caja (días viejos, o falló la lectura de caja al cerrar).</ResponseField>
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "businessDayId": "7c1e9a52-3f0b-4d8e-9a61-2b5d0c7e4f18",
+    "businessDayDate": "2026-11-10",
+    "status": "CLOSED",
+    "timezone": "America/Sao_Paulo",
+    "openedAt": "2026-11-10T13:00:04Z",
+    "closedAt": "2026-11-11T03:00:11Z",
+    "closedBy": { "type": "system", "uid": "00000000-0000-0000-0000-000000000000", "name": "Cierre automático" },
+    "store": { "uid": "b3f0c2d1-5e6a-4b7c-8d9e-0f1a2b3c4d5e", "code": "K000", "externalId": "K000", "countryCode": "BR", "currencyCode": "BRL" },
+    "currencies": [
+      {
+        "currency": "BRL",
+        "ordersCount": 398,
+        "payments": {
+          "count": 340,
+          "total": 12830.00,
+          "byMethod": [
+            {
+              "method": "CREDIT", "name": "Crédito", "count": 130, "total": 5250.00, "percentage": 40.9,
+              "cash": null,
+              "processors": [
+                {
+                  "processor": "CIELO", "name": "Cielo", "count": 130, "total": 5250.00,
+                  "brands": [
+                    { "brand": "VISA", "count": 80, "total": 3200.00 },
+                    { "brand": "MASTERCARD", "count": 50, "total": 2050.00 }
+                  ]
+                }
+              ]
+            },
+            {
+              "method": "CASH", "name": "Dinheiro", "count": 120, "total": 4850.00, "percentage": 37.8,
+              "cash": { "receivedFromCustomers": 5462.40, "changeGiven": 612.40, "paymentsWithoutReceived": 0 },
+              "processors": [ { "processor": null, "name": null, "count": 120, "total": 4850.00, "brands": [] } ]
+            },
+            {
+              "method": "DIGITAL", "name": "Digital", "count": 90, "total": 2730.00, "percentage": 21.3,
+              "cash": null,
+              "processors": [ { "processor": "PIX", "name": "PIX", "count": 90, "total": 2730.00, "brands": [] } ]
+            }
+          ]
+        },
+        "cash": {
+          "summary": {
+            "expectedCashSales": 4850.00,
+            "shiftsReported": 1, "match": 0, "shortage": 1, "overage": 0,
+            "shortageAmount": 5.00, "overageAmount": 0.00, "netDiscrepancy": -5.00
+          },
+          "shifts": [
+            {
+              "reconciliationId": "e2a4b6c8-0000-4000-8000-000000000001",
+              "apiVersion": 2,
+              "sessionExternalId": "POS-12-20261110-1",
+              "terminalUid": "BR-K000-POS-12",
+              "operator": { "uid": "u-1043", "name": "Ana Souza" },
+              "shiftStart": "2026-11-10T13:02:00Z",
+              "shiftEnd": "2026-11-10T21:05:00Z",
+              "openingBalance": 200.00,
+              "expectedCashSales": 2600.00,
+              "withdrawalsTotal": 1500.00,
+              "systemCash": 1300.00,
+              "declaredCash": 1295.00,
+              "discrepancy": -5.00,
+              "discrepancyType": "SHORTAGE",
+              "reason": "COUNTING_ERROR",
+              "notes": null,
+              "withdrawals": [
+                { "amount": 1500.00, "category": "SAFE_DROP", "withdrawnAt": "2026-11-10T17:40:00Z", "authorizer": { "uid": "u-0007", "name": "Carlos Lima" }, "notes": null }
+              ],
+              "authorization": null,
+              "postClose": false,
+              "reportedAt": "2026-11-10T21:06:12Z"
+            }
+          ],
+          "unreconciledOperators": [ { "uid": "u-1102", "name": "Marcos Dias" } ]
+        }
+      }
+    ]
+  }
+}
+```
+
+```json 409 — día todavía abierto
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "BUSINESS_DAY_OPEN",
+  "message": "Business day is still open",
+  "data": { "businessDayDate": "2026-11-10" }
+}
+```
+</ResponseExample>
+
+## Cómo leer la respuesta
+
+- **`summary.expectedCashSales` y los turnos no tienen por qué sumar igual.** El del día es el efectivo cobrado en el día; el de cada turno, el que Fire le atribuyó a ese cajero en esa franja. Los cajeros que no cerraron, o un turno reportado sin cajero, hacen que difieran.
+- **Leé `declaredCash` junto con `apiVersion`.** Un turno v2 cuenta el cajón completo, con el fondo; un turno v1 cuenta neto, sin el fondo. `discrepancy` significa lo mismo en los dos.
+- **Una marca de tarjeta que falta no se esconde.** Si tu POS manda `card.brand` vacío, esos pagos aparecen en `brand: null`.
+
+## Días cerrados antes de este contrato
+
+Lo que un cierre no guardó, no aparece después. Fire **no** lo reconstruye desde las órdenes.
+
+- Los días agrupados solo por procesador vuelven con `processors: null`, y `method` trae el código por el que se agrupaban.
+- Los días cerrados antes de que se guardaran las marcas y el efectivo entregado vuelven con `brands: null` y `cash: null`.
+- Los turnos v1 vuelven con `withdrawalsTotal: 0`, y `openingBalance` solo si el POS lo mandó (informativo).
+- Los días sin resumen de caja vuelven con `unreconciledOperators: null`.
+
+## Errores
+
+| HTTP | `code` | Cuándo |
+|---|---|---|
+| `400` | — | `storeId` vacío, o `date` no es una fecha `YYYY-MM-DD` real |
+| `401` | — | API key inválida, vencida o revocada |
+| `403` | — | Key sin `business-days:read`, o sin vendor |
+| `404` | — | La tienda no está en el vendor de tu key |
+| `404` | `BUSINESS_DAY_NOT_FOUND` | El día no tiene cierre |
+| `409` | `AMBIGUOUS_STORE_CODE` | Dos tiendas de tu vendor comparten ese código: usá el UUID |
+| `409` | `BUSINESS_DAY_OPEN` | El día sigue abierto. Fire no devuelve datos parciales: volvé a pedirlo después del cierre |
+
+## Relacionado
+
+- [Conciliaciones de efectivo (v2)](/es/api-reference/cash-reconciliations-v2) — cómo entra cada cierre de turno.
+- [`store.business_day_closed`](/es/events/store-day-closed) — el evento que te avisa que un día cerró.
