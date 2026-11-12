@@ -5,14 +5,14 @@ description: "A store closed its business day — a thin event with the close id
 
 <Tabs>
   <Tab title="v1 · current">
-    You're viewing the **current (v1)** `store.business_day_closed` contract — a **thin payload**: close identity, timing, `closedBy`, and a **minimal `store`** ref. It no longer carries the day's aggregate metrics, breakdowns, or anomaly detail — fetch those by `businessDayId` when you need them.
+    You're viewing the **current (v1)** `store.business_day_closed` contract — a **thin payload**: close identity, timing, `closedBy`, and a **minimal `store`** ref. It no longer carries the day's aggregate metrics, breakdowns, or anomaly detail — the day's payments and cash count are read from [Business day close](/en/api-reference/business-day-close).
   </Tab>
   <Tab title="v0 · deprecated">
     <Warning>The **v0** contract (the full snapshot with `sales`/`metrics`/breakdowns embedded) is **deprecated** — kept only as a historical reference. Open it here: [store.business_day_closed — v0](/en/events-v0/store-day-closed).</Warning>
   </Tab>
 </Tabs>
 
-`store.business_day_closed` fires when Fire's automated business-day-close pipeline finishes building the immutable snapshot for a store's operational day. The payload is **thin**: it carries the close **identity** (`businessDayId`), **timing**, **who closed it**, and a **minimal store** ref — enough to react to "the day closed" and match it on your side. The heavy aggregates (sales, metrics, per-channel/payment breakdowns, force-closed and cancellation detail) live in the snapshot and are retrievable by `businessDayId` — they are **not** embedded in the event.
+`store.business_day_closed` fires when Fire's automated business-day-close pipeline finishes building the immutable snapshot for a store's operational day. The payload is **thin**: it carries the close **identity** (`businessDayId`), **timing**, **who closed it**, and a **minimal store** ref — enough to react to "the day closed" and match it on your side. The heavy aggregates are **not** embedded in the event. The day's payments (by method, processor and card brand) and its cash count by shift are read from [Business day close](/en/api-reference/business-day-close), with `store.code` and `businessDayDate`.
 
 Unlike order-level events, this is a **store-level** event: one per store closed, not one per order.
 
@@ -34,7 +34,7 @@ Fire emits `store.business_day_closed` once per `(storeId, businessDayDate)` sna
 
 ## What's in `trigger.data`
 
-A **thin** payload: identity (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`, `closedAt`), the resolved `closedBy`, and a minimal `store` ref (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). No metrics, breakdowns, or anomaly arrays — query the snapshot by `businessDayId` if you need the detail.
+A **thin** payload: identity (`businessDayId`, `businessDayDate`, `timezone`, `status`), timing (`openedAt`, `closedAt`), the resolved `closedBy`, and a minimal `store` ref (`uid`, `code`, `externalId`, `countryCode`, `timezone`, `currencyCode`). No metrics, breakdowns, or anomaly arrays — for payments and cash, call [Business day close](/en/api-reference/business-day-close) with `store.code` and `businessDayDate`.
 
 ## Example — real payload (sanitized)
 
@@ -76,7 +76,7 @@ A **thin** payload: identity (`businessDayId`, `businessDayDate`, `timezone`, `s
 ### Identity & temporal
 
 <ResponseField name="businessDayId" type="string">
-  UUID of the persisted business-day snapshot in Fire's database. Also surfaced as `_meta.triggerEntityId`. Use it as the idempotency key on your side — re-deliveries of the same close share the same `businessDayId` — and as the lookup key to fetch the day's aggregates from Fire's snapshot API when you need them.
+  UUID of the persisted business-day snapshot in Fire's database. Also surfaced as `_meta.triggerEntityId`. Use it as the idempotency key on your side — re-deliveries of the same close share the same `businessDayId` — and to match it against the `businessDayId` that [Business day close](/en/api-reference/business-day-close) returns.
 </ResponseField>
 <ResponseField name="businessDayDate" type="string">
   Calendar date the close represents, in the store's timezone (e.g. `"2026-03-31"`). **Not** the UTC date the event fired.
@@ -152,15 +152,15 @@ async function onStoreDayClosed(data) {
     },
   });
 
-  // 3. Need the day's aggregates (sales, metrics, anomalies)? Fetch them by businessDayId.
-  //    They are NOT in this event — query Fire's snapshot API on demand.
-  // const snapshot = await fire.businessDay.get(businessDayId);
+  // 3. Need the day's payments and cash count? They are NOT in this event:
+  //    GET /api/v2/external/stores/{store.code}/business-days/{businessDayDate}
+  // const day = await fire.get(`/api/v2/external/stores/${store.code}/business-days/${businessDayDate}`);
 }
 ```
 
 ## Common pitfalls
 
-- **The day's metrics are NOT in this event.** `sales`, `metrics`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders` and `metadata` no longer ship inline. If you relied on them, fetch the snapshot by `businessDayId`.
+- **The day's metrics are NOT in this event.** `sales`, `metrics`, `byChannel`, `byPaymentMethod`, `forceClosedOrders`, `closureStats`, `cancelledOrders` and `metadata` no longer ship inline. Payments by method and the cash count are available from [Business day close](/en/api-reference/business-day-close); the other aggregates are not exposed through the API.
 - **`snapshotId` was renamed to `businessDayId`.** If you parsed `data.snapshotId`, switch to `data.businessDayId` (same value — the snapshot row id).
 - **`closedBy.uid` may be the nil UUID `"00000000-0000-0000-0000-000000000000"`** — for system closes where the account hasn't configured a custom system user. Detect system closes via `closedBy.type === "system"`, not by parsing `uid`.
 - **`businessDayDate` is the store's calendar date, not UTC.** Interpret it with `timezone`.

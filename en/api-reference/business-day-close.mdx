@@ -1,0 +1,266 @@
+---
+title: "Business day close"
+api: "GET https://app.fire.rest/api/v2/external/stores/{storeId}/business-days/{date}"
+description: "Read a store's closed business day: payments by method, processor and card brand, and the cash count of every shift."
+authMethod: "key"
+---
+
+<Warning>
+  **Partner API.** This endpoint is intended for platform integrators. Standard Fire customers do not have direct access — contact your account manager if you need this integration.
+</Warning>
+
+Returns one closed business day of a store: **how it was paid** — grouped by payment method, then processor, then card brand, with the cash handed over and the change — and **how the cash drawer balanced** in every shift: opening float, cash sales, withdrawals, counted cash and the difference.
+
+The [`store.business_day_closed`](/en/events/store-day-closed) event is lean on purpose: it tells you which day closed, when and who closed it. This endpoint is where you read the detail, with the store and the date.
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `business-days:read` scope. The key **must be vendor-scoped** (account + vendor binding) — keys without a `vendorId` are rejected with `403`.
+
+  The store is looked up inside your key's account and vendor. A store that belongs to someone else returns `404`, exactly like one that does not exist.
+</ParamField>
+
+## Parameters
+
+<ParamField path="storeId" type="string" required>
+  The store's UUID in Fire **or** its store code (`K000`, not case-sensitive). The code is unambiguous because the API key pins the vendor; if two stores of your vendor share a code, the response is `409 AMBIGUOUS_STORE_CODE` and you use the UUID.
+</ParamField>
+
+<ParamField path="date" type="string" required>
+  Business day, `YYYY-MM-DD`, in the store's local calendar.
+</ParamField>
+
+## Request
+
+<RequestExample>
+```http By store code
+GET https://app.fire.rest/api/v2/external/stores/K000/business-days/2026-11-10
+x-api-key: <your_api_key>
+```
+</RequestExample>
+
+## Response
+
+All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
+
+<ResponseField name="success" type="boolean">Always `true` on a `200`.</ResponseField>
+
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="businessDayId" type="string">The close's identifier — the same `businessDayId` the `store.business_day_closed` event carries.</ResponseField>
+    <ResponseField name="businessDayDate" type="string">`YYYY-MM-DD`.</ResponseField>
+    <ResponseField name="status" type="string">Always `CLOSED`.</ResponseField>
+    <ResponseField name="timezone" type="string">The store's IANA timezone.</ResponseField>
+    <ResponseField name="openedAt" type="string | null">ISO 8601.</ResponseField>
+    <ResponseField name="closedAt" type="string">ISO 8601.</ResponseField>
+    <ResponseField name="closedBy" type="object">`type` (`system` or `user`, lowercase, the same as the event), `uid` and `name`.</ResponseField>
+    <ResponseField name="store" type="object">`uid`, `code`, `externalId`, `countryCode`, `currencyCode`.</ResponseField>
+    <ResponseField name="currencies" type="object[]">
+      One entry per currency. Normally just one: the day's currency. A shift reported in another currency adds an entry for it, with `payments: null`.
+      <Expandable title="currency">
+        <ResponseField name="currency" type="string">ISO 4217.</ResponseField>
+        <ResponseField name="ordersCount" type="integer | null">Paid orders of the day in this currency. `null` outside the day's currency.</ResponseField>
+        <ResponseField name="payments" type="object | null">
+          Paid orders only, in the day's currency.
+          <Expandable title="payments">
+            <ResponseField name="count" type="integer">Number of payments.</ResponseField>
+            <ResponseField name="total" type="number">Total charged.</ResponseField>
+            <ResponseField name="byMethod" type="object[]">
+              From largest to smallest total.
+              <Expandable title="method">
+                <ResponseField name="method" type="string">Method code, uppercased (`CASH`, `CREDIT`, `DIGITAL`…).</ResponseField>
+                <ResponseField name="name" type="string">Name in your account's payment catalog; the code when the method is not in it.</ResponseField>
+                <ResponseField name="count" type="integer">Payments.</ResponseField>
+                <ResponseField name="total" type="number">Total. The processors add up to exactly this.</ResponseField>
+                <ResponseField name="percentage" type="number">Share of the day's total, in %.</ResponseField>
+                <ResponseField name="cash" type="object | null">
+                  Only on `CASH`. `null` on every other method.
+                  <Expandable title="cash">
+                    <ResponseField name="receivedFromCustomers" type="number">Cash the customers handed over.</ResponseField>
+                    <ResponseField name="changeGiven" type="number">Change given back. The `changeAmount` your POS sent or, when it did not, `max(0, handed over − charged)`.</ResponseField>
+                    <ResponseField name="paymentsWithoutReceived" type="integer">Cash payments that came without the amount handed over. They are **not** in the two sums above.</ResponseField>
+                  </Expandable>
+                </ResponseField>
+                <ResponseField name="processors" type="object[] | null">
+                  Who processed the charge.
+                  <Expandable title="processor">
+                    <ResponseField name="processor" type="string | null">Code, uppercased (`PIX`, `CIELO`, `NEQUI`). `null` = the payment brought no processor, or the same code as the method (`CASH` / `CASH`).</ResponseField>
+                    <ResponseField name="name" type="string | null">Name in the catalog; the code when it is not there.</ResponseField>
+                    <ResponseField name="count" type="integer">Payments.</ResponseField>
+                    <ResponseField name="total" type="number">Total.</ResponseField>
+                    <ResponseField name="brands" type="object[] | null">
+                      Card brands (`card.brand` of each payment): `brand`, `count`, `total`. Empty when no payment of the processor had a brand (cash, PIX). When some did, the ones without a brand are grouped under `brand: null` — they are not hidden.
+                    </ResponseField>
+                  </Expandable>
+                </ResponseField>
+              </Expandable>
+            </ResponseField>
+          </Expandable>
+        </ResponseField>
+        <ResponseField name="cash" type="object">
+          <Expandable title="cash">
+            <ResponseField name="summary" type="object">
+              `expectedCashSales` (cash charged in the day; `null` outside the day's currency), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` and `netDiscrepancy` (sum of the shifts' differences — negative means money is missing).
+            </ResponseField>
+            <ResponseField name="shifts" type="object[]">
+              One per shift close reported with [Cash reconciliations](/en/api-reference/cash-reconciliations-v2), including the ones reported after the day closed.
+              <Expandable title="shift">
+                <ResponseField name="reconciliationId" type="string">Identifier of the shift close.</ResponseField>
+                <ResponseField name="apiVersion" type="integer">`1` or `2`: the contract it came in with. It changes how `declaredCash` reads (see below).</ResponseField>
+                <ResponseField name="sessionExternalId" type="string | null">Your POS's shift id (v2).</ResponseField>
+                <ResponseField name="terminalUid" type="string | null">Terminal.</ResponseField>
+                <ResponseField name="operator" type="object">`uid` and `name` of the cashier.</ResponseField>
+                <ResponseField name="shiftStart" type="string | null">ISO 8601.</ResponseField>
+                <ResponseField name="shiftEnd" type="string | null">ISO 8601.</ResponseField>
+                <ResponseField name="openingBalance" type="number | null">Opening float. On v2 it is part of `systemCash`. On v1 it is informational: it may come or not, and it is **not** part of `systemCash`.</ResponseField>
+                <ResponseField name="expectedCashSales" type="number">Cash charged during the shift.</ResponseField>
+                <ResponseField name="withdrawalsTotal" type="number">Cash taken out during the shift. Always `0` on v1.</ResponseField>
+                <ResponseField name="systemCash" type="number">What should be in the drawer. v2: float + cash sales − withdrawals. v1: cash sales.</ResponseField>
+                <ResponseField name="declaredCash" type="number">What was counted. v2: the whole drawer, float included. v1: net of the float.</ResponseField>
+                <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negative = shortage.</ResponseField>
+                <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` or `OVERAGE`.</ResponseField>
+                <ResponseField name="reason" type="string">Reason declared by the POS.</ResponseField>
+                <ResponseField name="notes" type="string | null">Free text.</ResponseField>
+                <ResponseField name="withdrawals" type="object[]">`amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) and `notes`.</ResponseField>
+                <ResponseField name="authorization" type="object | null">`approvedBy` and `approvedAt` when a supervisor approved the difference.</ResponseField>
+                <ResponseField name="postClose" type="boolean">`true` when the shift was reported after the day closed.</ResponseField>
+                <ResponseField name="reportedAt" type="string">ISO 8601.</ResponseField>
+              </Expandable>
+            </ResponseField>
+            <ResponseField name="unreconciledOperators" type="object[] | null">Cashiers who charged cash in this currency and did not report their shift close: `uid` and `name`. `[]` = everyone closed. `null` = unknown: the close has no cash summary (old days, or the cash read failed when the day closed).</ResponseField>
+          </Expandable>
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "businessDayId": "7c1e9a52-3f0b-4d8e-9a61-2b5d0c7e4f18",
+    "businessDayDate": "2026-11-10",
+    "status": "CLOSED",
+    "timezone": "America/Sao_Paulo",
+    "openedAt": "2026-11-10T13:00:04Z",
+    "closedAt": "2026-11-11T03:00:11Z",
+    "closedBy": { "type": "system", "uid": "00000000-0000-0000-0000-000000000000", "name": "Automatic close" },
+    "store": { "uid": "b3f0c2d1-5e6a-4b7c-8d9e-0f1a2b3c4d5e", "code": "K000", "externalId": "K000", "countryCode": "BR", "currencyCode": "BRL" },
+    "currencies": [
+      {
+        "currency": "BRL",
+        "ordersCount": 398,
+        "payments": {
+          "count": 340,
+          "total": 12830.00,
+          "byMethod": [
+            {
+              "method": "CREDIT", "name": "Crédito", "count": 130, "total": 5250.00, "percentage": 40.9,
+              "cash": null,
+              "processors": [
+                {
+                  "processor": "CIELO", "name": "Cielo", "count": 130, "total": 5250.00,
+                  "brands": [
+                    { "brand": "VISA", "count": 80, "total": 3200.00 },
+                    { "brand": "MASTERCARD", "count": 50, "total": 2050.00 }
+                  ]
+                }
+              ]
+            },
+            {
+              "method": "CASH", "name": "Dinheiro", "count": 120, "total": 4850.00, "percentage": 37.8,
+              "cash": { "receivedFromCustomers": 5462.40, "changeGiven": 612.40, "paymentsWithoutReceived": 0 },
+              "processors": [ { "processor": null, "name": null, "count": 120, "total": 4850.00, "brands": [] } ]
+            },
+            {
+              "method": "DIGITAL", "name": "Digital", "count": 90, "total": 2730.00, "percentage": 21.3,
+              "cash": null,
+              "processors": [ { "processor": "PIX", "name": "PIX", "count": 90, "total": 2730.00, "brands": [] } ]
+            }
+          ]
+        },
+        "cash": {
+          "summary": {
+            "expectedCashSales": 4850.00,
+            "shiftsReported": 1, "match": 0, "shortage": 1, "overage": 0,
+            "shortageAmount": 5.00, "overageAmount": 0.00, "netDiscrepancy": -5.00
+          },
+          "shifts": [
+            {
+              "reconciliationId": "e2a4b6c8-0000-4000-8000-000000000001",
+              "apiVersion": 2,
+              "sessionExternalId": "POS-12-20261110-1",
+              "terminalUid": "BR-K000-POS-12",
+              "operator": { "uid": "u-1043", "name": "Ana Souza" },
+              "shiftStart": "2026-11-10T13:02:00Z",
+              "shiftEnd": "2026-11-10T21:05:00Z",
+              "openingBalance": 200.00,
+              "expectedCashSales": 2600.00,
+              "withdrawalsTotal": 1500.00,
+              "systemCash": 1300.00,
+              "declaredCash": 1295.00,
+              "discrepancy": -5.00,
+              "discrepancyType": "SHORTAGE",
+              "reason": "COUNTING_ERROR",
+              "notes": null,
+              "withdrawals": [
+                { "amount": 1500.00, "category": "SAFE_DROP", "withdrawnAt": "2026-11-10T17:40:00Z", "authorizer": { "uid": "u-0007", "name": "Carlos Lima" }, "notes": null }
+              ],
+              "authorization": null,
+              "postClose": false,
+              "reportedAt": "2026-11-10T21:06:12Z"
+            }
+          ],
+          "unreconciledOperators": [ { "uid": "u-1102", "name": "Marcos Dias" } ]
+        }
+      }
+    ]
+  }
+}
+```
+
+```json 409 — day still open
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "BUSINESS_DAY_OPEN",
+  "message": "Business day is still open",
+  "data": { "businessDayDate": "2026-11-10" }
+}
+```
+</ResponseExample>
+
+## How to read the response
+
+- **`summary.expectedCashSales` and the shifts do not have to add up.** The day's figure is the cash charged in the day; each shift's is the cash Fire attributed to that cashier and time window. Cashiers who did not close their shift, or a shift reported without a cashier, make them differ.
+- **Read `declaredCash` with `apiVersion`.** A v2 shift counts the whole drawer, float included; a v1 shift counts net of the float. `discrepancy` means the same thing in both.
+- **A missing card brand is not hidden.** If your POS sends `card.brand` empty, those payments show under `brand: null`.
+
+## Days closed before this contract
+
+What a close did not store, it does not show later. Fire does **not** rebuild it from the orders.
+
+- Days grouped only by processor come back with `processors: null`, and `method` holds the code they were grouped by.
+- Days closed before card brands and cash handed over were recorded come back with `brands: null` and `cash: null`.
+- v1 shifts come back with `withdrawalsTotal: 0`, and `openingBalance` only when the POS sent it (informational).
+- Days without a cash summary come back with `unreconciledOperators: null`.
+
+## Errors
+
+| HTTP | `code` | When |
+|---|---|---|
+| `400` | — | Empty `storeId`, or `date` is not a real `YYYY-MM-DD` date |
+| `401` | — | Invalid, expired or revoked API key |
+| `403` | — | Key without `business-days:read`, or not vendor-scoped |
+| `404` | — | The store is not in your key's vendor |
+| `404` | `BUSINESS_DAY_NOT_FOUND` | The day has no close |
+| `409` | `AMBIGUOUS_STORE_CODE` | Two stores of your vendor share that code: use the UUID |
+| `409` | `BUSINESS_DAY_OPEN` | The day is still open. Fire does not return partial data: ask again after the close |
+
+## Related
+
+- [Cash reconciliations (v2)](/en/api-reference/cash-reconciliations-v2) — how each shift close gets in.
+- [`store.business_day_closed`](/en/events/store-day-closed) — the event that tells you a day closed.
