@@ -233,6 +233,7 @@ O exemplo abaixo vem de um evento real (tenant sandbox brasileiro, canal `KIOSK`
           "lastFourDigits": "0000"
         },
         "acquirer": { "code": "00000000000000", "name": "ACQUIRER NAME", "cnpj": "01027058000191" },
+        "acquirerConfigured": { "code": "cielo", "name": "Cielo", "documentType": "CNPJ", "documentNumber": "11222333000181", "level": "store" },
         "voucher": "",
         "metadata": {},
         "totalBill": 22.9,
@@ -574,7 +575,7 @@ O exemplo abaixo vem de um evento real (tenant sandbox brasileiro, canal `KIOSK`
     <ResponseField name="paymentMethods" type="object[]">
       Métodos usados para pagar. A maioria dos campos é camelCase (`totalBill`, `currencyCode`, `transactionId`, `transactionStatus`, `paymentMethodCode`, …) e o sub-objeto `card` também é camelCase (`card.cardCountry`, `card.lastFourDigits`, `card.externalCardBrandId`).
 
-      Cada entrada: `method`, `processor`, `currencyCode`, `paymentMethodCode`, `transactionType`, `transactionId`, `transactionStatus`, `exactPayment`, `totalBill`, `acquirer`, `card`, `transactionDate`, `metadata`, `mid`, `tid`, `voucher`, `referenceNumber`, `authorizationCode`, `customerCashAmount`, `changeAmount`, `idAuth`, `receiptCustomer`, `receiptMerchant`.
+      Cada entrada: `method`, `processor`, `currencyCode`, `paymentMethodCode`, `transactionType`, `transactionId`, `transactionStatus`, `exactPayment`, `totalBill`, `acquirer`, `acquirerConfigured`, `card`, `transactionDate`, `metadata`, `mid`, `tid`, `voucher`, `referenceNumber`, `authorizationCode`, `customerCashAmount`, `changeAmount`, `idAuth`, `receiptCustomer`, `receiptMerchant`.
 
       Campos novos (todos nullable):
       - **`method`** (`string`) — Forma de pagamento (`CASH`, `CREDIT`, `DEBIT`, `DIGITAL`, `IFOOD`…): a que o pedido declarou ou, se não declarou, a que o Fire deduz do processador. Vem junto com `processor`, que é quem processou a cobrança (`PIX`). Em eventos anteriores a esta mudança não vem: ali a forma é o `processor`.
@@ -584,6 +585,7 @@ O exemplo abaixo vem de um evento real (tenant sandbox brasileiro, canal `KIOSK`
       - **`acquirer.cnpj`** (`string | null`) — CNPJ da credenciadora de pagamento. Preenchido apenas para o Brasil; `null` nos demais países.
       - **`customerCashAmount`** (`number | null`) — Dinheiro entregue pelo cliente, em decimais: para uma conta de `22.9` paga com uma nota de `50`, `50`. `0` nos meios que não são dinheiro. Os pedidos injetados antes de 24 de setembro de 2026 trazem aqui o texto `"0"` — leia como número. `null` quando não foi enviado.
       - **`changeAmount`** (`number | null`) — Troco entregue pelo caixa, em decimais. O troco real em dinheiro, `0` nos demais meios, `null` quando não foi enviado.
+      - **`acquirerConfigured`** (`object | null`) — Quem credencia este pagamento segundo a configuração da sua conta na Fire: `code`, `name`, `documentType`, `documentNumber`, `level`. Não é um dado fiscal — esse continua sendo `acquirer`. Veja [Credenciadora configurada](#credenciadora-configurada).
     </ResponseField>
 
     <ResponseField name="metadata" type="object">
@@ -593,6 +595,69 @@ O exemplo abaixo vem de um evento real (tenant sandbox brasileiro, canal `KIOSK`
     </ResponseField>
   </Expandable>
 </ResponseField>
+
+### Credenciadora configurada
+
+`payments.paymentMethods[].acquirerConfigured` diz **quem credencia cada pagamento segundo a
+configuração da sua conta na Fire**: as credenciadoras atribuídas a cada forma de pagamento na
+configuração de pagamentos. A Fire resolve terminal → loja → conta, e vale o nível mais
+específico. É a mesma credenciadora que a [configuração de formas de pagamento (v2)](/pt/api-reference/payment-methods-config-v2)
+devolve, congelada no pagamento.
+
+<ResponseField name="acquirerConfigured" type="object | null">
+  <Expandable title="acquirerConfigured">
+    <ResponseField name="code" type="string">Código da credenciadora, como está configurada na sua conta (ex.: `cielo`).</ResponseField>
+    <ResponseField name="name" type="string">Nome da credenciadora.</ResponseField>
+    <ResponseField name="documentType" type="string | null">Tipo do documento que a sua conta cadastrou para a credenciadora (`CNPJ`, `RUC`, `NIT`…).</ResponseField>
+    <ResponseField name="documentNumber" type="string | null">Número do documento que a sua conta cadastrou para a credenciadora. **Não é um dado fiscal** — veja abaixo.</ResponseField>
+    <ResponseField name="level" type="string">De qual nível vem: `device` (o terminal que cobrou), `store` (loja) ou `account` (conta).</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json payments.paymentMethods[n]
+{
+  "method": "CREDIT",
+  "processor": "CREDIT_CARD",
+  "acquirer": { "code": "01027058000191", "name": "CIELO S.A. - INSTITUICAO DE PAGAMENTO" },
+  "acquirerConfigured": {
+    "code": "cielo",
+    "name": "Cielo",
+    "documentType": "CNPJ",
+    "documentNumber": "11222333000181",
+    "level": "store"
+  }
+}
+```
+
+**É `null` quando:**
+
+- a forma de pagamento não tem credenciadora configurada em nenhum nível;
+- a credenciadora atribuída está inativa ou foi excluída — a Fire não sobe para o nível de cima;
+- a Fire não consegue saber com certeza qual terminal cobrou (a venda chegou sem terminal, ou com
+  um que a Fire não reconhece como terminal daquela loja) e, naquela loja, algum terminal tem para
+  essa forma uma credenciadora diferente da loja. A Fire nunca adivinha;
+- o pedido foi salvo antes de este campo existir. Pedidos anteriores não são preenchidos.
+
+**O que não muda.** `acquirer`, `processor`, `method` e `paymentMethodCode` continuam exatamente
+iguais. `acquirer` é o que o caixa declara para a transação e continua sendo o dado fiscal (no
+Brasil, a credenciadora informada na NFC-e). `acquirerConfigured.documentNumber` **não** é esse
+CNPJ: não o use para preencher nem substituir `acquirer`.
+
+**Quando é resolvido.** Ao salvar o pagamento: quando o pedido é injetado ou, se o pedido é cobrado
+depois, em [Confirmar pagamento](/pt/api-reference/confirm-payment). Confirmar pagamento não
+identifica um terminal, então valem a regra loja → conta e o terceiro caso de `null` acima. Uma
+mudança posterior na configuração não reescreve pedidos já salvos; chega às vendas novas em menos
+de um minuto.
+
+**Não pode ser enviado.** A Fire sempre preenche este campo. Um valor que chegue num pagamento que
+você injeta é sobrescrito.
+
+**Na API de pedidos.** [Listar pedidos](/pt/api-reference/list-orders) e
+[Obter pedido](/pt/api-reference/get-order) devolvem o mesmo valor em
+`paymentMethods[].details.acquirer_configured`, em snake_case: `code`, `name`, `document_type`,
+`document_number`, `level`.
+
+<Note>**Compatibilidade.** `acquirerConfigured` é uma chave nova em cada pagamento. Se o seu consumidor valida o payload de forma estrita, ele deve aceitar chaves que não conhece.</Note>
 
 ### `data.fulfillment`
 
