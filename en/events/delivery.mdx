@@ -74,28 +74,37 @@ The same fact can reach you more than once, so **your endpoint must be idempoten
 
 | Event | Dedup key |
 |---|---|
-| Order events | `data.orderId` + `event.type` + `event.emittedAt` |
+| Other order events | `data.orderId` + `event.type` + `event.emittedAt` |
+| `order.status_updated` | `data.orderId` + `data.source` + the lane's change (`kitchen.status`, `lifecycle.event` + `lifecycle.revision`, or `fiscal.sequence`) — see [the event page](/en/events/order-status-updated) |
 | `store.updated` | `data.publication.id` |
 | `store.business_day_closed` | `data.businessDayId` |
 | `menu.updated` | `data.groupId` + `data.menuSyncId` |
 | `product.updated` | `data.groupId` + `data.changes` + `data.targets[0].store.uid` (it carries absolute values: applying it twice leaves the same result) |
 
-The order-event key covers **automatic re-queues**, which keep `event.emittedAt`. A **manual replay from the dead letter** arrives as a new event, with a new `event.emittedAt`, so your dedup lets it through: if you already processed that fact, decide based on the order's state in your system. The `store.updated` and `store.business_day_closed` keys come from `data` and do not change on a replay.
+The order-event key covers **automatic re-queues**, which keep `event.emittedAt`. A **manual replay from the dead letter** arrives as a new event, with a new `event.emittedAt`, so your dedup lets it through: if you already processed that fact, decide based on the order's state in your system. The `order.status_updated`, `store.updated` and `store.business_day_closed` keys come from `data` and do not change on a replay. For `order.status_updated` that means a manual replay of a notice you already processed **is discarded as a duplicate** — which is what you want, as long as you save the key only after processing the notice successfully: if the first attempt failed on your side, the replay must get through.
 
 ```js
 const seen = new Map(); // Redis or DB in production
 
+// order.status_updated: one key per tracking change, by lane
+function statusKey(d) {
+  if (d.source === "kds") return `${d.orderId}:kds:${d.kitchen.status}`;
+  if (d.source === "order") return `${d.orderId}:order:${d.lifecycle.event}:${d.lifecycle.revision ?? ""}`;
+  return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
+}
+
 const key = data.publication?.id ?? data.businessDayId
-  ?? `${data.orderId}:${event.type}:${event.emittedAt}`;
+  ?? (event.type === "order.status_updated" ? statusKey(data)
+      : `${data.orderId}:${event.type}:${event.emittedAt}`);
 if (seen.has(key)) return; // already handled
 seen.set(key, Date.now());
 ```
 
-Automatic re-queues arrive within about 11 minutes of the first attempt (plus however long each attempt takes), so keeping the keys a little longer than that is enough. A manual replay from the dead letter carries a new key on order events (see above).
+Automatic re-queues arrive within about 11 minutes of the first attempt (plus however long each attempt takes), so keeping the keys a little longer than that is enough. A manual replay from the dead letter carries a new key on order events, except `order.status_updated` (see above).
 
 ## Dead letter
 
-When the re-queues are exhausted too — or the failure is not retryable, such as a `4xx` — the job is moved to the dead letter. Failed flows can be inspected and manually replayed from **Settings → Integration Flows → Executions → Dead letter**. A replay is a **new delivery**: it carries a new `event.id`, `event.createdAt` and `event.emittedAt`, and `_meta.attempt` goes back to `1`; `data` is the one from the original delivery. On order events your dedup lets it through: if the original delivery did reach you and you already processed it, decide based on the order's state in your system.
+When the re-queues are exhausted too — or the failure is not retryable, such as a `4xx` — the job is moved to the dead letter. Failed flows can be inspected and manually replayed from **Settings → Integration Flows → Executions → Dead letter**. A replay is a **new delivery**: it carries a new `event.id`, `event.createdAt` and `event.emittedAt`, and `_meta.attempt` goes back to `1`; `data` is the one from the original delivery. On order events your dedup lets it through (except `order.status_updated`, whose key comes from `data`): if the original delivery did reach you and you already processed it, decide based on the order's state in your system.
 
 ## Ordering guarantees
 
@@ -189,7 +198,7 @@ Until then, treat your auth credential as the origin proof.
 
 - **Always enable retries on production flows.** A single timeout shouldn't drop an event.
 - **Cap retries at 3 unless you have a long-tail flaky downstream.** More retries means longer dead-letter latency.
-- **Deduplicate by a domain key, not by `event.id`.** `event.id` changes when Fire re-queues a delivery, and `data.orderId` alone is shared by every event of the order's lifecycle. Combine `data.orderId` + `event.type` + `event.emittedAt`, which covers automatic re-queues; a manual replay from the dead letter arrives as a new event (see [Idempotency on your side](#idempotency-on-your-side)).
+- **Deduplicate by a domain key, not by `event.id`.** `event.id` changes when Fire re-queues a delivery, and `data.orderId` alone is shared by every event of the order's lifecycle. Combine `data.orderId` + `event.type` + `event.emittedAt`, which covers automatic re-queues; a manual replay from the dead letter arrives as a new event. For `order.status_updated`, use `data.orderId` + `data.source` + the lane's change instead (see [Idempotency on your side](#idempotency-on-your-side)).
 - **Store `_meta.executionId` and `_meta.attempt` on persisted events** — they're invaluable for debugging "why did the same order get processed twice".
 - **Keep `timeout` short (5–10s) and acknowledge fast in your handler.** Use a queue to do real work in the background.
 
