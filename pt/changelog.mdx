@@ -26,6 +26,77 @@ description: O que muda no Fire — integrações, telas do produto, guias e man
   <a href="https://buttondown.com/fire-docs" target="_blank" rel="noopener" style={{display: 'inline-block', marginTop: '0.875rem', padding: '0.5rem 1.25rem', borderRadius: '0.5rem', background: '#E6293D', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none'}}>Assinar</a>
 </div>
 
+## 13 de novembro de 2026 — Eventos de pedido: descrições do catálogo e tipo de produto do menu
+
+**Para:** Integrações
+
+As linhas dos eventos de pedido ([`order.opened`](/pt/events/order-opened), [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced) e [`order.reversed`](/pt/events/order-reversed)) mudam em duas coisas:
+
+- **`descriptions`** (novo, opcional): `{ marketing, ops }` com as descrições do produto no catálogo da Fire, em cada linha e em cada modificador. Útil, por exemplo, para mostrar na cozinha o que compõe um combo. Não vem se o produto não está no catálogo ou não tem descrições.
+- **`itemType`** vem do menu configurado na Fire quando o produto está no catálogo, mesmo que o canal tenha enviado outro tipo ou nenhum. Antes era o tipo enviado pelo canal.
+- Em [Obter pedido](/pt/api-reference/get-order) e [Listar pedidos](/pt/api-reference/list-orders), `orderLines` traz o mesmo (`descriptions`, `item_type` do menu) mais `reported_item_type`, informativo: o tipo enviado pelo canal quando não coincide com o menu.
+
+Na [injeção de pedidos](/pt/api-reference/inject-order-partners#rejeição-por-regras-de-validação) há uma regra nova que o seu vendor pode ativar por canal: `PRODUCT_TYPE_MISMATCH` rejeita o pedido quando um produto chega com um `type` diferente do menu ou sem `type`. Vem desligada. Se o seu receptor valida os eventos com um esquema estrito, ajuste-o para aceitar `descriptions`.
+
+Atualizado em **EN / ES / PT**.
+
+## 13 de novembro de 2026 — Numeração fiscal dentro da injeção (desligada por padrão)
+
+**Para:** Integrações
+
+O Fire agora pode numerar a venda dentro da injeção do pedido e da confirmação da cobrança, assim o
+caixa não chama `POST /fiscal/numbering` antes. **Está desligada por padrão** e é ligada por vendor;
+até lá nada muda e as duas respostas trazem `fiscal: null`.
+
+- [Injetar pedido](/pt/api-reference/inject-order-partners#numeração-fiscal-na-injeção), [Criar pedido](/pt/api-reference/create-order) e [Criar pedido v2](/pt/api-reference/create-order-v2): a venda que nasce paga é numerada na mesma requisição, que pode demorar até uns 5 s a mais. A resposta traz `fiscal` com `action` (`CONTINUE` ou `REFUND`), `requestStatus` e `failure`. Com `REFUND` o pedido não é criado: `400` com `details.code: FISCAL_NUMBERING_FAILED`.
+- [Confirmar pagamento](/pt/api-reference/confirm-payment#numeração-fiscal-na-cobrança): o pedido que nasce aberto é numerado ao ser cobrado. Campo novo opcional `device`: o caixa que cobra.
+- **Provedor fora do ar ou lento:** o Fire espera o provedor fiscal no máximo 5 s (2,8 s por padrão). O teto cai de 8 s para 5 s **também em `POST /fiscal/numbering`**. Depois de 5 falhas seguidas o Fire para de chamar um provedor fora do ar por 30 s, para não segurar a venda.
+
+Antes de ser ligada para o seu vendor, os seus caixas precisam ler `fiscal.action` e devolver o dinheiro com `REFUND`.
+
+Atualizado em **EN / ES / PT**.
+
+## 12 de novembro de 2026 — `order.status_updated` v2: acompanhamento do pedido na cozinha, no pedido e na nota fiscal
+
+**Para:** Integrações
+
+[`order.status_updated`](/pt/events/order-status-updated) deixa de informar só a cozinha. Agora avisa tudo o que acontece com o pedido, em três trilhas:
+
+- **Cozinha** (`kds`): `preparing`, `ready`, `dispatched` e, novo, `cancelled` quando o KDS confirma que a cozinha cancelou.
+- **Pedido** (`order`): `opened`, `corrected`, `completed`, `force_closed` (fechado automaticamente no fim do dia) e `cancelled`.
+- **Nota fiscal** (`fiscal`): `numbered`, `rejected`, `invoiced`, `cancellation_failed` (a autoridade rejeitou o cancelamento) e `reversed`.
+
+Cada fluxo escolhe no gatilho quais status recebe. **Se você não escolher nada, recebe o mesmo de antes** (`preparing`, `ready`, `dispatched`). O aviso adiciona três campos em `data`: `source`, `lifecycle` e `fiscal`. Se o seu receptor valida o corpo com um esquema estrito, ajuste-o para aceitá-los. Para ordenar os avisos: `rank` na cozinha e no pedido, `fiscal.sequence` na nota fiscal. O contrato anterior fica na [v1](/pt/events-v1/order-status-updated).
+
+Atualizado em **EN / ES / PT**.
+
+## 12 de novembro de 2026 — Configuração de formas de pagamento (v2): quem credencia
+
+**Para:** Integrações
+
+A [configuração de formas de pagamento (v2)](/pt/api-reference/payment-methods-config-v2) agora diz quem credencia cada forma: a credenciadora configurada na Fire, por loja e por terminal. É um campo novo e retrocompatível: o que você já lê não muda.
+
+- **`stores[].methods[].acquirer`** (`object | null`) — a credenciadora que vale na loja (loja → conta): `acquirerId`, `code`, `name`, `documentType`, `documentNumber` e `level`, que diz de qual nível vem. `null` = nada configurado ou credenciadora inativa ou excluída.
+- **`stores[].methods[].devices[].acquirer`** (`object | null`) — o mesmo, valendo no terminal (terminal → loja → conta). Um terminal com credenciadora própria agora aparece em `devices`.
+
+É o que está configurado na Fire, apenas informativo: não substitui nem serve para preencher o `acquirer` de cada pagamento do pedido, que é um dado fiscal e continua sendo enviado pelo caixa.
+
+Atualizado em **EN / ES / PT**.
+
+## 12 de novembro de 2026 — Eventos de pedido: credenciadora configurada em cada pagamento
+
+**Para:** Integrações
+
+Cada pagamento de `payments.paymentMethods[]` nos eventos de pedido ([`order.opened`](/pt/events/order-opened), [`order.completed`](/pt/events/order-completed), [`order.invoiced`](/pt/events/order-invoiced), [`order.cancelled`](/pt/events/order-cancelled), [`order.reversed`](/pt/events/order-reversed)) agora traz **`acquirerConfigured`**: quem credencia esse pagamento segundo a configuração da sua conta na Fire, resolvido terminal → loja → conta. É a mesma credenciadora que a [configuração de formas de pagamento (v2)](/pt/api-reference/payment-methods-config-v2) devolve, congelada no pagamento ao salvá-lo.
+
+- **`acquirerConfigured`** (`object | null`) — `code`, `name`, `documentType`, `documentNumber` e `level` (`device`, `store` ou `account`). `null` quando não há nada configurado, quando a credenciadora está inativa ou excluída, quando a Fire não consegue saber com certeza qual terminal cobrou, e nos pedidos salvos antes desta mudança.
+- **[Listar pedidos](/pt/api-reference/list-orders) e [Obter pedido](/pt/api-reference/get-order)** devolvem o mesmo valor em `paymentMethods[].details.acquirer_configured`, em snake_case.
+- **Nada mais muda.** `acquirer` (o dado fiscal que o caixa envia), `processor`, `method` e `paymentMethodCode` continuam iguais. `documentNumber` não é o CNPJ fiscal da credenciadora: não serve para preencher `acquirer`. A Fire sempre preenche o campo; um valor que você envie é sobrescrito.
+
+É uma chave nova: se o seu consumidor valida os eventos de forma estrita, ele deve aceitar chaves que não conhece. Veja [Credenciadora configurada](/pt/events/order-completed#credenciadora-configurada).
+
+Atualizado em **EN / ES / PT**.
+
 ## 11 de novembro de 2026 — Fechamento do dia: bandeiras e caixa por turno
 
 **Para:** Integrações

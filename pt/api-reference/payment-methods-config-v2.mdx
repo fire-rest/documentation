@@ -1,13 +1,13 @@
 ---
 title: "Configuração de formas de pagamento (v2)"
 api: "GET https://api.fire.rest/api/v2/external/payment-methods/config"
-description: "Leia a configuração de formas de pagamento do vendor da sua API key, resolvida por loja: quais formas existem, onde cada uma cobra e com quais valores."
+description: "Leia a configuração de formas de pagamento do vendor da sua API key, resolvida por loja: quais formas existem, onde cada uma cobra, com quais valores e quem credencia (credenciadora)."
 authMethod: "bearer"
 ---
 
 Devolve a configuração de pagamentos que a Fire tem cadastrada para o vendor da sua API key,
-resolvida loja por loja: quais formas cada uma oferece, onde cada uma cobra e com quais valores.
-Cada entrada se basta — não há catálogo à parte para cruzar.
+resolvida loja por loja: quais formas cada uma oferece, onde cada uma cobra, com quais valores e
+quem credencia (credenciadora). Cada entrada se basta — não há catálogo à parte para cruzar.
 
 Sem filtro, traz todas as lojas do vendor, paginadas. Com `storeId` ou `storeCode`, apenas uma.
 
@@ -127,14 +127,26 @@ x-api-key: <sua_api_key>
             </ResponseField>
             <ResponseField name="config" type="object">Valores efetivos no nível da loja: os da conta com os da loja por cima. Apenas campos `account` e `store`.</ResponseField>
             <ResponseField name="missingRequiredKeys" type="string[]">Campos obrigatórios de conta ou loja em branco. Se não estiver vazio, a loja não está pronta para cobrar com essa forma.</ResponseField>
+            <ResponseField name="acquirer" type="object | null">
+              Quem credencia esta forma na loja, conforme configurado na Fire: a da loja ou, se ela não tiver, a da conta. Informativo: não é o `acquirer` fiscal do pedido. `null` = nada configurado, ou a credenciadora atribuída está inativa ou foi excluída.
+              <Expandable title="acquirer">
+                <ResponseField name="acquirerId" type="string">UUID da credenciadora na sua conta.</ResponseField>
+                <ResponseField name="code" type="string">Código da credenciadora.</ResponseField>
+                <ResponseField name="name" type="string">Nome da credenciadora.</ResponseField>
+                <ResponseField name="documentType" type="string | null">Tipo do documento que a sua conta cadastrou para a credenciadora (`CNPJ`, `RUC`, `NIT`…).</ResponseField>
+                <ResponseField name="documentNumber" type="string | null">Número do documento que a sua conta cadastrou para a credenciadora. Não é um dado fiscal — veja abaixo.</ResponseField>
+                <ResponseField name="level" type="string">De qual nível vem: `device`, `store` ou `account`.</ResponseField>
+              </Expandable>
+            </ResponseField>
             <ResponseField name="devices" type="object[]">
-              Terminais com configuração ou postura própria. Vazio é o normal.
+              Terminais com configuração, postura ou credenciadora própria. Vazio é o normal. Quando um terminal é excluído na Fire, a configuração própria dele é excluída junto: ele deixa de aparecer aqui e voltam a valer os valores da loja.
               <Expandable title="device">
                 <ResponseField name="deviceType" type="string">`KIOSK` ou `POS`.</ResponseField>
                 <ResponseField name="deviceId" type="string">Identificador do terminal na Fire.</ResponseField>
                 <ResponseField name="charging" type="boolean">Se esse equipamento cobra, já resolvido contra o que diz a sua loja.</ResponseField>
                 <ResponseField name="availability" type="object[]">Igual à da loja, com o que é próprio do equipamento aplicado por cima.</ResponseField>
                 <ResponseField name="config" type="object">**Apenas** os valores cadastrados nesse terminal, sem misturar de novo os da loja: é assim que se distingue a exceção da herança.</ResponseField>
+                <ResponseField name="acquirer" type="object | null">Quem credencia nesse equipamento, já resolvido: a do terminal ou, se ele não tiver, a da loja ou da conta. Mesmos campos do `acquirer` da forma. `null` = nada configurado, ou a credenciadora atribuída está inativa ou foi excluída.</ResponseField>
               </Expandable>
             </ResponseField>
           </Expandable>
@@ -215,6 +227,14 @@ x-api-key: <sua_api_key>
             ],
             "config": {"merchant_id": "M-000123", "terminal_key": "sk_live_..."},
             "missingRequiredKeys": [],
+            "acquirer": {
+              "acquirerId": "ee55ff66-0000-4000-8000-000000000004",
+              "code": "cielo",
+              "name": "Cielo",
+              "documentType": "CNPJ",
+              "documentNumber": "12345678000195",
+              "level": "store"
+            },
             "devices": [
               {
                 "deviceType": "KIOSK",
@@ -224,7 +244,15 @@ x-api-key: <sua_api_key>
                   {"channelCode": "KIOSK", "fulfillmentCode": "DINE_IN", "enabled": false},
                   {"channelCode": "KIOSK", "fulfillmentCode": "TAKEAWAY", "enabled": false}
                 ],
-                "config": {"terminal_ip": "10.20.0.9"}
+                "config": {"terminal_ip": "10.20.0.9"},
+                "acquirer": {
+                  "acquirerId": "ee55ff66-0000-4000-8000-000000000005",
+                  "code": "rede",
+                  "name": "Rede",
+                  "documentType": "CNPJ",
+                  "documentNumber": "11222333000181",
+                  "level": "device"
+                }
               }
             ]
           }
@@ -307,6 +335,16 @@ obrigatórios e a cobrança vai falhar do lado do provedor.
 maquininha de um quiosque quebrou e só aquele equipamento foi desligado, sem mexer nos demais da
 loja. Se a sua integração não distingue terminais, pode ignorar: o nível de loja é a resposta
 correta para um canal de venda.
+
+**Para saber quem credencia**, olhe `acquirer`. Ela é herdada como o resto da configuração:
+terminal → loja → conta, e vence a mais específica. Em `methods[]` vem o que vale na loja; em
+`devices[]`, o que vale nesse terminal. `level` diz de qual nível vem (`device`, `store` ou
+`account`). `null` significa que não há nada configurado em nenhum nível que se aplique, ou que a credenciadora que vence está inativa ou foi excluída; nesse caso não se sobe para o nível de cima: a Fire nunca adivinha uma
+credenciadora.
+
+É **o que está configurado na Fire**, apenas informativo. **Não substitui nem serve para
+preencher** o `acquirer` que o caixa envia em cada pagamento do [pedido](/pt/api-reference/orders):
+esse é um dado fiscal da transação e continua saindo do caixa. `documentNumber` também não é um dado fiscal.
 
 **Para saber o que enviar ao injetar um pedido**, use `code` em maiúsculas como `method` e um dos
 `processors[].code` como `processor`. Um PIX em uma loja do Brasil, com a forma `digital`

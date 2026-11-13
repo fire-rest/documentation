@@ -233,6 +233,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
           "lastFourDigits": "0000"
         },
         "acquirer": { "code": "00000000000000", "name": "ACQUIRER NAME", "cnpj": "01027058000191" },
+        "acquirerConfigured": { "code": "cielo", "name": "Cielo", "documentType": "CNPJ", "documentNumber": "11222333000181", "level": "store" },
         "voucher": "",
         "metadata": {},
         "totalBill": 22.9,
@@ -289,6 +290,10 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
       "rewardId": null,
       "itemType": "COMBO",
       "itemDescription": "Crunch Salad + Batata Pequena + 1 Tira + Refri",
+      "descriptions": {
+        "marketing": "1 Crunch Salad + 1 Batata Pequena + 1 Tira + 1 Refrigerante",
+        "ops": null
+      },
       "quantity": "1",
       "selectedCurrency": "BRL",
       "updatedAt": "2026-05-06T01:22:59.663Z",
@@ -368,6 +373,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
               "rewardId": null,
               "itemType": "MODIFIER",
               "itemDescription": "CRUNCH SALAD",
+              "descriptions": { "marketing": "Sanduíche de frango crocante com salada", "ops": null },
               "quantity": "1",
               "selectedCurrency": "BRL",
               "price": { /* unitPrice / totalPrice arrays — same shape */ },
@@ -577,7 +583,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
     <ResponseField name="paymentMethods" type="object[]">
       Methods used to pay. Most fields are camelCase (`totalBill`, `currencyCode`, `transactionId`, `transactionStatus`, `paymentMethodCode`, …) and the `card` sub-object is camelCase too (`card.cardCountry`, `card.lastFourDigits`, `card.externalCardBrandId`).
 
-      Each entry: `method`, `processor`, `currencyCode`, `paymentMethodCode`, `transactionType`, `transactionId`, `transactionStatus`, `exactPayment`, `totalBill`, `acquirer`, `card`, `transactionDate`, `metadata`, `mid`, `tid`, `voucher`, `referenceNumber`, `authorizationCode`, `customerCashAmount`, `changeAmount`, `idAuth`, `receiptCustomer`, `receiptMerchant`.
+      Each entry: `method`, `processor`, `currencyCode`, `paymentMethodCode`, `transactionType`, `transactionId`, `transactionStatus`, `exactPayment`, `totalBill`, `acquirer`, `acquirerConfigured`, `card`, `transactionDate`, `metadata`, `mid`, `tid`, `voucher`, `referenceNumber`, `authorizationCode`, `customerCashAmount`, `changeAmount`, `idAuth`, `receiptCustomer`, `receiptMerchant`.
 
       New fields (all nullable):
       - **`method`** (`string`) — Payment method (`CASH`, `CREDIT`, `DEBIT`, `DIGITAL`, `IFOOD`…): the one the order declared or, if it did not, the one Fire deduces from the processor. Comes with `processor`, which is who processed the charge (`PIX`). Events from before this change do not have it: there the method is the `processor`.
@@ -587,6 +593,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
       - **`acquirer.cnpj`** (`string | null`) — Tax ID (CNPJ) of the payment acquirer. Populated for Brazil only; `null` otherwise.
       - **`customerCashAmount`** (`number | null`) — Cash the customer handed over, in decimals: for a `22.9` bill paid with a `50` note, `50`. `0` on methods that are not cash. Orders injected before 24 September 2026 carry the string `"0"` here — read it as a number. `null` when it was not sent.
       - **`changeAmount`** (`number | null`) — Change the till gave back, in decimals. The real change on cash payments, `0` on other methods, `null` when it was not sent.
+      - **`acquirerConfigured`** (`object | null`) — Who acquires this payment according to your account's configuration in Fire: `code`, `name`, `documentType`, `documentNumber`, `level`. It is not fiscal data — that is still `acquirer`. See [Configured acquirer](#configured-acquirer).
     </ResponseField>
 
     <ResponseField name="metadata" type="object">
@@ -596,6 +603,69 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
     </ResponseField>
   </Expandable>
 </ResponseField>
+
+### Configured acquirer
+
+`payments.paymentMethods[].acquirerConfigured` says **who acquires each payment according to your
+account's configuration in Fire** — the acquirers assigned to each payment method in the payment
+settings. Fire resolves it terminal → store → account, and the most specific level wins. It is the
+same acquirer that [Payment method configuration (v2)](/en/api-reference/payment-methods-config-v2)
+returns, frozen on the payment.
+
+<ResponseField name="acquirerConfigured" type="object | null">
+  <Expandable title="acquirerConfigured">
+    <ResponseField name="code" type="string">Acquirer code, as configured in your account (e.g. `cielo`).</ResponseField>
+    <ResponseField name="name" type="string">Acquirer name.</ResponseField>
+    <ResponseField name="documentType" type="string | null">Type of the document your account loaded for the acquirer (`CNPJ`, `RUC`, `NIT`…).</ResponseField>
+    <ResponseField name="documentNumber" type="string | null">Number of the document your account loaded for the acquirer. **Not fiscal data** — see below.</ResponseField>
+    <ResponseField name="level" type="string">Which level it comes from: `device` (the terminal that charged), `store` or `account`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json payments.paymentMethods[n]
+{
+  "method": "CREDIT",
+  "processor": "CREDIT_CARD",
+  "acquirer": { "code": "01027058000191", "name": "CIELO S.A. - INSTITUICAO DE PAGAMENTO" },
+  "acquirerConfigured": {
+    "code": "cielo",
+    "name": "Cielo",
+    "documentType": "CNPJ",
+    "documentNumber": "11222333000181",
+    "level": "store"
+  }
+}
+```
+
+**It is `null` when:**
+
+- nothing is configured for that payment method at any level;
+- the assigned acquirer is inactive or was deleted — Fire does not fall back to the level above;
+- Fire cannot tell for certain which terminal charged (the sale came without a terminal, or with
+  one Fire does not recognise as a terminal of that store) and, in that store, some terminal has a
+  different acquirer for that method than the store. Fire never guesses;
+- in [Confirm payment](/en/api-reference/confirm-payment), when no piece of the charge is approved;
+- the order was saved before this field existed. Older orders are not backfilled.
+
+**What it does not change.** `acquirer`, `processor`, `method` and `paymentMethodCode` are exactly
+as before. `acquirer` is what the POS declares for the transaction and is still the fiscal data (in
+Brazil, the card acquirer reported on the NFC-e). `acquirerConfigured.documentNumber` is **not**
+that tax ID: do not use it to fill or replace `acquirer`.
+
+**When it is resolved.** When the payment is saved: when the order is injected or, for an order
+charged later, on [Confirm payment](/en/api-reference/confirm-payment). Confirm payment does not identify a terminal for this purpose — the optional `device` is only used for fiscal numbering — so the store → account rule and the third `null` case above apply. A later
+change to the configuration does not rewrite orders already saved; it reaches new sales within a
+minute.
+
+**You cannot send it.** Fire always sets this field itself. A value that arrives in a payment you
+inject is overwritten.
+
+**In the Orders API.** [List orders](/en/api-reference/list-orders) and
+[Get order](/en/api-reference/get-order) return the same value in
+`paymentMethods[].details.acquirer_configured`, in snake_case: `code`, `name`, `document_type`,
+`document_number`, `level`.
+
+<Note>**Compatibility.** `acquirerConfigured` is a new key in each payment. If your consumer validates the payload strictly, it must accept keys it does not know.</Note>
 
 ### `data.fulfillment`
 
@@ -647,7 +717,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
     <ResponseField name="hash" type="string">Stable hash for this line — useful for dedup if you fan out lines downstream.</ResponseField>
     <ResponseField name="itemId" type="string">Product identifier.</ResponseField>
     <ResponseField name="itemType" type="string">
-      Item classification — one of `PRODUCT`, `COMBO`, `MODIFIER`, `PACKAGING`. <Tip>Full enum documented in **v1**.</Tip> Passthrough from the source; falls back to `PRODUCT` when the channel doesn't send a type.
+      Item classification — one of `PRODUCT`, `COMBO`, `MODIFIER`, `PACKAGING`. <Tip>Full enum documented in **v1**.</Tip> Comes from the **menu** configured in Fire when the product is in the catalog, even if the channel sent a different type or none. The product is identified by the `productId` you sent in the order, which is the product `id` in [`menu.updated`](/en/events/menu-updated). The menu defines `PRODUCT`, `COMBO` or `MODIFIER`: a `PACKAGING` line whose product is in the catalog goes out with the menu type. When the product is not in the catalog, it is the type the channel sent, or `PRODUCT` if it sent none; the same in rare cases where Fire cannot read the catalog in time.
 
       <Expandable title="itemType values">
         <ResponseField name="PRODUCT" type="enum">A standalone sellable item — the line **is** the product (e.g. a burger sold on its own, a bottled drink). Default fallback when no type is sent.</ResponseField>
@@ -657,6 +727,11 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
       </Expandable>
     </ResponseField>
     <ResponseField name="itemDescription" type="string">Display name.</ResponseField>
+    <ResponseField name="descriptions" type="object">
+      Product descriptions from the Fire catalog: `{ marketing, ops }`, each a string or `null`. `marketing` is the menu's commercial description; `ops`, the operational one, meant for the kitchen. When the product has no Spanish text, English is used, then Portuguese. A catalog change usually reaches new orders within about a minute.
+
+      **Optional**: absent when the product is not in the catalog or has neither description, and in rare cases it can be missing even when it has them. It also appears on each `modifierGroups[].selectedModifiers[]`.
+    </ResponseField>
     <ResponseField name="rewardId" type="string | null">Redemption code of the coupon behind this line’s discount — it matches an entry in `marketing.coupons[].rewardId`. `null` when the discount had no coupon (a catalog markdown), and populated with `discountValue: "0"` when the coupon changed the list price instead of discounting it. Both are valid. Only one coupon per line: a second one applied to the same item appears only in `marketing.coupons[]`.</ResponseField>
     <ResponseField name="quantity" type="string">String integer (e.g. `"1"`, `"2"`).</ResponseField>
     <ResponseField name="selectedCurrency" type="string">ISO 4217 (e.g. `BRL`).</ResponseField>
@@ -670,7 +745,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
     </ResponseField>
     <ResponseField name="lineTotals" type="object[]">Same shape as `price.totalPrice[]`.</ResponseField>
     <ResponseField name="modifierGroups" type="object[]">
-      Selected modifier groups. Each: `{ uid, description, selectedModifiers[] }`. `selectedModifiers[n]` is recursively shaped like an order line (price, modifierGroups, itemDescription, …) up to a few levels deep, and carries its own `rewardId` — on a combo the discount usually lives on the modifiers, not on the container.
+      Selected modifier groups. Each: `{ uid, description, selectedModifiers[] }`. `selectedModifiers[n]` is recursively shaped like an order line (price, modifierGroups, itemDescription, descriptions, …) up to a few levels deep, and carries its own `rewardId` — on a combo the discount usually lives on the modifiers, not on the container.
     </ResponseField>
     <ResponseField name="metadata" type="object">
       Per-line metadata. May contain `fiscal: { ncm, cfop, csosn, vTotTrib, fiscalCategoryCode }` for BR fiscal classification, plus `redeemed`, `externalCode`, `referenceUnitPrice`, `referenceTotalPrice`.

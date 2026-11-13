@@ -74,28 +74,37 @@ O mesmo fato pode chegar até você mais de uma vez, então **seu endpoint preci
 
 | Evento | Chave de dedup |
 |---|---|
-| Eventos de pedido | `data.orderId` + `event.type` + `event.emittedAt` |
+| Demais eventos de pedido | `data.orderId` + `event.type` + `event.emittedAt` |
+| `order.status_updated` | `data.orderId` + `data.source` + a mudança da trilha (`kitchen.status`, `lifecycle.event` + `lifecycle.revision`, ou `fiscal.sequence`) — veja [a página do evento](/pt/events/order-status-updated) |
 | `store.updated` | `data.publication.id` |
 | `store.business_day_closed` | `data.businessDayId` |
 | `menu.updated` | `data.groupId` + `data.menuSyncId` |
 | `product.updated` | `data.groupId` + `data.changes` + `data.targets[0].store.uid` (traz valores absolutos: aplicá-lo duas vezes deixa o mesmo resultado) |
 
-A chave dos eventos de pedido cobre as **recolocações automáticas na fila**, que mantêm `event.emittedAt`. Um **reprocessamento manual a partir do dead letter** chega como um evento novo, com `event.emittedAt` novo, então seu dedup o deixa passar: se você já processou esse fato, decida pelo estado do pedido no seu sistema. As chaves de `store.updated` e `store.business_day_closed` vêm de `data` e não mudam num reprocessamento.
+A chave dos eventos de pedido cobre as **recolocações automáticas na fila**, que mantêm `event.emittedAt`. Um **reprocessamento manual a partir do dead letter** chega como um evento novo, com `event.emittedAt` novo, então seu dedup o deixa passar: se você já processou esse fato, decida pelo estado do pedido no seu sistema. As chaves de `order.status_updated`, `store.updated` e `store.business_day_closed` vêm de `data` e não mudam num reprocessamento. Em `order.status_updated` isso significa que o reprocessamento manual de um aviso que você já processou **é descartado como duplicado**: é o que você quer, desde que salve a chave só depois de processar o aviso com sucesso. Se a primeira tentativa falhou do seu lado, o reprocessamento precisa passar.
 
 ```js
 const seen = new Map(); // Redis ou DB em produção
 
+// order.status_updated: uma chave por mudança de acompanhamento, conforme a trilha
+function statusKey(d) {
+  if (d.source === "kds") return `${d.orderId}:kds:${d.kitchen.status}`;
+  if (d.source === "order") return `${d.orderId}:order:${d.lifecycle.event}:${d.lifecycle.revision ?? ""}`;
+  return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
+}
+
 const key = data.publication?.id ?? data.businessDayId
-  ?? `${data.orderId}:${event.type}:${event.emittedAt}`;
+  ?? (event.type === "order.status_updated" ? statusKey(data)
+      : `${data.orderId}:${event.type}:${event.emittedAt}`);
 if (seen.has(key)) return; // já tratado
 seen.set(key, Date.now());
 ```
 
-As recolocações automáticas chegam em até uns 11 minutos depois da primeira tentativa (mais o tempo de cada tentativa), então basta guardar as chaves um pouco mais que isso. Um reprocessamento manual a partir do dead letter traz uma chave nova nos eventos de pedido (veja acima).
+As recolocações automáticas chegam em até uns 11 minutos depois da primeira tentativa (mais o tempo de cada tentativa), então basta guardar as chaves um pouco mais que isso. Um reprocessamento manual a partir do dead letter traz uma chave nova nos eventos de pedido, exceto em `order.status_updated` (veja acima).
 
 ## Dead letter
 
-Quando as recolocações também se esgotam — ou a falha não é retentável, como um `4xx` — o job vai para o dead letter. Flows falhos podem ser inspecionados e reprocessados manualmente em **Settings → Integration Flows → Executions → Dead letter**. Um reprocessamento é uma **entrega nova**: traz `event.id`, `event.createdAt` e `event.emittedAt` novos, e `_meta.attempt` volta a `1`; `data` é o da entrega original. Nos eventos de pedido seu dedup o deixa passar: se a entrega original chegou e você já a processou, decida pelo estado do pedido no seu sistema.
+Quando as recolocações também se esgotam — ou a falha não é retentável, como um `4xx` — o job vai para o dead letter. Flows falhos podem ser inspecionados e reprocessados manualmente em **Settings → Integration Flows → Executions → Dead letter**. Um reprocessamento é uma **entrega nova**: traz `event.id`, `event.createdAt` e `event.emittedAt` novos, e `_meta.attempt` volta a `1`; `data` é o da entrega original. Nos eventos de pedido seu dedup o deixa passar (exceto em `order.status_updated`, cuja chave vem de `data`): se a entrega original chegou e você já a processou, decida pelo estado do pedido no seu sistema.
 
 ## Garantias de ordem
 
@@ -189,7 +198,7 @@ Até lá, trate sua credencial de auth como prova de origem.
 
 - **Sempre habilite retentativas em flows de produção.** Um único timeout não deveria derrubar um evento.
 - **Limite retentativas a 3 a menos que tenha um downstream flaky de cauda longa.** Mais retentativas significa mais latência até dead-letter.
-- **Deduplique por uma chave de domínio, não por `event.id`.** `event.id` muda quando o Fire recoloca uma entrega na fila, e `data.orderId` sozinho é compartilhado por todos os eventos do ciclo de vida do pedido. Combine `data.orderId` + `event.type` + `event.emittedAt`, que cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo (veja [Idempotência do seu lado](#idempotência-do-seu-lado)).
+- **Deduplique por uma chave de domínio, não por `event.id`.** `event.id` muda quando o Fire recoloca uma entrega na fila, e `data.orderId` sozinho é compartilhado por todos os eventos do ciclo de vida do pedido. Combine `data.orderId` + `event.type` + `event.emittedAt`, que cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo. Em `order.status_updated`, use em vez disso `data.orderId` + `data.source` + a mudança da trilha (veja [Idempotência do seu lado](#idempotência-do-seu-lado)).
 - **Salve `_meta.executionId` e `_meta.attempt` em eventos persistidos** — são inestimáveis para debugar "por que o mesmo pedido foi processado duas vezes".
 - **Mantenha `timeout` curto (5–10s) e confirme rápido no seu handler.** Use uma fila para fazer trabalho real em background.
 

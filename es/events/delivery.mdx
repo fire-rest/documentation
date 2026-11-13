@@ -74,28 +74,37 @@ El mismo hecho te puede llegar más de una vez, así que **tu endpoint debe ser 
 
 | Evento | Llave de dedup |
 |---|---|
-| Eventos de orden | `data.orderId` + `event.type` + `event.emittedAt` |
+| Los demás eventos de orden | `data.orderId` + `event.type` + `event.emittedAt` |
+| `order.status_updated` | `data.orderId` + `data.source` + el cambio del carril (`kitchen.status`, `lifecycle.event` + `lifecycle.revision`, o `fiscal.sequence`) — ver [la página del evento](/es/events/order-status-updated) |
 | `store.updated` | `data.publication.id` |
 | `store.business_day_closed` | `data.businessDayId` |
 | `menu.updated` | `data.groupId` + `data.menuSyncId` |
 | `product.updated` | `data.groupId` + `data.changes` + `data.targets[0].store.uid` (trae valores absolutos: aplicarlo dos veces deja lo mismo) |
 
-La llave de los eventos de orden cubre los **reencolados automáticos**, que conservan `event.emittedAt`. Una **reproducción manual desde el dead letter** llega como un evento nuevo, con `event.emittedAt` nuevo, así que tu dedup la deja pasar: si ya procesaste ese hecho, decide por el estado de la orden en tu sistema. Las llaves de `store.updated` y `store.business_day_closed` salen de `data` y no cambian en una reproducción.
+La llave de los eventos de orden cubre los **reencolados automáticos**, que conservan `event.emittedAt`. Una **reproducción manual desde el dead letter** llega como un evento nuevo, con `event.emittedAt` nuevo, así que tu dedup la deja pasar: si ya procesaste ese hecho, decide por el estado de la orden en tu sistema. Las llaves de `order.status_updated`, `store.updated` y `store.business_day_closed` salen de `data` y no cambian en una reproducción. En `order.status_updated` eso significa que la reproducción manual de un aviso que ya procesaste **se descarta como duplicado**: es lo que quieres, siempre que guardes la llave solo después de procesar bien el aviso. Si el primer intento falló de tu lado, la reproducción tiene que pasar.
 
 ```js
 const seen = new Map(); // Redis o DB en producción
 
+// order.status_updated: una llave por cambio de seguimiento, según el carril
+function statusKey(d) {
+  if (d.source === "kds") return `${d.orderId}:kds:${d.kitchen.status}`;
+  if (d.source === "order") return `${d.orderId}:order:${d.lifecycle.event}:${d.lifecycle.revision ?? ""}`;
+  return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
+}
+
 const key = data.publication?.id ?? data.businessDayId
-  ?? `${data.orderId}:${event.type}:${event.emittedAt}`;
+  ?? (event.type === "order.status_updated" ? statusKey(data)
+      : `${data.orderId}:${event.type}:${event.emittedAt}`);
 if (seen.has(key)) return; // ya manejado
 seen.set(key, Date.now());
 ```
 
-Los reencolados automáticos llegan dentro de unos 11 minutos del primer intento (más lo que tarde cada intento), así que basta con guardar las llaves algo más que eso. Una reproducción manual desde el dead letter trae una llave nueva en los eventos de orden (ver arriba).
+Los reencolados automáticos llegan dentro de unos 11 minutos del primer intento (más lo que tarde cada intento), así que basta con guardar las llaves algo más que eso. Una reproducción manual desde el dead letter trae una llave nueva en los eventos de orden, salvo en `order.status_updated` (ver arriba).
 
 ## Dead letter
 
-Cuando también se agotan los reencolados — o el fallo no es reintentable, como un `4xx` — el job pasa al dead letter. Los flows fallidos se inspeccionan y reproducen manualmente desde **Settings → Integration Flows → Executions → Dead letter**. Una reproducción es una **entrega nueva**: trae `event.id`, `event.createdAt` y `event.emittedAt` nuevos, y `_meta.attempt` vuelve a `1`; `data` es el de la entrega original. En los eventos de orden tu dedup la deja pasar: si la entrega original sí te llegó y ya la procesaste, decide por el estado de la orden en tu sistema.
+Cuando también se agotan los reencolados — o el fallo no es reintentable, como un `4xx` — el job pasa al dead letter. Los flows fallidos se inspeccionan y reproducen manualmente desde **Settings → Integration Flows → Executions → Dead letter**. Una reproducción es una **entrega nueva**: trae `event.id`, `event.createdAt` y `event.emittedAt` nuevos, y `_meta.attempt` vuelve a `1`; `data` es el de la entrega original. En los eventos de orden tu dedup la deja pasar (salvo en `order.status_updated`, cuya llave sale de `data`): si la entrega original sí te llegó y ya la procesaste, decide por el estado de la orden en tu sistema.
 
 ## Garantías de orden
 
@@ -189,7 +198,7 @@ Hasta entonces, trata tu credencial de auth como prueba de origen.
 
 - **Habilita siempre los reintentos en flows de producción.** Un solo timeout no debería tirar un evento.
 - **Cap de reintentos en 3 a menos que tengas un downstream flaky de cola larga.** Más reintentos significa más latencia hasta dead-letter.
-- **Deduplica por una llave de dominio, no por `event.id`.** `event.id` cambia cuando Fire reencola una entrega, y `data.orderId` solo lo comparten todos los eventos del ciclo de vida de la orden. Combina `data.orderId` + `event.type` + `event.emittedAt`, que cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo (ver [Idempotencia de tu lado](#idempotencia-de-tu-lado)).
+- **Deduplica por una llave de dominio, no por `event.id`.** `event.id` cambia cuando Fire reencola una entrega, y `data.orderId` solo lo comparten todos los eventos del ciclo de vida de la orden. Combina `data.orderId` + `event.type` + `event.emittedAt`, que cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo. En `order.status_updated` usa en cambio `data.orderId` + `data.source` + el cambio del carril (ver [Idempotencia de tu lado](#idempotencia-de-tu-lado)).
 - **Guarda `_meta.executionId` y `_meta.attempt` en eventos persistidos** — son invaluables para debuggear "por qué se procesó dos veces la misma orden".
 - **Mantén `timeout` corto (5–10s) y confirma rápido en tu handler.** Usa una cola para hacer el trabajo real en background.
 

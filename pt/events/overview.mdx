@@ -82,11 +82,11 @@ flowchart LR
     style FIRE fill:#1E293B,color:#F8FAFC,stroke:#1E293B
 ```
 
-Repare nos **dois circuitos de ida e volta**: o Fire avisa o faturador (②), o faturador resolve com a autoridade (③) e **responde ao Fire** pelo callback (④) — só então o Fire emite `order.invoiced` / `order.reversed` (⑤). O mesmo com a cozinha: o Fire despacha o pedido ao KDS (⑥), o KDS **reporta o avanço ao Fire** (⑦) e o Fire emite `order.status_updated` (⑧). Nada fica sabendo "por conta própria": tudo passa pelo Fire e sai do Fire — incluindo o `store.business_day_closed` (⑨) no fechamento do dia.
+Repare nos **dois circuitos de ida e volta**: o Fire avisa o faturador (②), o faturador resolve com a autoridade (③) e **responde ao Fire** pelo callback (④) — só então o Fire emite `order.invoiced` / `order.reversed` (⑤). O mesmo com a cozinha: o Fire despacha o pedido ao KDS (⑥), o KDS **reporta o avanço ao Fire** (⑦) e o Fire emite `order.status_updated` (⑧) — o mesmo aviso de acompanhamento que o Fire também emite a cada mudança do pedido e da nota fiscal. Nada fica sabendo "por conta própria": tudo passa pelo Fire e sai do Fire — incluindo o `store.business_day_closed` (⑨) no fechamento do dia.
 
 ### Uma ação, um evento
 
-Cada ação de negócio é seu **próprio** evento com seu **próprio** `event.id` — `order.invoiced` para uma autorização fiscal, `order.reversed` para um cancelamento, cada `order.status_updated` para uma transição de cozinha. Eles nunca são colapsados: autorizar um pedido e depois cancelá-lo são dois eventos distintos com dois ids distintos.
+Cada ação de negócio é seu **próprio** evento com seu **próprio** `event.id` — `order.invoiced` para uma autorização fiscal, `order.reversed` para um cancelamento, cada `order.status_updated` para cada mudança de acompanhamento (cozinha, pedido ou nota fiscal). Eles nunca são colapsados: autorizar um pedido e depois cancelá-lo são dois eventos distintos com dois ids distintos.
 
 Isso define como o Fire faz o match dos **reportes inbound** que disparam essas ações:
 
@@ -170,7 +170,7 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 | [`order.cancelled`](/pt/events/order-cancelled) | Snapshot V4 + bloco `cancellation` de auditoria, com `cancellation.fiscal` (`status`, `authority`) quando o pedido tinha um documento autorizado |
 | [`order.invoiced`](/pt/events/order-invoiced) | Snapshot V4 + bloco `fiscal`: `authority` (campos canônicos, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/pt/events/order-reversed) | Snapshot V4 + bloco `cancellation` de auditoria + `cancellation.fiscal` com o documento cancelado, `history` e `compensates` |
-| [`order.status_updated`](/pt/events/order-status-updated) | Payload leve, **não** o snapshot V4 completo: identidade do pedido (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), uma loja mínima (`code`, `name`, `account`, `vendor`), `fulfillment.service.code` e o bloco `kitchen` (status, previousStatus, history do percurso) |
+| [`order.status_updated`](/pt/events/order-status-updated) | Aviso leve de acompanhamento, **não** o snapshot V4 completo: identidade do pedido (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), uma loja mínima (`code`, `name`, `account`, `vendor`), `fulfillment.service.code`, `source` (`kds` / `order` / `fiscal`) e só o bloco da sua trilha: `kitchen`, `lifecycle` ou `fiscal` (os outros dois `null`) |
 | [`store.updated`](/pt/events/store-updated) | A loja completa: bloco `store` V4 + `metadata`, `channels[]` com horários resolvidos, `operationSchedule`, `salesSchedule` e o bloco `publication` (`id`, `sequence`, `reason`, …) |
 | [`menu.updated`](/pt/events/menu-updated) | O cardápio completo de uma terna (loja × canal × tipo de serviço): contexto (`store`, `channel`, `fulfillment`, `menuSyncId`, `groupId`) e `menu` com produtos, categorias, grupos de opções e horários |
 | [`product.updated`](/pt/events/product-updated) | Um patch: `changes`, `targets[]` com a loja e suas ternas afetadas, e `products[]` com apenas o bloco que mudou (`availability` ou `pricing`) |
@@ -238,7 +238,8 @@ app.post("/fire/events", express.json(), async (req, res) => {
 
   // 2. Deduplique por uma chave de domínio — event.id muda quando o Fire recoloca uma entrega na fila
   const key = data?.publication?.id ?? data?.businessDayId
-    ?? `${data?.orderId}:${event.type}:${event.emittedAt}`;
+    ?? (event.type === "order.status_updated" ? statusKey(data)
+        : `${data?.orderId}:${event.type}:${event.emittedAt}`);
   if (seen.has(key)) return;
   seen.set(key, Date.now());
 
@@ -251,11 +252,27 @@ app.post("/fire/events", express.json(), async (req, res) => {
     case "order.cancelled":     return onOrderCancelled(data);
     case "order.invoiced":       return onOrderInvoiced(data);
     case "order.reversed":       return onOrderReversed(data);
-    case "order.status_updated": return onKitchenAdvance(data);
+    case "order.status_updated": return onStatusUpdate(data);
     case "store.updated":        return onStoreUpdated(data);
     default: console.warn("Tipo de evento Fire desconhecido", event.type);
   }
 });
+
+// order.status_updated: uma chave por mudança de acompanhamento, conforme a trilha (veja a página do evento)
+function statusKey(d) {
+  if (d.source === "kds") return `${d.orderId}:kds:${d.kitchen.status}`;
+  if (d.source === "order") return `${d.orderId}:order:${d.lifecycle.event}:${d.lifecycle.revision ?? ""}`;
+  return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
+}
+
+// Só vem preenchido o bloco da trilha; os outros dois chegam em null
+function onStatusUpdate(d) {
+  switch (d.source) {
+    case "kds":    return onKitchenAdvance(d.kitchen, d);
+    case "order":  return onOrderMovement(d.lifecycle, d);
+    case "fiscal": return onInvoiceMovement(d.fiscal, d);
+  }
+}
 
 app.listen(8080);
 ```

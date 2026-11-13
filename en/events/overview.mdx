@@ -82,11 +82,11 @@ flowchart LR
     style FIRE fill:#1E293B,color:#F8FAFC,stroke:#1E293B
 ```
 
-Notice the **two round-trip circuits**: Fire notifies the biller (②), the biller settles with the authority (③) and **reports back to Fire** via the callback (④) — only then does Fire emit `order.invoiced` / `order.reversed` (⑤). Same with the kitchen: Fire dispatches the order to the KDS (⑥), the KDS **reports progress back to Fire** (⑦) and Fire emits `order.status_updated` (⑧). Nothing learns anything "on its own": everything goes through Fire and out of Fire — including `store.business_day_closed` (⑨) at day close.
+Notice the **two round-trip circuits**: Fire notifies the biller (②), the biller settles with the authority (③) and **reports back to Fire** via the callback (④) — only then does Fire emit `order.invoiced` / `order.reversed` (⑤). Same with the kitchen: Fire dispatches the order to the KDS (⑥), the KDS **reports progress back to Fire** (⑦) and Fire emits `order.status_updated` (⑧) — the same tracking notice Fire also emits for each order and invoice change. Nothing learns anything "on its own": everything goes through Fire and out of Fire — including `store.business_day_closed` (⑨) at day close.
 
 ### One action, one event
 
-Every business action is its **own** event with its **own** `event.id` — `order.invoiced` for a fiscal authorization, `order.reversed` for a cancellation, each `order.status_updated` for a kitchen transition. They are never collapsed: authorizing an order and later cancelling it are two distinct events with two distinct ids.
+Every business action is its **own** event with its **own** `event.id` — `order.invoiced` for a fiscal authorization, `order.reversed` for a cancellation, each `order.status_updated` for each tracking change (kitchen, order or invoice). They are never collapsed: authorizing an order and later cancelling it are two distinct events with two distinct ids.
 
 This shapes how Fire matches the **inbound reports** that drive those actions:
 
@@ -170,7 +170,7 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 | [`order.cancelled`](/en/events/order-cancelled) | V4 order snapshot + `cancellation` audit block, with `cancellation.fiscal` (`status`, `authority`) when the order had an authorized document |
 | [`order.invoiced`](/en/events/order-invoiced) | V4 order snapshot + `fiscal` block: `authority` (canonical fields, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/en/events/order-reversed) | V4 order snapshot + `cancellation` audit block + `cancellation.fiscal` with the cancelled document, `history` and `compensates` |
-| [`order.status_updated`](/en/events/order-status-updated) | A light payload, **not** the full V4 snapshot: order identity (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), a minimal store (`code`, `name`, `account`, `vendor`), `fulfillment.service.code` and the `kitchen` block (status, previousStatus, history of the route) |
+| [`order.status_updated`](/en/events/order-status-updated) | A light tracking notice, **not** the full V4 snapshot: order identity (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), a minimal store (`code`, `name`, `account`, `vendor`), `fulfillment.service.code`, `source` (`kds` / `order` / `fiscal`) and only its lane's block: `kitchen`, `lifecycle` or `fiscal` (the other two `null`) |
 | [`store.updated`](/en/events/store-updated) | The whole store: V4 `store` block + `metadata`, `channels[]` with resolved schedules, `operationSchedule`, `salesSchedule` and the `publication` block (`id`, `sequence`, `reason`, …) |
 | [`menu.updated`](/en/events/menu-updated) | The whole menu of a terna (store × channel × fulfillment type): context (`store`, `channel`, `fulfillment`, `menuSyncId`, `groupId`) and `menu` with products, categories, option groups and schedules |
 | [`product.updated`](/en/events/product-updated) | A patch: `changes`, `targets[]` with the store and its affected ternas, and `products[]` with only the block that changed (`availability` or `pricing`) |
@@ -238,7 +238,8 @@ app.post("/fire/events", express.json(), async (req, res) => {
 
   // 2. Deduplicate by a domain key — event.id changes when Fire re-queues a delivery
   const key = data?.publication?.id ?? data?.businessDayId
-    ?? `${data?.orderId}:${event.type}:${event.emittedAt}`;
+    ?? (event.type === "order.status_updated" ? statusKey(data)
+        : `${data?.orderId}:${event.type}:${event.emittedAt}`);
   if (seen.has(key)) return;
   seen.set(key, Date.now());
 
@@ -251,11 +252,27 @@ app.post("/fire/events", express.json(), async (req, res) => {
     case "order.cancelled":     return onOrderCancelled(data);
     case "order.invoiced":       return onOrderInvoiced(data);
     case "order.reversed":       return onOrderReversed(data);
-    case "order.status_updated": return onKitchenAdvance(data);
+    case "order.status_updated": return onStatusUpdate(data);
     case "store.updated":        return onStoreUpdated(data);
     default: console.warn("Unknown Fire event type", event.type);
   }
 });
+
+// order.status_updated: one key per tracking change, by lane (see the event page)
+function statusKey(d) {
+  if (d.source === "kds") return `${d.orderId}:kds:${d.kitchen.status}`;
+  if (d.source === "order") return `${d.orderId}:order:${d.lifecycle.event}:${d.lifecycle.revision ?? ""}`;
+  return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
+}
+
+// Only the lane's block comes filled; the other two are null
+function onStatusUpdate(d) {
+  switch (d.source) {
+    case "kds":    return onKitchenAdvance(d.kitchen, d);
+    case "order":  return onOrderMovement(d.lifecycle, d);
+    case "fiscal": return onInvoiceMovement(d.fiscal, d);
+  }
+}
 
 app.listen(8080);
 ```

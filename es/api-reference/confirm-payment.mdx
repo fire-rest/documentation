@@ -93,6 +93,12 @@ total de la orden.
   Medio de pago (`CASH`, `CREDIT`, `DEBIT`, `PIX`…). Se usa para la facturación y las métricas.
 </ParamField>
 
+<ParamField body="device" type="object">
+  La caja que cobra: `uid` y, opcionales, `name` y `platform`. Solo se usa cuando el vendor
+  [numera al cobrar](#numeración-fiscal-al-cobrar): la factura la emite la caja que cobra, no el kiosco
+  que tomó el pedido. Sin él, Fire numera con el dispositivo de la orden.
+</ParamField>
+
 ## Petición
 
 <RequestExample>
@@ -273,9 +279,50 @@ código es contrato.
 | la referencia matchea más de una orden | `409 AMBIGUOUS_ORDER_REFERENCE` |
 | una pieza nueva sobre una orden ya saldada | `409 ORDER_ALREADY_SETTLED` |
 | una pieza nueva sobre una orden cerrada sin cobrarse | `409 ORDER_NOT_OPEN` |
+| solo con [numeración al cobrar](#numeración-fiscal-al-cobrar): la numeración falló y la política es `REFUND` | `400 FISCAL_NUMBERING_FAILED` |
 
 Los campos que Fire no conoce **se aceptan y se guardan**: podés enviar tu objeto de pago completo
 sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque no suma.
+
+## Numeración fiscal al cobrar
+
+<Note>
+  Solo para vendors con la numeración en la inyección prendida (**apagada por defecto**). Si no, no
+  cambia nada y la respuesta trae `fiscal: null`.
+</Note>
+
+Una orden que nace `OPEN` se numera acá, **antes** de registrar el cobro, con las mismas reglas que
+[en la inyección](/es/api-reference/inject-order-partners#numeración-fiscal-en-la-inyección).
+`data.fiscal` trae el mismo bloque: `action`, `requestStatus` y `failure`.
+
+- Se numera en el **primer envío con al menos un pago aprobado**, aunque ese envío no salde la
+  orden (por ejemplo, porque los montos no cuadran). Los envíos siguientes reusan ese número sin
+  llamar al proveedor. Un envío con puros rechazos no numera.
+- Con numeración, la llamada puede tardar hasta unos 5 s más: dale a tu cliente HTTP un timeout holgado.
+- **`CONTINUE`** → el cobro se registra como siempre: numerado, o sin número si la numeración falló.
+- **`REFUND`** → `400` `BUSINESS_ERROR` con `code: FISCAL_NUMBERING_FAILED` y `data.fiscal`.
+  **No se registró nada y la orden sigue abierta.** Devuelve el dinero.
+
+A diferencia de la inyección, aquí `code` y `data` van en la raíz del error, como los demás rechazos
+de este endpoint.
+
+```json
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "code": "FISCAL_NUMBERING_FAILED",
+  "message": "Could not number the sale — the charge was not registered",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "fiscal": {
+      "action": "REFUND",
+      "requestStatus": "FAILED_RETRYABLE",
+      "failure": { "code": "PROVIDER_UNAVAILABLE", "message": "…" }
+    }
+  }
+}
+```
 
 ## Respuestas
 
@@ -295,7 +342,8 @@ sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque n
     "declinedCount": 0,
     "amountMismatch": false,
     "declines": [],
-    "flowsTriggered": 1
+    "flowsTriggered": 1,
+    "fiscal": null
   }
 }
 ```

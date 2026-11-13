@@ -29,6 +29,77 @@ description: What changes in Fire — integrations, product screens, guides and 
   <a href="https://buttondown.com/fire-docs" target="_blank" rel="noopener" style={{display: 'inline-block', marginTop: '0.875rem', padding: '0.5rem 1.25rem', borderRadius: '0.5rem', background: '#E6293D', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none'}}>Subscribe</a>
 </div>
 
+## 13 November 2026 — Order events: catalog descriptions and product type from the menu
+
+**For:** Integrations
+
+The lines of the order events ([`order.opened`](/en/events/order-opened), [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced) and [`order.reversed`](/en/events/order-reversed)) change in two ways:
+
+- **`descriptions`** (new, optional): `{ marketing, ops }` with the product descriptions from the Fire catalog, on each line and each modifier. Useful, for example, to show the kitchen what a combo is made of. Absent when the product is not in the catalog or has no descriptions.
+- **`itemType`** comes from the menu configured in Fire when the product is in the catalog, even if the channel sent a different type or none. It used to be the type the channel sent.
+- In [Get order](/en/api-reference/get-order) and [List orders](/en/api-reference/list-orders), `orderLines` carries the same (`descriptions`, `item_type` from the menu) plus `reported_item_type`, informational: the type the channel sent when it does not match the menu.
+
+In [order injection](/en/api-reference/inject-order-partners#rejection-by-validation-rules) there is a new rule your vendor can turn on per channel: `PRODUCT_TYPE_MISMATCH` rejects the order when a product arrives with a `type` different from the menu or without `type`. It is off by default. If your receiver validates events against a strict schema, update it to accept `descriptions`.
+
+Updated in **EN / ES / PT**.
+
+## 13 November 2026 — Fiscal numbering inside the injection (off by default)
+
+**For:** Integrations
+
+Fire can now number the sale inside the order injection and the charge confirmation, so the register
+doesn't call `POST /fiscal/numbering` first. **It is off by default** and is turned on per vendor;
+until then nothing changes and both responses carry `fiscal: null`.
+
+- [Inject order](/en/api-reference/inject-order-partners#fiscal-numbering-at-injection), [Create order](/en/api-reference/create-order) and [Create order v2](/en/api-reference/create-order-v2): a sale born paid is numbered in the same request, which can take up to about 5 s longer. The response carries `fiscal` with `action` (`CONTINUE` or `REFUND`), `requestStatus` and `failure`. With `REFUND` the order is not created: `400` with `details.code: FISCAL_NUMBERING_FAILED`.
+- [Confirm payment](/en/api-reference/confirm-payment#fiscal-numbering-on-charge): an order born open is numbered when it is charged. New optional field `device`: the register that charges.
+- **Provider down or slow:** Fire waits for the fiscal provider at most 5 s (2.8 s by default). The cap drops from 8 s to 5 s **also in `POST /fiscal/numbering`**. After 5 failures in a row Fire stops calling a down provider for 30 s, so the sale isn't held up.
+
+Before it is turned on for your vendor, your registers must read `fiscal.action` and give the money back with `REFUND`.
+
+Updated in **EN / ES / PT**.
+
+## 12 November 2026 — `order.status_updated` v2: order tracking across kitchen, order and invoice
+
+**For:** Integrations
+
+[`order.status_updated`](/en/events/order-status-updated) no longer reports only the kitchen. It now reports everything that happens to the order, in three lanes:
+
+- **Kitchen** (`kds`): `preparing`, `ready`, `dispatched` and, new, `cancelled` when the KDS confirms the kitchen cancelled.
+- **Order** (`order`): `opened`, `corrected`, `completed`, `force_closed` (closed automatically at the end of the day) and `cancelled`.
+- **Invoice** (`fiscal`): `numbered`, `rejected`, `invoiced`, `cancellation_failed` (the authority rejected the void) and `reversed`.
+
+Each flow picks in its trigger which statuses it receives. **If you don't pick anything, you receive the same as before** (`preparing`, `ready`, `dispatched`). The notice adds three fields to `data`: `source`, `lifecycle` and `fiscal`. If your receiver validates the body with a strict schema, update it to accept them. To order the notices: `rank` for kitchen and order, `fiscal.sequence` for the invoice. The previous contract stays at [v1](/en/events-v1/order-status-updated).
+
+Updated in **EN / ES / PT**.
+
+## 12 November 2026 — Payment method configuration (v2): who acquires
+
+**For:** Integrations
+
+[Payment method configuration (v2)](/en/api-reference/payment-methods-config-v2) now says who acquires each method's payments: the acquirer configured in Fire, per store and per terminal. It is a new, backward-compatible field: nothing you already read changes.
+
+- **`stores[].methods[].acquirer`** (`object | null`) — the acquirer that applies at the store (store → account): `acquirerId`, `code`, `name`, `documentType`, `documentNumber` and `level`, which says which level it comes from. `null` = nothing configured or the acquirer is inactive or deleted.
+- **`stores[].methods[].devices[].acquirer`** (`object | null`) — the same, applied at the terminal (terminal → store → account). A terminal with its own acquirer now shows up in `devices`.
+
+This is what is configured in Fire, for information only: it does not replace, and must not be used to fill, each order payment's `acquirer`, which is fiscal data and still comes from the POS.
+
+Updated in **EN / ES / PT**.
+
+## 12 November 2026 — Order events: configured acquirer on each payment
+
+**For:** Integrations
+
+Each payment in `payments.paymentMethods[]` of the order events ([`order.opened`](/en/events/order-opened), [`order.completed`](/en/events/order-completed), [`order.invoiced`](/en/events/order-invoiced), [`order.cancelled`](/en/events/order-cancelled), [`order.reversed`](/en/events/order-reversed)) now carries **`acquirerConfigured`**: who acquires that payment according to your account's configuration in Fire, resolved terminal → store → account. It is the same acquirer [Payment method configuration (v2)](/en/api-reference/payment-methods-config-v2) returns, frozen on the payment when it is saved.
+
+- **`acquirerConfigured`** (`object | null`) — `code`, `name`, `documentType`, `documentNumber` and `level` (`device`, `store` or `account`). `null` when nothing is configured, the acquirer is inactive or deleted, Fire cannot tell for certain which terminal charged, and on orders saved before this change.
+- **[List orders](/en/api-reference/list-orders) and [Get order](/en/api-reference/get-order)** return the same value in `paymentMethods[].details.acquirer_configured`, in snake_case.
+- **Nothing else changes.** `acquirer` (the fiscal data the POS sends), `processor`, `method` and `paymentMethodCode` stay the same. `documentNumber` is not the acquirer's fiscal tax ID: do not use it to fill `acquirer`. Fire always sets the field itself; a value you send is overwritten.
+
+It is a new key: if your consumer validates events strictly, it must accept keys it does not know. See [Configured acquirer](/en/events/order-completed#configured-acquirer).
+
+Updated in **EN / ES / PT**.
+
 ## 11 November 2026 — Business day close: card brands and shift cash
 
 **For:** Integrations

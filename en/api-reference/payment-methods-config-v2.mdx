@@ -1,13 +1,13 @@
 ---
 title: "Payment method configuration (v2)"
 api: "GET https://api.fire.rest/api/v2/external/payment-methods/config"
-description: "Read the payment method configuration for the vendor bound to your API key, resolved per store: which methods exist, where each one charges, and with which values."
+description: "Read the payment method configuration for the vendor bound to your API key, resolved per store: which methods exist, where each one charges, with which values, and who acquires the payment (acquirer)."
 authMethod: "bearer"
 ---
 
 Returns the payment configuration Fire holds for the vendor bound to your API key, resolved store
-by store: which methods each one offers, where each of them charges, and with which values. Every
-entry is self-contained — there is no catalog to join against.
+by store: which methods each one offers, where each of them charges, with which values, and who
+acquires the payment (acquirer). Every entry is self-contained — there is no catalog to join against.
 
 With no filter it returns every store of the vendor, paginated. With `storeId` or `storeCode`, a
 single one.
@@ -129,14 +129,26 @@ x-api-key: <your_api_key>
             </ResponseField>
             <ResponseField name="config" type="object">Effective store-level values: the account's, with the store's on top. Only `account` and `store` fields.</ResponseField>
             <ResponseField name="missingRequiredKeys" type="string[]">Mandatory account or store fields left empty. If this is not empty, the store is not ready to charge with that method.</ResponseField>
+            <ResponseField name="acquirer" type="object | null">
+              Who acquires this method's payments at the store, as configured in Fire: the store's own or, if it has none, the account's. Informational: it is not the order's fiscal `acquirer`. `null` = nothing configured, or the assigned acquirer is inactive or deleted.
+              <Expandable title="acquirer">
+                <ResponseField name="acquirerId" type="string">UUID of the acquirer in your account.</ResponseField>
+                <ResponseField name="code" type="string">Acquirer code.</ResponseField>
+                <ResponseField name="name" type="string">Acquirer name.</ResponseField>
+                <ResponseField name="documentType" type="string | null">Type of the document your account loaded for the acquirer (`CNPJ`, `RUC`, `NIT`…).</ResponseField>
+                <ResponseField name="documentNumber" type="string | null">Number of the document your account loaded for the acquirer. Not a fiscal field — see below.</ResponseField>
+                <ResponseField name="level" type="string">Which level it comes from: `device`, `store` or `account`.</ResponseField>
+              </Expandable>
+            </ResponseField>
             <ResponseField name="devices" type="object[]">
-              Terminals with their own configuration or stance. Empty is the normal case.
+              Terminals with their own configuration, stance or acquirer. Empty is the normal case. When a terminal is deleted in Fire, its own configuration is deleted with it: it no longer appears here and the store's values apply again.
               <Expandable title="device">
                 <ResponseField name="deviceType" type="string">`KIOSK` or `POS`.</ResponseField>
                 <ResponseField name="deviceId" type="string">The terminal's identifier in Fire.</ResponseField>
                 <ResponseField name="charging" type="boolean">Whether that unit charges, already resolved against its store.</ResponseField>
                 <ResponseField name="availability" type="object[]">Same as the store's, with the terminal's own stance applied on top.</ResponseField>
                 <ResponseField name="config" type="object">**Only** the values set on that terminal, without merging the store's again: that is how you tell an exception from inheritance.</ResponseField>
+                <ResponseField name="acquirer" type="object | null">Who acquires on that unit, already resolved: the terminal's own or, if it has none, its store's or the account's. Same fields as the method's `acquirer`. `null` = nothing configured, or the assigned acquirer is inactive or deleted.</ResponseField>
               </Expandable>
             </ResponseField>
           </Expandable>
@@ -217,6 +229,14 @@ x-api-key: <your_api_key>
             ],
             "config": {"merchant_id": "M-000123", "terminal_key": "sk_live_..."},
             "missingRequiredKeys": [],
+            "acquirer": {
+              "acquirerId": "ee55ff66-0000-4000-8000-000000000004",
+              "code": "medianet",
+              "name": "Medianet",
+              "documentType": "RUC",
+              "documentNumber": "0990000000001",
+              "level": "store"
+            },
             "devices": [
               {
                 "deviceType": "KIOSK",
@@ -226,7 +246,15 @@ x-api-key: <your_api_key>
                   {"channelCode": "KIOSK", "fulfillmentCode": "DINE_IN", "enabled": false},
                   {"channelCode": "KIOSK", "fulfillmentCode": "TAKEAWAY", "enabled": false}
                 ],
-                "config": {"terminal_ip": "10.20.0.9"}
+                "config": {"terminal_ip": "10.20.0.9"},
+                "acquirer": {
+                  "acquirerId": "ee55ff66-0000-4000-8000-000000000005",
+                  "code": "datafast",
+                  "name": "Datafast",
+                  "documentType": "RUC",
+                  "documentNumber": "1790000000001",
+                  "level": "device"
+                }
               }
             ]
           }
@@ -308,6 +336,17 @@ data is missing and the charge will fail on the provider's side.
 card reader broke and only that unit was switched off, leaving the rest of the store charging. If
 your integration does not distinguish terminals you can ignore it: the store level is the right
 answer for a sales channel.
+
+**To know who acquires the payment**, look at `acquirer`. It is inherited like the rest of the
+configuration: terminal → store → account, and the most specific one wins. `methods[]` carries
+what applies at the store; `devices[]`, what applies at that terminal. `level` says which level it
+comes from (`device`, `store` or `account`). `null` means nothing is configured at any level that applies, or the acquirer that wins is inactive or deleted; in that case it does not fall back to the level above: Fire
+never guesses an acquirer.
+
+This is **what is configured in Fire**, for information only. **It does not replace, and must not
+be used to fill,** the `acquirer` the POS sends in each payment of the
+[order](/en/api-reference/orders): that is fiscal data of the transaction and still comes from the
+POS. `documentNumber` is not fiscal data either.
 
 **To know what to send when injecting an order**, use `code` uppercased as `method` and one of
 `processors[].code` as `processor`. A PIX at a Brazil store, with the `digital` method declaring
