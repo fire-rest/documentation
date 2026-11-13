@@ -233,6 +233,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
           "lastFourDigits": "0000"
         },
         "acquirer": { "code": "00000000000000", "name": "ACQUIRER NAME", "cnpj": "01027058000191" },
+        "acquirerConfigured": { "code": "cielo", "name": "Cielo", "documentType": "CNPJ", "documentNumber": "11222333000181", "level": "store" },
         "voucher": "",
         "metadata": {},
         "totalBill": 22.9,
@@ -577,7 +578,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
     <ResponseField name="paymentMethods" type="object[]">
       Methods used to pay. Most fields are camelCase (`totalBill`, `currencyCode`, `transactionId`, `transactionStatus`, `paymentMethodCode`, …) and the `card` sub-object is camelCase too (`card.cardCountry`, `card.lastFourDigits`, `card.externalCardBrandId`).
 
-      Each entry: `method`, `processor`, `currencyCode`, `paymentMethodCode`, `transactionType`, `transactionId`, `transactionStatus`, `exactPayment`, `totalBill`, `acquirer`, `card`, `transactionDate`, `metadata`, `mid`, `tid`, `voucher`, `referenceNumber`, `authorizationCode`, `customerCashAmount`, `changeAmount`, `idAuth`, `receiptCustomer`, `receiptMerchant`.
+      Each entry: `method`, `processor`, `currencyCode`, `paymentMethodCode`, `transactionType`, `transactionId`, `transactionStatus`, `exactPayment`, `totalBill`, `acquirer`, `acquirerConfigured`, `card`, `transactionDate`, `metadata`, `mid`, `tid`, `voucher`, `referenceNumber`, `authorizationCode`, `customerCashAmount`, `changeAmount`, `idAuth`, `receiptCustomer`, `receiptMerchant`.
 
       New fields (all nullable):
       - **`method`** (`string`) — Payment method (`CASH`, `CREDIT`, `DEBIT`, `DIGITAL`, `IFOOD`…): the one the order declared or, if it did not, the one Fire deduces from the processor. Comes with `processor`, which is who processed the charge (`PIX`). Events from before this change do not have it: there the method is the `processor`.
@@ -587,6 +588,7 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
       - **`acquirer.cnpj`** (`string | null`) — Tax ID (CNPJ) of the payment acquirer. Populated for Brazil only; `null` otherwise.
       - **`customerCashAmount`** (`number | null`) — Cash the customer handed over, in decimals: for a `22.9` bill paid with a `50` note, `50`. `0` on methods that are not cash. Orders injected before 24 September 2026 carry the string `"0"` here — read it as a number. `null` when it was not sent.
       - **`changeAmount`** (`number | null`) — Change the till gave back, in decimals. The real change on cash payments, `0` on other methods, `null` when it was not sent.
+      - **`acquirerConfigured`** (`object | null`) — Who acquires this payment according to your account's configuration in Fire: `code`, `name`, `documentType`, `documentNumber`, `level`. It is not fiscal data — that is still `acquirer`. See [Configured acquirer](#configured-acquirer).
     </ResponseField>
 
     <ResponseField name="metadata" type="object">
@@ -596,6 +598,69 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
     </ResponseField>
   </Expandable>
 </ResponseField>
+
+### Configured acquirer
+
+`payments.paymentMethods[].acquirerConfigured` says **who acquires each payment according to your
+account's configuration in Fire** — the acquirers assigned to each payment method in the payment
+settings. Fire resolves it terminal → store → account, and the most specific level wins. It is the
+same acquirer that [Payment method configuration (v2)](/en/api-reference/payment-methods-config-v2)
+returns, frozen on the payment.
+
+<ResponseField name="acquirerConfigured" type="object | null">
+  <Expandable title="acquirerConfigured">
+    <ResponseField name="code" type="string">Acquirer code, as configured in your account (e.g. `cielo`).</ResponseField>
+    <ResponseField name="name" type="string">Acquirer name.</ResponseField>
+    <ResponseField name="documentType" type="string | null">Type of the document your account loaded for the acquirer (`CNPJ`, `RUC`, `NIT`…).</ResponseField>
+    <ResponseField name="documentNumber" type="string | null">Number of the document your account loaded for the acquirer. **Not fiscal data** — see below.</ResponseField>
+    <ResponseField name="level" type="string">Which level it comes from: `device` (the terminal that charged), `store` or `account`.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+```json payments.paymentMethods[n]
+{
+  "method": "CREDIT",
+  "processor": "CREDIT_CARD",
+  "acquirer": { "code": "01027058000191", "name": "CIELO S.A. - INSTITUICAO DE PAGAMENTO" },
+  "acquirerConfigured": {
+    "code": "cielo",
+    "name": "Cielo",
+    "documentType": "CNPJ",
+    "documentNumber": "11222333000181",
+    "level": "store"
+  }
+}
+```
+
+**It is `null` when:**
+
+- nothing is configured for that payment method at any level;
+- the assigned acquirer is inactive or was deleted — Fire does not fall back to the level above;
+- Fire cannot tell for certain which terminal charged (the sale came without a terminal, or with
+  one Fire does not recognise as a terminal of that store) and, in that store, some terminal has a
+  different acquirer for that method than the store. Fire never guesses;
+- the order was saved before this field existed. Older orders are not backfilled.
+
+**What it does not change.** `acquirer`, `processor`, `method` and `paymentMethodCode` are exactly
+as before. `acquirer` is what the POS declares for the transaction and is still the fiscal data (in
+Brazil, the card acquirer reported on the NFC-e). `acquirerConfigured.documentNumber` is **not**
+that tax ID: do not use it to fill or replace `acquirer`.
+
+**When it is resolved.** When the payment is saved: when the order is injected or, for an order
+charged later, on [Confirm payment](/en/api-reference/confirm-payment). Confirm payment does not
+identify a terminal, so the store → account rule and the third `null` case above apply. A later
+change to the configuration does not rewrite orders already saved; it reaches new sales within a
+minute.
+
+**You cannot send it.** Fire always sets this field itself. A value that arrives in a payment you
+inject is overwritten.
+
+**In the Orders API.** [List orders](/en/api-reference/list-orders) and
+[Get order](/en/api-reference/get-order) return the same value in
+`paymentMethods[].details.acquirer_configured`, in snake_case: `code`, `name`, `document_type`,
+`document_number`, `level`.
+
+<Note>**Compatibility.** `acquirerConfigured` is a new key in each payment. If your consumer validates the payload strictly, it must accept keys it does not know.</Note>
 
 ### `data.fulfillment`
 
