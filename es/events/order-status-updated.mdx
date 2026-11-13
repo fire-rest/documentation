@@ -62,7 +62,7 @@ Los avisos de los carriles `order` y `fiscal`, y el cancelado de cocina, se **en
 | | |
 |---|---|
 | Cobertura | **Todos los países** |
-| Llave de idempotencia | `data.orderId` + `event.type` + `event.emittedAt` — ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado) |
+| Llave de idempotencia | `data.orderId` + `data.source` + el cambio del carril: `kitchen.status`, `lifecycle.event` + `lifecycle.revision`, o `fiscal.sequence`. No uses `event.emittedAt`: dos avisos de la misma orden (por ejemplo `order` / `completed` y `fiscal` / `numbered`) pueden nacer en el mismo instante. Ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado) |
 | Dispara más de una vez | Sí: una vez por cada cambio de cada carril que tu flujo eligió |
 
 ## Ordenar los avisos
@@ -185,7 +185,7 @@ Cada aviso trae la **identidad** de la orden, el campo `source` y **solo el bloq
 
 ### Identidad y contexto
 
-Igual que en v1: `orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status` (estado de negocio de la orden), `channel` (`code`, `uid`), `store` (`code`, `name`, `account`, `vendor`) y `fulfillment.service.code`.
+Igual que en v1: `orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status` (estado de negocio de la orden: `OPEN`, `COMPLETED`, `CANCELLED` o `FORCE_CLOSED`), `channel` (`code`, `uid`), `store` (`code`, `name`, `account`, `vendor`) y `fulfillment.service.code`.
 
 <ResponseField name="source" type="string">
   **Nuevo en v2.** De qué carril es el aviso: `kds`, `order` o `fiscal`. Dice qué bloque viene con datos; los otros dos llegan en `null`.
@@ -208,7 +208,7 @@ Sin cambios respecto de v1. Llega solo cuando `source = "kds"`; en los otros car
       `opened` 1 · `corrected` 2 · `completed` 3 · `force_closed` 4 · `cancelled` 5. Solo crece: descarta un aviso con `rank` menor al último que aplicaste.
     </ResponseField>
     <ResponseField name="previousEvent" type="string | null">
-      El movimiento anterior de la orden, si se conoce.
+      El estado en que estaba la orden antes: `opened` o `completed`; `null` cuando la orden nace con este movimiento o no se conoce. No es el aviso anterior: una orden corregida sigue informando `opened`.
     </ResponseField>
     <ResponseField name="occurredAt" type="string">
       ISO 8601 — cuándo ocurrió, según Fire.
@@ -217,7 +217,7 @@ Sin cambios respecto de v1. Llega solo cuando `source = "kds"`; en los otros car
       Solo en `corrected`: la versión de la orden que dejó la corrección. Entre dos correcciones, gana la más alta.
     </ResponseField>
     <ResponseField name="reason" type="string | null">
-      Solo en `force_closed`: por qué quedó abierta — por ejemplo `PAYMENT_PENDING` o `ABANDONED`.
+      Solo en `force_closed`: por qué quedó abierta — `ABANDONED` (sin pago), `PAYMENT_FAILED` (pago rechazado), `PAYMENT_PENDING` (pago sin completar), `PARTIAL_PAYMENT` (pagó menos que el total) o `INTEGRATION_ERROR` (cualquier otra causa). `null` en los otros movimientos.
     </ResponseField>
   </Expandable>
 </ResponseField>

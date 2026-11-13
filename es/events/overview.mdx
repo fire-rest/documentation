@@ -82,11 +82,11 @@ flowchart LR
     style FIRE fill:#1E293B,color:#F8FAFC,stroke:#1E293B
 ```
 
-Fíjate en los **dos circuitos de ida y vuelta**: Fire le avisa al facturador (②), el facturador resuelve con la autoridad (③) y **le responde a Fire** por el callback (④) — recién entonces Fire emite `order.invoiced` / `order.reversed` (⑤). Lo mismo con cocina: Fire despacha la orden al KDS (⑥), el KDS **reporta el avance a Fire** (⑦) y Fire emite `order.status_updated` (⑧). Nada se entera "por su cuenta": todo pasa por Fire y sale de Fire — incluido el `store.business_day_closed` (⑨) al cierre del día.
+Fíjate en los **dos circuitos de ida y vuelta**: Fire le avisa al facturador (②), el facturador resuelve con la autoridad (③) y **le responde a Fire** por el callback (④) — recién entonces Fire emite `order.invoiced` / `order.reversed` (⑤). Lo mismo con cocina: Fire despacha la orden al KDS (⑥), el KDS **reporta el avance a Fire** (⑦) y Fire emite `order.status_updated` (⑧) — el mismo aviso de seguimiento que Fire emite también por cada cambio de la orden y de la factura. Nada se entera "por su cuenta": todo pasa por Fire y sale de Fire — incluido el `store.business_day_closed` (⑨) al cierre del día.
 
 ### Una acción, un evento
 
-Cada acción de negocio es su **propio** evento con su **propio** `event.id` — `order.invoiced` para una autorización fiscal, `order.reversed` para una cancelación, cada `order.status_updated` para una transición de cocina. Nunca se colapsan: autorizar una orden y luego cancelarla son dos eventos distintos con dos ids distintos.
+Cada acción de negocio es su **propio** evento con su **propio** `event.id` — `order.invoiced` para una autorización fiscal, `order.reversed` para una cancelación, cada `order.status_updated` para cada cambio de seguimiento (cocina, orden o factura). Nunca se colapsan: autorizar una orden y luego cancelarla son dos eventos distintos con dos ids distintos.
 
 Esto define cómo Fire matchea los **reportes inbound** que disparan esas acciones:
 
@@ -238,7 +238,8 @@ app.post("/fire/events", express.json(), async (req, res) => {
 
   // 2. Deduplica por una llave de dominio — event.id cambia cuando Fire reencola una entrega
   const key = data?.publication?.id ?? data?.businessDayId
-    ?? `${data?.orderId}:${event.type}:${event.emittedAt}`;
+    ?? (event.type === "order.status_updated" ? statusKey(data)
+        : `${data?.orderId}:${event.type}:${event.emittedAt}`);
   if (seen.has(key)) return;
   seen.set(key, Date.now());
 
@@ -251,11 +252,27 @@ app.post("/fire/events", express.json(), async (req, res) => {
     case "order.cancelled":     return onOrderCancelled(data);
     case "order.invoiced":       return onOrderInvoiced(data);
     case "order.reversed":       return onOrderReversed(data);
-    case "order.status_updated": return onKitchenAdvance(data);
+    case "order.status_updated": return onStatusUpdate(data);
     case "store.updated":        return onStoreUpdated(data);
     default: console.warn("Tipo de evento Fire desconocido", event.type);
   }
 });
+
+// order.status_updated: una llave por cambio de seguimiento, según el carril (ver la página del evento)
+function statusKey(d) {
+  if (d.source === "kds") return `${d.orderId}:kds:${d.kitchen.status}`;
+  if (d.source === "order") return `${d.orderId}:order:${d.lifecycle.event}:${d.lifecycle.revision ?? ""}`;
+  return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
+}
+
+// Solo viene lleno el bloque del carril; los otros dos llegan en null
+function onStatusUpdate(d) {
+  switch (d.source) {
+    case "kds":    return onKitchenAdvance(d.kitchen, d);
+    case "order":  return onOrderMovement(d.lifecycle, d);
+    case "fiscal": return onInvoiceMovement(d.fiscal, d);
+  }
+}
 
 app.listen(8080);
 ```
