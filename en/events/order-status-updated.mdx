@@ -1,50 +1,100 @@
 ---
 title: "order.status_updated"
-description: "An order's kitchen status changed — the KDS reported preparing, ready, dispatched, or cancelled."
+description: "Order tracking — something happened in the kitchen, to the order or to its invoice. Lightweight notice; each flow picks which statuses it receives."
 ---
 
+<Tabs>
+  <Tab title="v2 · current">
+    You're viewing the **current (v2)** contract of `order.status_updated`. **v2 doesn't break existing subscribers**: a flow that didn't pick statuses keeps receiving exactly what it did before (`preparing`, `ready`, `dispatched`), and the `kitchen` block doesn't change. What's new is additive: the **order** and **fiscal** lanes, the `source` field and the `lifecycle` and `fiscal` blocks. See [What changes from v1](#what-changes-from-v1).
+  </Tab>
+  <Tab title="v1 · previous">
+    <Warning>The **v1** contract is kept as a historical reference. Open it here: [`order.status_updated` — v1](/en/events-v1/order-status-updated).</Warning>
+  </Tab>
+</Tabs>
+
+`order.status_updated` is an order's **tracking notice**: it fires every time something happens to the order, in three lanes.
+
+| Lane (`source`) | What it reports | Statuses |
+|---|---|---|
+| `kds` | The kitchen | `preparing`, `ready`, `dispatched`, `cancelled` |
+| `order` | The order | `opened`, `corrected`, `completed`, `force_closed`, `cancelled` |
+| `fiscal` | The fiscal document | `numbered`, `rejected`, `invoiced`, `cancellation_failed`, `reversed` |
+
+It's a **lightweight notice**: it carries the order's identity and the change, **not** the full order. If you need the detail (lines, payments, taxes), read the order again with [`GET /api/v1/external/orders/{orderId}`](/en/api-reference/get-order).
+
+## Two kinds of event: work and tracking
+
+| | `order.opened` · `order.completed` · `order.invoiced` · `order.reversed` · `order.cancelled` | `order.status_updated` |
+|---|---|---|
+| What it's for | Doing **work** with the order: preparing it, invoicing it, injecting it into your system | **Following** the order: knowing what happened to it |
+| What it carries | The full order | The order's identity and the change |
+| When to use it | Your system has to act on the order's content | You want to show or record the order's journey |
+
+If you only need to know **where the order is**, subscribe to `order.status_updated` and pick the statuses you need.
+
+## Each flow picks which statuses it receives
+
+In the flow's trigger you pick the statuses you want, grouped into **Kitchen**, **Order** and **Invoice**. The flow receives only those.
+
 <Note>
-  New event (June 2026). Born directly in **v1** — no v0 shape exists.
+  **If you don't pick anything**, the flow receives `preparing`, `ready` and `dispatched` from the kitchen — what this event always sent. Flows that already existed stay the same. The kitchen cancellation (`kds` / `cancelled`) is **not** part of that default: if you want it, check it.
 </Note>
 
-`order.status_updated` fires when the **KDS** (Kitchen Display System) reports a kitchen status change: preparation started (`preparing`), the order is ready (`ready`), it was dispatched (`dispatched`), or it was cancelled at the kitchen (`cancelled`).
+## When it fires
 
-For the three advance statuses, Fire applies an **anti-regression gate** (a status never goes backwards: `dispatched` does not return to `ready`) and only emits this event when the status genuinely advances. `cancelled` is the exception — it bypasses the gate and can arrive from any kitchen state. That is why you receive **one event per real change** — no duplicates, no rollbacks.
+| Lane | Status | When it fires |
+|---|---|---|
+| `kds` | `preparing` · `ready` · `dispatched` | The KDS reports a kitchen advance that passes the anti-regression gate (it never goes back). |
+| `kds` | `cancelled` | The KDS **confirms the kitchen cancelled** the order. Different from `order` / `cancelled`, which is the order's cancellation. |
+| `order` | `opened` | The order was created open (unpaid). |
+| `order` | `corrected` | An open order was corrected with [`PUT /api/v1/external/orders/{orderId}`](/en/api-reference/update-order). Can happen several times. |
+| `order` | `completed` | The order was created paid, or an open order was paid. |
+| `order` | `force_closed` | The order was still open when the store's business day closed, and it was closed automatically. |
+| `order` | `cancelled` | The order was cancelled. |
+| `fiscal` | `numbered` | The order received its fiscal numbering (at creation, at payment or later). |
+| `fiscal` | `rejected` | The tax authority rejected the document. Can repeat (retries with another reason). |
+| `fiscal` | `invoiced` | The tax authority authorized the document. |
+| `fiscal` | `cancellation_failed` | The authority rejected the void: the document **is still valid**. |
+| `fiscal` | `reversed` | The authority confirmed the document's void. |
 
-## Trigger condition
-
-Fire emits `order.status_updated` when **either** of the following is true:
-
-- The KDS reported a **forward** kitchen status (`preparing`, `ready`, or `dispatched`) that passes the anti-regression gate (`preparing` → `ready` → `dispatched`)
-- The KDS reported `cancelled` for the order (no anti-regression constraint — can arrive from any kitchen state)
-
-In both cases the report must reference an event Fire emitted for that order (source-of-truth validation).
+Notices from the `order` and `fiscal` lanes, and the kitchen cancellation, are **delivered even if the order is cancelled later**: they're facts that already happened.
 
 | | |
 |---|---|
 | Coverage | **All countries** |
-| Statuses | `preparing` → `ready` → `dispatched` (monotonic); `cancelled` (from any state) |
 | Idempotency key | `data.orderId` + `event.type` + `event.emittedAt` — see [Idempotency on your side](/en/events/delivery#idempotency-on-your-side) |
-| Fires more than once | Once per status change (max 4 per order); each change carries its own `event.emittedAt`, so the key above tells them apart |
-| Data source | `kitchen.source` — only `kds` today; the field stays open for future sources |
+| Fires more than once | Yes: once per change in each lane your flow picked |
+
+## Ordering the notices
+
+**Webhooks don't arrive in order.** Each notice carries what you need to discard a stale one, **within its lane**:
+
+- **Kitchen** (`kitchen.rank`) and **order** (`lifecycle.rank`) only move forward. Keep the highest `rank` you've seen per lane and discard a lower one.
+  - Kitchen: `preparing` 1 · `ready` 2 · `dispatched` 3 · `cancelled` 4.
+  - Order: `opened` 1 · `corrected` 2 · `completed` 3 · `force_closed` 4 · `cancelled` 5. Between two corrections, the highest `revision` wins.
+- **Fiscal** can genuinely go back: a rejected void returns the document to authorized, and a rejection can be retried and end up authorized. That's why it has no `rank` but `fiscal.sequence`, a counter of the order's fiscal changes that **always goes up**, even when the status goes back. Keep the highest `sequence` and discard a lower one. The number can skip values: some fiscal changes don't produce a notice.
+
+Don't compare one lane's `rank` with another's: they're different scales.
 
 ## What's in `data`
 
-This is a **lean (thin) payload** — unlike `order.completed`, it does **not** carry the full order. It carries what you need to act on a status change: the order's **identity**, minimal **channel / store** refs, the **fulfillment type**, and the **`kitchen`** block (the advance + the full journey). It deliberately omits `orderLines`, `payments`, `taxes`, `client`, `device` and the delivery address — you already received those in [`order.completed`](/en/events/order-completed); match by `orderId` / `externalOrderId` and apply the change.
+Each notice carries the order's **identity**, the `source` field and **only its lane's block**. The other two are `null`.
 
-```json
+<CodeGroup>
+
+```json Kitchen (source = kds)
 {
   "event": {
     "id": "7f3c2a1b-9d4e-4f6a-8b2c-1e5d3a7f9c0b",
     "type": "order.status_updated",
-    "emittedAt": "2026-06-10T18:24:16.700Z",
-    "createdAt": "2026-06-10T18:24:31.000Z"
+    "emittedAt": "2026-11-12T18:24:16.700Z",
+    "createdAt": "2026-11-12T18:24:31.000Z"
   },
   "data": {
     "orderId": "443bb714-fb69-4538-9ecb-de0acad7b88f",
     "orderCode": "OC-br-001",
     "externalOrderId": "f3bf9fa1-baa8-4050-9e37-4e6d905ee308",
-    "businessDayDate": "2026-05-25",
+    "businessDayDate": "2026-11-12",
     "status": "COMPLETED",
     "channel": { "code": "99", "uid": "6bac8d41-..." },
     "store": {
@@ -54,85 +104,178 @@ This is a **lean (thin) payload** — unlike `order.completed`, it does **not** 
       "vendor":  { "uid": "100.2.1", "name": "Deli Burger BR" }
     },
     "fulfillment": { "service": { "code": "DELIVERY" } },
+    "source": "kds",
     "kitchen": {
       "status": "ready",
       "previousStatus": "preparing",
       "rank": 2,
-      "occurredAt": "2026-06-10T18:24:29.000Z",
+      "occurredAt": "2026-11-12T18:24:29.000Z",
       "stationName": "Hot kitchen",
       "providerEventId": "kds-evt-8842",
       "kdsEventLogId": "1a2b3c4d-...",
       "source": "kds",
       "history": [
-        { "status": "preparing", "rank": 1, "occurredAt": "2026-06-10T18:12:02.000Z", "stationName": "Hot kitchen" },
-        { "status": "ready",     "rank": 2, "occurredAt": "2026-06-10T18:24:29.000Z", "stationName": "Hot kitchen" }
+        { "status": "preparing", "rank": 1, "occurredAt": "2026-11-12T18:12:02.000Z", "stationName": "Hot kitchen" },
+        { "status": "ready",     "rank": 2, "occurredAt": "2026-11-12T18:24:29.000Z", "stationName": "Hot kitchen" }
       ]
+    },
+    "lifecycle": null,
+    "fiscal": null
+  }
+}
+```
+
+```json Order (source = order)
+{
+  "event": { "id": "…", "type": "order.status_updated", "emittedAt": "2026-11-13T04:00:12.300Z", "createdAt": "…" },
+  "data": {
+    "orderId": "063fdd12-287a-4432-8d67-a42479374933",
+    "orderCode": "97P",
+    "externalOrderId": "BR-K000-1794535484997",
+    "businessDayDate": "2026-11-12",
+    "status": "FORCE_CLOSED",
+    "channel": { "code": "POS", "uid": "…" },
+    "store": { "code": "BR-SP-001", "name": "Lab Store BR", "account": { "uid": "100", "name": "Sandbox" }, "vendor": { "uid": "100.2.1", "name": "Deli Burger BR" } },
+    "fulfillment": { "service": { "code": "DINE_IN" } },
+    "source": "order",
+    "kitchen": null,
+    "lifecycle": {
+      "event": "force_closed",
+      "rank": 4,
+      "previousEvent": "opened",
+      "occurredAt": "2026-11-13T04:00:12.000Z",
+      "revision": null,
+      "reason": "PAYMENT_PENDING"
+    },
+    "fiscal": null
+  }
+}
+```
+
+```json Fiscal (source = fiscal)
+{
+  "event": { "id": "…", "type": "order.status_updated", "emittedAt": "2026-11-12T21:16:40.100Z", "createdAt": "…" },
+  "data": {
+    "orderId": "ba741206-410d-4b32-a38c-7e50f46b8139",
+    "orderCode": "98Q",
+    "externalOrderId": "BR-K000-1794535726827",
+    "businessDayDate": "2026-11-12",
+    "status": "CANCELLED",
+    "channel": { "code": "POS", "uid": "…" },
+    "store": { "code": "BR-SP-001", "name": "Lab Store BR", "account": { "uid": "100", "name": "Sandbox" }, "vendor": { "uid": "100.2.1", "name": "Deli Burger BR" } },
+    "fulfillment": { "service": { "code": "DINE_IN" } },
+    "source": "fiscal",
+    "kitchen": null,
+    "lifecycle": null,
+    "fiscal": {
+      "event": "cancellation_failed",
+      "sequence": 7,
+      "status": "authorized",
+      "previousStatus": "cancelling",
+      "documentNumber": "000001234",
+      "countryCode": "BR",
+      "occurredAt": "2026-11-12T21:16:39.000Z",
+      "callbackId": "hio-evt-5521"
     }
   }
 }
 ```
 
-### Identity & context
+</CodeGroup>
 
-<ResponseField name="orderId" type="string">Fire's order UUID — match against the `order.completed` you received.</ResponseField>
-<ResponseField name="orderCode" type="string">Human-readable order code.</ResponseField>
-<ResponseField name="externalOrderId" type="string">The order's id **in the channel/aggregator** — use it to match on their side.</ResponseField>
-<ResponseField name="status" type="string">Business status of the order (`COMPLETED` / `CANCELLED`). Context — the kitchen journey is parallel.</ResponseField>
-<ResponseField name="channel" type="object">
-  `code` (canonical, always present — e.g. `99`) and `uid`. The human-readable channel name comes from your channel catalog, not from this event.
-</ResponseField>
-<ResponseField name="store" type="object">
-  Minimal store ref: `code`, `name`, plus `account { uid, name }` and `vendor { uid, name }`.
-</ResponseField>
-<ResponseField name="fulfillment" type="object">
-  `service.code` — `DELIVERY` or `PICKUP`. Gives the status its meaning (a `ready` for delivery vs pickup).
+### Identity and context
+
+Same as v1: `orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status` (the order's business status), `channel` (`code`, `uid`), `store` (`code`, `name`, `account`, `vendor`) and `fulfillment.service.code`.
+
+<ResponseField name="source" type="string">
+  **New in v2.** Which lane the notice belongs to: `kds`, `order` or `fiscal`. It tells you which block has data; the other two arrive as `null`.
 </ResponseField>
 
-### The `kitchen` block
+### The `kitchen` block (`kds` lane)
 
-<ResponseField name="kitchen" type="object">
-  The advance that fired the event + the full journey. Distinct from the `kds` block (static order info captured at injection).
+Unchanged from v1. It's only present when `source = "kds"`; in the other lanes it's `null`. `kitchen.status` can be `preparing`, `ready`, `dispatched` or `cancelled` (`rank` 1 to 4).
 
-  <Expandable title="kitchen">
-    <ResponseField name="status" type="string">
-      Status that fired the event: `preparing` | `ready` | `dispatched` | `cancelled`.
-    </ResponseField>
-    <ResponseField name="previousStatus" type="string | null">
-      Previous status. `null` on the first advance.
+### The `lifecycle` block (`order` lane)
+
+<ResponseField name="lifecycle" type="object | null">
+  **New in v2.** Only present when `source = "order"`.
+
+  <Expandable title="lifecycle">
+    <ResponseField name="event" type="string">
+      `opened` | `corrected` | `completed` | `force_closed` | `cancelled`.
     </ResponseField>
     <ResponseField name="rank" type="number">
-      Journey sequence: `preparing`=1 < `ready`=2 < `dispatched`=3. **Webhooks aren't ordered** — use this to detect stale/out-of-order events (ignore a `rank` lower than the latest you've applied).
+      `opened` 1 · `corrected` 2 · `completed` 3 · `force_closed` 4 · `cancelled` 5. Only grows: discard a notice with a `rank` lower than the last one you applied.
+    </ResponseField>
+    <ResponseField name="previousEvent" type="string | null">
+      The order's previous movement, if known.
     </ResponseField>
     <ResponseField name="occurredAt" type="string">
-      ISO 8601 — when it happened on the KDS (client clock).
+      ISO 8601 — when it happened, according to Fire.
     </ResponseField>
-    <ResponseField name="stationName" type="string | null">
-      Reporting station, if the KDS sends it.
+    <ResponseField name="revision" type="number | null">
+      Only on `corrected`: the order version the correction left. Between two corrections, the highest wins.
     </ResponseField>
-    <ResponseField name="providerEventId" type="string">
-      Dedup key of the inbound KDS report.
-    </ResponseField>
-    <ResponseField name="kdsEventLogId" type="string">
-      Fire's receipt id for the inbound KDS event (cross-audit).
-    </ResponseField>
-    <ResponseField name="source" type="string">
-      Who reported. Only `kds` today.
-    </ResponseField>
-    <ResponseField name="history" type="array">
-      Full journey so far — one entry per milestone (`status`, `rank`, `occurredAt`, `stationName`), ordered by rank. Lets you reconstruct the whole path from a single event, and reconcile if events arrive out of order.
+    <ResponseField name="reason" type="string | null">
+      Only on `force_closed`: why it stayed open — for example `PAYMENT_PENDING` or `ABANDONED`.
     </ResponseField>
   </Expandable>
 </ResponseField>
 
+### The `fiscal` block (`fiscal` lane)
+
+<ResponseField name="fiscal" type="object | null">
+  **New in v2.** Only present when `source = "fiscal"`. It has no `rank`: see [Ordering the notices](#ordering-the-notices).
+
+  <Expandable title="fiscal">
+    <ResponseField name="event" type="string">
+      `numbered` | `rejected` | `invoiced` | `cancellation_failed` | `reversed`.
+    </ResponseField>
+    <ResponseField name="sequence" type="number">
+      Counter of the order's fiscal changes. Always goes up, even when the status goes back. Discard a notice with a `sequence` lower than the last one you applied.
+    </ResponseField>
+    <ResponseField name="status" type="string | null">
+      The fiscal status **left** on the order after this change (for example `authorized`, `rejected`, `cancelled`).
+    </ResponseField>
+    <ResponseField name="previousStatus" type="string | null">
+      The previous fiscal status.
+    </ResponseField>
+    <ResponseField name="documentNumber" type="string | null">
+      The fiscal document's number, if it already has one.
+    </ResponseField>
+    <ResponseField name="countryCode" type="string | null">
+      The document's country (ISO 3166-1 alpha-2).
+    </ResponseField>
+    <ResponseField name="occurredAt" type="string">
+      ISO 8601 — when it happened.
+    </ResponseField>
+    <ResponseField name="callbackId" type="string | null">
+      Id of the fiscal provider's notice that produced the change, if it came from one.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## What changes from v1
+
+| | v1 | v2 |
+|---|---|---|
+| What it reports | Kitchen only | Kitchen, order and invoice |
+| Who picks | You received everything | Each flow picks the statuses; with no selection, the usual |
+| New fields in `data` | — | `source`, `lifecycle`, `fiscal` |
+| `kitchen` block | Always | Same as before on kitchen notices; `null` in the other lanes |
+| Kitchen cancellation | Documented but not emitted | Emitted (`kds` / `cancelled`), only to flows that pick it |
+
+For a flow that already existed and didn't pick statuses, the only visible change is the three new fields in `data` (`source: "kds"`, `lifecycle: null`, `fiscal: null`). If your receiver validates the body with a strict schema that rejects unknown fields, update it to accept them.
+
 ## Typical use cases
 
-- **Customer order tracking** — "your order is ready" or "your order was cancelled" on the app or pickup screen
-- **Notify the aggregator** — tell iFood/Rappi/99food the order is ready for the courier or that it was cancelled at the kitchen
-- **Kitchen metrics** — preparing→ready times per store/station from `history`
-- **Cancellation flow** — trigger downstream cleanup (release courier, refund, alert ops) when `kitchen.status = "cancelled"`
+- **Order tracking for the customer** — show "preparing", "ready", "invoiced" or "cancelled" in an app or a screen.
+- **Notify the aggregator** — tell iFood, Rappi or 99Food the order is ready or was cancelled in the kitchen.
+- **Fiscal reconciliation** — know, without reading the full order, when the document was numbered, authorized, rejected or voided.
+- **Abandoned orders** — spot the ones closed automatically at the end of the day (`force_closed`) and why.
 
 ## What it does NOT do
 
-- **It does not change the order status** — except on cancellation. For advance statuses (`preparing`, `ready`, `dispatched`), `data.status` remains `"COMPLETED"`. When `kitchen.status = "cancelled"`, `data.status` will be `"CANCELLED"`.
-- **It never goes backwards** for advance statuses. If the KDS reports `ready` after `dispatched`, Fire discards it (anti-regression gate) and emits nothing. `cancelled` is exempt from this rule.
-- **It does not replace `order.completed`.** Subscribe to both: `order.completed` for the business fact, `order.status_updated` for physical progress.
+- **It doesn't carry the full order.** That's what the work events or reading the order are for.
+- **It doesn't replace `order.completed`, `order.invoiced` or `order.reversed`.** Those ask for work; this one reports what happened.
+- **It doesn't send you what you didn't pick.** A flow with no selection receives only the kitchen advance.
