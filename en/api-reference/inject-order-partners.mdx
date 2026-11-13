@@ -415,14 +415,19 @@ a configuration error carries the technical message. Branch on `failure.code`, n
 | `failure.code` | `requestStatus` | When |
 |---|---|---|
 | `FISCAL_DEVICE_MISSING` | `FAILED_FINAL` | The order has no `device.uid`. Fire doesn't call the provider |
-| `FISCAL_CONFIGURATION_ERROR` | `FAILED_FINAL` | The fiscal configuration of the store or vendor is incomplete or wrong. Retrying doesn't fix it |
+| `FISCAL_CONFIGURATION_ERROR` | `FAILED_FINAL` | The fiscal configuration of the store or vendor is incomplete or wrong, or a field of the sale is invalid for the country. Retrying doesn't fix it |
 | `FISCAL_NUMBERING_ERROR` | `FAILED_RETRYABLE` | A transient Fire-side error, such as another request numbering the same sale |
-| `PROVIDER_TIMEOUT` | `PENDING` | The provider didn't answer in time. It may have numbered |
+| `PROVIDER_TIMEOUT` | `PENDING` | The provider didn't answer in time. It may have numbered. If it answered `504`, it comes as `FAILED_RETRYABLE` |
+| `PROVIDER_CONTRACT_VIOLATION` | `PENDING` | The provider answered `2xx` but with something Fire can't read. It may have numbered |
 | `PROVIDER_UNREACHABLE` | `PENDING` | There was no connection to the provider |
-| `PROVIDER_UNAVAILABLE` | `FAILED_RETRYABLE` | The provider answered `5xx`, or Fire stopped calling it (see below) |
+| `PROVIDER_UNAVAILABLE` | `FAILED_RETRYABLE` | The provider answered `5xx`, `408` or `429`, or Fire stopped calling it (see below) |
+| `PROVIDER_AUTH_FAILED` | `FAILED_FINAL` | The provider answered `401` or `403`: the vendor's credential is wrong or revoked |
+| `FISCAL_COUNTRY_NOT_SUPPORTED` | `FAILED_FINAL` | The provider answered `404`: it doesn't serve that country |
+| `FISCAL_BUSINESS_RULE` | `FAILED_FINAL` | The provider rejected the document (`400` or `422`), for example by the tax authority's rules |
+| `FISCAL_IDEMPOTENCY_CONFLICT` | `FAILED_FINAL` | This `orderId` was already numbered with a different `orderCode` and there is no order to return (see Duplicates below) |
 
-Other codes come from the provider (for example, a rejection by the tax authority's rules). In
-every case the vendor's policy decides.
+The `requestStatus` in the table is the usual one: if the provider says whether the request can be
+retried, its answer wins. **Branch on `fiscal.action`**: in every case the vendor's policy decides.
 
 **If the provider is down or slow.** Fire waits for the provider at most the time configured for the
 vendor: 2.8 s by default, **never more than 5 s**. A provider that doesn't answer in time gives
