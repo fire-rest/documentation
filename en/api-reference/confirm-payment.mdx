@@ -278,6 +278,7 @@ is contract.
 | the reference matches more than one order | `409 AMBIGUOUS_ORDER_REFERENCE` |
 | a new tender on an already settled order | `409 ORDER_ALREADY_SETTLED` |
 | a new tender on an order closed without being charged | `409 ORDER_NOT_OPEN` |
+| only with [numbering on charge](#fiscal-numbering-on-charge): numbering failed and the policy is `REFUND` | `400 FISCAL_NUMBERING_FAILED` |
 
 Fields Fire does not know about **are accepted and stored**: you can send your full payment object
 without trimming it. The currency of a declined tender never invalidates the batch, because it does
@@ -294,12 +295,35 @@ An order born `OPEN` is numbered here, **before** the charge is registered, with
 [at injection](/en/api-reference/inject-order-partners#fiscal-numbering-at-injection). `data.fiscal`
 carries the same block: `action`, `requestStatus` and `failure`.
 
+- It is numbered in the **first submission with at least one approved tender**, even if that
+  submission doesn't settle the order (for example, the amounts don't add up). The following
+  submissions reuse that number without calling the provider. A submission with only declines
+  doesn't number.
+- With numbering, the call can take up to about 5 s longer: give your HTTP client a generous timeout.
 - **`CONTINUE`** → the charge is registered as usual: numbered, or without a number if numbering failed.
 - **`REFUND`** → `400` `BUSINESS_ERROR` with `code: FISCAL_NUMBERING_FAILED` and `data.fiscal`.
   **Nothing was registered and the order stays open.** Give the money back.
 
 Unlike the injection, here `code` and `data` go at the root of the error, like this endpoint's other
 rejections.
+
+```json
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "code": "FISCAL_NUMBERING_FAILED",
+  "message": "Could not number the sale — the charge was not registered",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "fiscal": {
+      "action": "REFUND",
+      "requestStatus": "FAILED_RETRYABLE",
+      "failure": { "code": "PROVIDER_UNAVAILABLE", "message": "…" }
+    }
+  }
+}
+```
 
 ## Responses
 

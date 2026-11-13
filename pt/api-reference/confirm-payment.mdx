@@ -278,6 +278,7 @@ código é contrato.
 | a referência corresponde a mais de um pedido | `409 AMBIGUOUS_ORDER_REFERENCE` |
 | uma peça nova num pedido já liquidado | `409 ORDER_ALREADY_SETTLED` |
 | uma peça nova num pedido fechado sem ter sido cobrado | `409 ORDER_NOT_OPEN` |
+| só com [numeração na cobrança](#numeração-fiscal-na-cobrança): a numeração falhou e a política é `REFUND` | `400 FISCAL_NUMBERING_FAILED` |
 
 Campos que o Fire não conhece **são aceitos e guardados**: você pode enviar seu objeto de pagamento
 completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, porque não soma.
@@ -293,12 +294,34 @@ Um pedido que nasce `OPEN` é numerado aqui, **antes** de registrar a cobrança,
 que [na injeção](/pt/api-reference/inject-order-partners#numeração-fiscal-na-injeção). `data.fiscal`
 traz o mesmo bloco: `action`, `requestStatus` e `failure`.
 
+- É numerado no **primeiro envio com pelo menos um pagamento aprovado**, mesmo que esse envio não
+  quite o pedido (por exemplo, porque os valores não fecham). Os envios seguintes reaproveitam esse
+  número sem chamar o provedor. Um envio só com recusas não numera.
+- Com numeração, a chamada pode demorar até uns 5 s a mais: dê ao seu cliente HTTP um timeout folgado.
 - **`CONTINUE`** → a cobrança é registrada como sempre: numerada, ou sem número se a numeração falhou.
 - **`REFUND`** → `400` `BUSINESS_ERROR` com `code: FISCAL_NUMBERING_FAILED` e `data.fiscal`.
   **Nada foi registrado e o pedido continua aberto.** Devolva o dinheiro.
 
 Diferente da injeção, aqui `code` e `data` vão na raiz do erro, como as demais recusas deste
 endpoint.
+
+```json
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "code": "FISCAL_NUMBERING_FAILED",
+  "message": "Could not number the sale — the charge was not registered",
+  "data": {
+    "orderId": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "fiscal": {
+      "action": "REFUND",
+      "requestStatus": "FAILED_RETRYABLE",
+      "failure": { "code": "PROVIDER_UNAVAILABLE", "message": "…" }
+    }
+  }
+}
+```
 
 ## Respostas
 

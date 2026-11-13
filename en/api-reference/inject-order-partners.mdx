@@ -390,13 +390,14 @@ The same `orderId` with a different `store.vendorId` is a different order. There
 </Note>
 
 With it on, Fire numbers the sale **inside this same request**: you don't call
-`POST /fiscal/numbering` first. Only sales born paid (`COMPLETED` / `SUCCEEDED`) are numbered here;
+`POST /fiscal/numbering` first. The injection can then take up to about 5 s longer (the wait for the
+provider): give your HTTP client a generous timeout. Only sales born paid (`COMPLETED` / `SUCCEEDED`) are numbered here;
 an order born `OPEN` is numbered when it is charged, in
 [Confirm payment](/en/api-reference/confirm-payment#fiscal-numbering-on-charge).
 
 Fire builds what goes to the fiscal provider from the order you inject, the same way your register
 builds it for `POST /fiscal/numbering`: the buyer from `client` (and `billingInformation`), the
-amounts from `payments.totals`, and the register from `device` — **`device.uid` is required**. The
+amounts from `payments.totals`, and the register from `device` — **`device.uid` is required** (without it: `FISCAL_DEVICE_MISSING`). The
 number is saved with the order, so [`order.completed`](/en/events/order-completed) already carries
 `fiscalRepresentation`.
 
@@ -405,10 +406,23 @@ The response carries a `fiscal` block. **Read `fiscal.action` first:**
 | `fiscal.action` | What it means | What your register does |
 |---|---|---|
 | `CONTINUE` | The order was created. With `requestStatus: GENERATED` it is numbered; with any other status it was created without a number | Carry on with the sale |
-| `REFUND` | Numbering failed and the vendor's policy is to refund. **The order was not created**: the response is a `400` (see [Errors](#errors)) | Give the money back and report the [lost sale](/en/api-reference/lost-sales). Don't resend the order |
+| `REFUND` | Numbering failed and the vendor's policy is to refund. **The order was not created**: the response is a `400` (see [Errors](#errors)) | Give the money back and report the [lost sale](/en/api-reference/lost-sales#if-your-vendor-numbers-at-injection) with `reason: "FISCAL_NUMBERING_FAILED"`. Don't resend the order |
 
 `REFUND` only happens if the vendor configured that policy; the default is `CONTINUE`.
-`fiscal.failure.message` is the text to show the cashier.
+`fiscal.failure.message` is the text to show the cashier. The messages Fire writes come in Spanish;
+a configuration error carries the technical message. Branch on `failure.code`, not on the text:
+
+| `failure.code` | `requestStatus` | When |
+|---|---|---|
+| `FISCAL_DEVICE_MISSING` | `FAILED_FINAL` | The order has no `device.uid`. Fire doesn't call the provider |
+| `FISCAL_CONFIGURATION_ERROR` | `FAILED_FINAL` | The fiscal configuration of the store or vendor is incomplete or wrong. Retrying doesn't fix it |
+| `FISCAL_NUMBERING_ERROR` | `FAILED_RETRYABLE` | A transient Fire-side error, such as another request numbering the same sale |
+| `PROVIDER_TIMEOUT` | `PENDING` | The provider didn't answer in time. It may have numbered |
+| `PROVIDER_UNREACHABLE` | `PENDING` | There was no connection to the provider |
+| `PROVIDER_UNAVAILABLE` | `FAILED_RETRYABLE` | The provider answered `5xx`, or Fire stopped calling it (see below) |
+
+Other codes come from the provider (for example, a rejection by the tax authority's rules). In
+every case the vendor's policy decides.
 
 **If the provider is down or slow.** Fire waits for the provider at most the time configured for the
 vendor: 2.8 s by default, **never more than 5 s**. A provider that doesn't answer in time gives
@@ -416,6 +430,8 @@ vendor: 2.8 s by default, **never more than 5 s**. A provider that doesn't answe
 answer, `5xx`, `408` or `429`), Fire stops calling that vendor's provider for 30 seconds and answers
 right away with `FAILED_RETRYABLE` and `failure.code: PROVIDER_UNAVAILABLE`, so a down provider
 doesn't hold up every sale. Then a single sale tests the provider; if it answers, numbering resumes.
+The count is kept by each Fire server, so during an outage the provider can receive more than 5
+calls and more than one test sale.
 In every case the vendor's policy decides: with `CONTINUE`, the order is created without a number.
 
 **If you already numbered.** A register that numbered with `POST /fiscal/numbering` and then injects
@@ -545,7 +561,7 @@ envelope as the validation rules: everything goes in `details`.
 |---|---|
 | `201` | Nothing. |
 | `409` `DUPLICATE_ORDER` | **Don't retry**: the order is already there. Use `data.id`. |
-| `400` with `details.code: FISCAL_NUMBERING_FAILED` | **Don't resend**: give the money back and report the lost sale. |
+| `400` with `details.code: FISCAL_NUMBERING_FAILED` | **Don't resend**: give the money back and report the [lost sale](/en/api-reference/lost-sales#if-your-vendor-numbers-at-injection) with `reason: "FISCAL_NUMBERING_FAILED"` and `details.fiscal.failure` in `detail`. |
 | `400` `VALIDATION_ERROR`, `400` with `ORDER_INVARIANT_VIOLATION`, `401`, `403`, `404` | Fix and resend with the same `orderId`. An identical retry fails the same way. |
 | `400` `BUSINESS_ERROR` for an inactive store or a closed day | Retry when the state changes. After the day opens, the store can take up to 30 seconds to accept orders. |
 | `400` with a `message` starting with `Failed to`, `503`, `500` | Retry with backoff. It's safe: if the order had already come in, the response is `409`. |

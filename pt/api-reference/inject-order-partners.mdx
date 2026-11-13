@@ -389,13 +389,14 @@ O mesmo `orderId` com outro `store.vendorId` é outro pedido. Não há header `I
 </Note>
 
 Ligada, o Fire numera a venda **dentro desta mesma requisição**: você não chama
-`POST /fiscal/numbering` antes. Aqui só são numeradas as vendas que nascem pagas (`COMPLETED` /
+`POST /fiscal/numbering` antes. A injeção pode então demorar até uns 5 s a mais (a espera pelo
+provedor): dê ao seu cliente HTTP um timeout folgado. Aqui só são numeradas as vendas que nascem pagas (`COMPLETED` /
 `SUCCEEDED`); um pedido que nasce `OPEN` é numerado quando é cobrado, em
 [Confirmar pagamento](/pt/api-reference/confirm-payment#numeração-fiscal-na-cobrança).
 
 O que vai para o provedor fiscal o Fire monta a partir do pedido que você injeta, do mesmo jeito que
 o seu caixa monta para `POST /fiscal/numbering`: o comprador sai de `client` (e `billingInformation`),
-os valores de `payments.totals` e o caixa de `device` — **`device.uid` é obrigatório**. O número é
+os valores de `payments.totals` e o caixa de `device` — **`device.uid` é obrigatório** (sem ele: `FISCAL_DEVICE_MISSING`). O número é
 salvo com o pedido, então [`order.completed`](/pt/events/order-completed) já traz
 `fiscalRepresentation`.
 
@@ -404,10 +405,24 @@ A resposta traz um bloco `fiscal`. **Leia primeiro `fiscal.action`:**
 | `fiscal.action` | O que significa | O que o seu caixa faz |
 |---|---|---|
 | `CONTINUE` | O pedido foi criado. Com `requestStatus: GENERATED` está numerado; com qualquer outro status foi criado sem número | Segue com a venda |
-| `REFUND` | A numeração falhou e a política do vendor é devolver. **O pedido não foi criado**: a resposta é um `400` (ver [Erros](#erros)) | Devolve o dinheiro e informa a [venda perdida](/pt/api-reference/lost-sales). Não reenvia o pedido |
+| `REFUND` | A numeração falhou e a política do vendor é devolver. **O pedido não foi criado**: a resposta é um `400` (ver [Erros](#erros)) | Devolve o dinheiro e informa a [venda perdida](/pt/api-reference/lost-sales#se-o-seu-vendor-numera-na-injeção) com `reason: "FISCAL_NUMBERING_FAILED"`. Não reenvia o pedido |
 
 `REFUND` só acontece se o vendor configurou essa política; a padrão é `CONTINUE`.
-`fiscal.failure.message` é o texto para mostrar ao operador de caixa.
+`fiscal.failure.message` é o texto para mostrar ao operador de caixa. As mensagens que o Fire
+escreve vêm em espanhol; um erro de configuração traz a mensagem técnica. Decida por `failure.code`,
+não pelo texto:
+
+| `failure.code` | `requestStatus` | Quando |
+|---|---|---|
+| `FISCAL_DEVICE_MISSING` | `FAILED_FINAL` | O pedido não traz `device.uid`. O Fire não chama o provedor |
+| `FISCAL_CONFIGURATION_ERROR` | `FAILED_FINAL` | A configuração fiscal da loja ou do vendor está incompleta ou errada. Tentar de novo não resolve |
+| `FISCAL_NUMBERING_ERROR` | `FAILED_RETRYABLE` | Um erro passageiro do lado do Fire, por exemplo outra requisição numerando a mesma venda |
+| `PROVIDER_TIMEOUT` | `PENDING` | O provedor não respondeu a tempo. Pode ter numerado |
+| `PROVIDER_UNREACHABLE` | `PENDING` | Não houve conexão com o provedor |
+| `PROVIDER_UNAVAILABLE` | `FAILED_RETRYABLE` | O provedor respondeu `5xx`, ou o Fire parou de chamá-lo (ver abaixo) |
+
+Outros códigos vêm do provedor (por exemplo, uma recusa pelas regras da autoridade tributária). Em
+todos os casos decide a política do vendor.
 
 **Se o provedor estiver fora do ar ou lento.** O Fire espera o provedor no máximo o tempo configurado
 para o vendor: 2,8 s por padrão, **nunca mais de 5 s**. Um provedor que não responde a tempo dá
@@ -415,7 +430,8 @@ para o vendor: 2,8 s por padrão, **nunca mais de 5 s**. Um provedor que não re
 resposta, `5xx`, `408` ou `429`), o Fire para de chamar o provedor desse vendor por 30 segundos e
 responde na hora com `FAILED_RETRYABLE` e `failure.code: PROVIDER_UNAVAILABLE`, para que um provedor
 fora do ar não segure cada venda. Depois uma única venda testa o provedor; se ele responder, a
-numeração volta. Em todos os casos decide a política do vendor: com `CONTINUE`, o pedido é criado sem
+numeração volta. A contagem é feita por cada servidor do Fire, então numa queda o provedor pode
+receber mais de 5 chamadas e mais de uma venda de teste. Em todos os casos decide a política do vendor: com `CONTINUE`, o pedido é criado sem
 número.
 
 **Se você já numerou.** Um caixa que numerou com `POST /fiscal/numbering` e depois injeta com o mesmo
@@ -545,7 +561,7 @@ das regras de validação: tudo vai em `details`.
 |---|---|
 | `201` | Nada. |
 | `409` `DUPLICATE_ORDER` | **Não tentar de novo**: o pedido já está lá. Usar `data.id`. |
-| `400` com `details.code: FISCAL_NUMBERING_FAILED` | **Não reenviar**: devolver o dinheiro e informar a venda perdida. |
+| `400` com `details.code: FISCAL_NUMBERING_FAILED` | **Não reenviar**: devolver o dinheiro e informar a [venda perdida](/pt/api-reference/lost-sales#se-o-seu-vendor-numera-na-injeção) com `reason: "FISCAL_NUMBERING_FAILED"` e `details.fiscal.failure` em `detail`. |
 | `400` `VALIDATION_ERROR`, `400` com `ORDER_INVARIANT_VIOLATION`, `401`, `403`, `404` | Corrigir e reenviar com o mesmo `orderId`. Uma nova tentativa idêntica falha igual. |
 | `400` `BUSINESS_ERROR` por loja inativa ou dia fechado | Tentar de novo quando o estado mudar. Depois de abrir o dia, a loja pode levar até 30 segundos para aceitar pedidos. |
 | `400` com `message` que começa com `Failed to`, `503`, `500` | Tentar de novo com backoff. É seguro: se o pedido já tinha entrado, a resposta é `409`. |
