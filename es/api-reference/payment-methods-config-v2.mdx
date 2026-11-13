@@ -1,13 +1,13 @@
 ---
 title: "Configuración de métodos de pago (v2)"
 api: "GET https://api.fire.rest/api/v2/external/payment-methods/config"
-description: "Lee la configuración de métodos de pago del vendor de tu API key, resuelta por tienda: qué métodos hay, dónde cobra cada uno y con qué valores."
+description: "Lee la configuración de métodos de pago del vendor de tu API key, resuelta por tienda: qué métodos hay, dónde cobra cada uno, con qué valores y quién cobra (adquirente)."
 authMethod: "bearer"
 ---
 
 Devuelve la configuración de pagos que Fire tiene cargada para el vendor de tu API key, resuelta
-tienda por tienda: qué métodos ofrece cada una, dónde cobra cada uno y con qué valores. Cada
-entrada se basta a sí misma — no hay catálogo aparte contra el cual cruzar.
+tienda por tienda: qué métodos ofrece cada una, dónde cobra cada uno, con qué valores y quién
+cobra (adquirente). Cada entrada se basta a sí misma — no hay catálogo aparte contra el cual cruzar.
 
 Sin filtros trae todas las tiendas del vendor, paginadas. Con `storeId` o `storeCode`, una sola.
 
@@ -127,14 +127,26 @@ x-api-key: <tu_api_key>
             </ResponseField>
             <ResponseField name="config" type="object">Valores efectivos a nivel tienda: los de la cuenta con los de la tienda encima. Solo campos `account` y `store`.</ResponseField>
             <ResponseField name="missingRequiredKeys" type="string[]">Campos obligatorios de cuenta o tienda sin cargar. Si no está vacío, la tienda no está lista para cobrar con ese método.</ResponseField>
+            <ResponseField name="acquirer" type="object | null">
+              Quién cobra este método en la tienda, según lo configurado en Fire: lo de la tienda o, si no tiene, lo de la cuenta. `null` = nada configurado.
+              <Expandable title="acquirer">
+                <ResponseField name="acquirerId" type="string">UUID del adquirente en tu cuenta.</ResponseField>
+                <ResponseField name="code" type="string">Código del adquirente.</ResponseField>
+                <ResponseField name="name" type="string">Nombre del adquirente.</ResponseField>
+                <ResponseField name="documentType" type="string | null">Tipo de documento fiscal (`CNPJ`, `RUC`, `NIT`…).</ResponseField>
+                <ResponseField name="documentNumber" type="string | null">Número de documento fiscal.</ResponseField>
+                <ResponseField name="level" type="string">De qué nivel sale: `device`, `store` o `account`.</ResponseField>
+              </Expandable>
+            </ResponseField>
             <ResponseField name="devices" type="object[]">
-              Terminales con configuración o postura propia. Vacío es lo normal.
+              Terminales con configuración, postura o adquirente propio. Vacío es lo normal.
               <Expandable title="device">
                 <ResponseField name="deviceType" type="string">`KIOSK` o `POS`.</ResponseField>
                 <ResponseField name="deviceId" type="string">Identificador del terminal en Fire.</ResponseField>
                 <ResponseField name="charging" type="boolean">Si ese equipo cobra, ya resuelto contra lo que dice su tienda.</ResponseField>
                 <ResponseField name="availability" type="object[]">Igual que la de la tienda, con lo propio del equipo aplicado encima.</ResponseField>
                 <ResponseField name="config" type="object">**Solo** los valores cargados en ese terminal, sin volver a mezclar los de la tienda: así se distingue la excepción de la herencia.</ResponseField>
+                <ResponseField name="acquirer" type="object | null">Quién cobra en ese equipo, ya resuelto: lo del terminal o, si no tiene, lo de su tienda o de la cuenta. Mismos campos que el `acquirer` del método. `null` = nada configurado.</ResponseField>
               </Expandable>
             </ResponseField>
           </Expandable>
@@ -216,6 +228,14 @@ x-api-key: <tu_api_key>
             ],
             "config": {"merchant_id": "M-000123", "terminal_key": "sk_live_..."},
             "missingRequiredKeys": [],
+            "acquirer": {
+              "acquirerId": "ee55ff66-0000-4000-8000-000000000004",
+              "code": "medianet",
+              "name": "Medianet",
+              "documentType": "RUC",
+              "documentNumber": "0990000000001",
+              "level": "store"
+            },
             "devices": [
               {
                 "deviceType": "KIOSK",
@@ -225,7 +245,15 @@ x-api-key: <tu_api_key>
                   {"channelCode": "KIOSK", "fulfillmentCode": "DINE_IN", "enabled": false},
                   {"channelCode": "KIOSK", "fulfillmentCode": "TAKEAWAY", "enabled": false}
                 ],
-                "config": {"terminal_ip": "10.20.0.9"}
+                "config": {"terminal_ip": "10.20.0.9"},
+                "acquirer": {
+                  "acquirerId": "ee55ff66-0000-4000-8000-000000000005",
+                  "code": "datafast",
+                  "name": "Datafast",
+                  "documentType": "RUC",
+                  "documentNumber": "1790000000001",
+                  "level": "device"
+                }
               }
             ]
           }
@@ -308,6 +336,17 @@ y el cobro va a fallar del lado del proveedor.
 —se rompió el datáfono de un kiosco y se apagó solo ese equipo, sin tocar los demás del local—.
 Si tu integración no distingue terminales, puedes ignorarlo: el nivel de tienda es la respuesta
 correcta para un canal de venta.
+
+**Para saber quién cobra**, mira `acquirer`. Se hereda como el resto de la configuración:
+terminal → tienda → cuenta, y gana el más específico. En `methods[]` viene lo efectivo en la
+tienda; en `devices[]`, lo efectivo en ese terminal. `level` dice de qué nivel sale (`device`,
+`store` o `account`), y `null` significa que no hay nada configurado: Fire nunca adivina un
+adquirente.
+
+Es **lo configurado en Fire**, no reemplaza el `acquirer` que la caja manda en cada pago de la
+[orden](/es/api-reference/orders): ese sigue siendo el dato de la transacción. Si tu caja no lo
+tiene, puedes llenarlo desde aquí con `code` y `name`, y `documentNumber` como `cnpj` cuando
+`documentType` es `CNPJ`.
 
 **Para saber qué mandar al inyectar una orden**, usa `code` en mayúscula como `method` y uno de
 `processors[].code` como `processor`. Un PIX en una tienda de Brasil, con el método `digital`
