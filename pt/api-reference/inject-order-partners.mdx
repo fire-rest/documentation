@@ -379,6 +379,52 @@ O mesmo `orderId` com outro `store.vendorId` é outro pedido. Não há header `I
   dessa regra em vez do `409`.
 </Note>
 
+## Numeração fiscal na injeção
+
+<Note>
+  **Desligada por padrão.** É ligada por vendor na configuração fiscal do Fire, quando os seus
+  caixas já leem o bloco `fiscal` abaixo. Até lá nada muda: você continua numerando com
+  [`POST /fiscal/numbering`](/pt/api-reference/fiscal-documents-v2) antes de injetar, e a resposta
+  traz `fiscal: null`.
+</Note>
+
+Ligada, o Fire numera a venda **dentro desta mesma requisição**: você não chama
+`POST /fiscal/numbering` antes. Aqui só são numeradas as vendas que nascem pagas (`COMPLETED` /
+`SUCCEEDED`); um pedido que nasce `OPEN` é numerado quando é cobrado, em
+[Confirmar pagamento](/pt/api-reference/confirm-payment#numeração-fiscal-na-cobrança).
+
+O que vai para o provedor fiscal o Fire monta a partir do pedido que você injeta, do mesmo jeito que
+o seu caixa monta para `POST /fiscal/numbering`: o comprador sai de `client` (e `billingInformation`),
+os valores de `payments.totals` e o caixa de `device` — **`device.uid` é obrigatório**. O número é
+salvo com o pedido, então [`order.completed`](/pt/events/order-completed) já traz
+`fiscalRepresentation`.
+
+A resposta traz um bloco `fiscal`. **Leia primeiro `fiscal.action`:**
+
+| `fiscal.action` | O que significa | O que o seu caixa faz |
+|---|---|---|
+| `CONTINUE` | O pedido foi criado. Com `requestStatus: GENERATED` está numerado; com qualquer outro status foi criado sem número | Segue com a venda |
+| `REFUND` | A numeração falhou e a política do vendor é devolver. **O pedido não foi criado**: a resposta é um `400` (ver [Erros](#erros)) | Devolve o dinheiro e informa a [venda perdida](/pt/api-reference/lost-sales). Não reenvia o pedido |
+
+`REFUND` só acontece se o vendor configurou essa política; a padrão é `CONTINUE`.
+`fiscal.failure.message` é o texto para mostrar ao operador de caixa.
+
+**Se o provedor estiver fora do ar ou lento.** O Fire espera o provedor no máximo o tempo configurado
+para o vendor: 2,8 s por padrão, **nunca mais de 5 s**. Um provedor que não responde a tempo dá
+`requestStatus: PENDING` — pode ter numerado. Depois de 5 falhas de infraestrutura seguidas (sem
+resposta, `5xx`, `408` ou `429`), o Fire para de chamar o provedor desse vendor por 30 segundos e
+responde na hora com `FAILED_RETRYABLE` e `failure.code: PROVIDER_UNAVAILABLE`, para que um provedor
+fora do ar não segure cada venda. Depois uma única venda testa o provedor; se ele responder, a
+numeração volta. Em todos os casos decide a política do vendor: com `CONTINUE`, o pedido é criado sem
+número.
+
+**Se você já numerou.** Um caixa que numerou com `POST /fiscal/numbering` e depois injeta com o mesmo
+`orderCode` não é numerado duas vezes: o Fire reaproveita esse documento e responde `CONTINUE`.
+
+**Duplicados.** A numeração fica atrelada ao `orderId`. O mesmo `orderId` com outro `orderCode` não é
+numerado de novo: se o pedido existe, você recebe o `409` de sempre; se não existe, é uma falha de
+numeração (`FISCAL_IDEMPOTENCY_CONFLICT`) que a política resolve.
+
 ## Resposta
 
 <ResponseField name="success" type="boolean">`true` quando o pedido foi criado.</ResponseField>
@@ -392,6 +438,15 @@ O mesmo `orderId` com outro `store.vendorId` é outro pedido. Não há header `I
     <ResponseField name="business_day_date" type="string">Dia de negócio aberto da loja, `YYYY-MM-DD`.</ResponseField>
     <ResponseField name="created_at" type="string">Data de criação no Fire (ISO 8601).</ResponseField>
     <ResponseField name="_adapter" type="string">Sempre `"xmart"`.</ResponseField>
+    <ResponseField name="fiscal" type="object | null">
+      O resultado da numeração quando o vendor numera na injeção; `null` nos demais casos. Ver
+      [Numeração fiscal na injeção](#numeração-fiscal-na-injeção).
+      <Expandable title="fiscal">
+        <ResponseField name="action" type="string">`CONTINUE` ou `REFUND`: o que o caixa faz.</ResponseField>
+        <ResponseField name="requestStatus" type="string">`GENERATED` (numerou), `PENDING` (o provedor não respondeu: pode ter numerado), `FAILED_RETRYABLE` ou `FAILED_FINAL`.</ResponseField>
+        <ResponseField name="failure" type="object | null">`code` e `message` (o texto para o operador de caixa). `null` quando numerou.</ResponseField>
+      </Expandable>
+    </ResponseField>
   </Expandable>
 </ResponseField>
 
@@ -417,6 +472,7 @@ Todo erro traz `success: false`, `error` (a categoria) e `message`; alguns traze
 | `400` | `DOMAIN_ERROR` ou `BUSINESS_ERROR` com `message` que começa com `Failed to` | Falha interna do Fire, não do seu pedido |
 | `503` | `SERVICE_UNAVAILABLE` | Não foi possível verificar a API key naquele momento |
 | `500` | `INTERNAL_SERVER_ERROR` | Erro inesperado |
+| `400` | `BUSINESS_ERROR` + `details.code: FISCAL_NUMBERING_FAILED` | Só com numeração na injeção: a numeração falhou e a política do vendor é `REFUND`. `details.fiscal` traz o bloco. O pedido não foi criado |
 
 ### Rejeição por regras de validação
 
@@ -460,12 +516,36 @@ Em `ORDER_NOT_BALANCED`, `lines` diz quanto soma cada produto.
 }
 ```
 
+### Recusa pela numeração fiscal
+
+Só com [numeração na injeção](#numeração-fiscal-na-injeção) e a política `REFUND`. O mesmo envelope
+das regras de validação: tudo vai em `details`.
+
+```json
+{
+  "success": false,
+  "error": "BUSINESS_ERROR",
+  "message": "Could not number the sale",
+  "details": {
+    "code": "FISCAL_NUMBERING_FAILED",
+    "orderCode": "…",
+    "externalOrderId": "…",
+    "fiscal": {
+      "action": "REFUND",
+      "requestStatus": "FAILED_RETRYABLE",
+      "failure": { "code": "PROVIDER_UNAVAILABLE", "message": "…" }
+    }
+  }
+}
+```
+
 ### Quando tentar de novo
 
 | Resposta | O que fazer |
 |---|---|
 | `201` | Nada. |
 | `409` `DUPLICATE_ORDER` | **Não tentar de novo**: o pedido já está lá. Usar `data.id`. |
+| `400` com `details.code: FISCAL_NUMBERING_FAILED` | **Não reenviar**: devolver o dinheiro e informar a venda perdida. |
 | `400` `VALIDATION_ERROR`, `400` com `ORDER_INVARIANT_VIOLATION`, `401`, `403`, `404` | Corrigir e reenviar com o mesmo `orderId`. Uma nova tentativa idêntica falha igual. |
 | `400` `BUSINESS_ERROR` por loja inativa ou dia fechado | Tentar de novo quando o estado mudar. Depois de abrir o dia, a loja pode levar até 30 segundos para aceitar pedidos. |
 | `400` com `message` que começa com `Failed to`, `503`, `500` | Tentar de novo com backoff. É seguro: se o pedido já tinha entrado, a resposta é `409`. |
@@ -576,6 +656,7 @@ curl -X POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders \
     "payment_status": "SUCCEEDED",
     "business_day_date": "2026-04-17",
     "created_at": "2026-04-17T15:41:56.120Z",
+    "fiscal": null,
     "_adapter": "xmart"
   }
 }
