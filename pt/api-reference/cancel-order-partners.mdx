@@ -44,25 +44,32 @@ Diferente do endpoint de backoffice, você não precisa guardar o nosso UUID int
     nada.
   </Tab>
   <Tab title="Com cancelamento fiscal ao cancelar">
-    Quando o vendor tem **cancelar o documento ao cancelar** ligado (desligado por padrão), não há
-    passo prévio: **cancele direto**, e o Fire cancela o comprovante com o provedor dentro desta
-    mesma requisição, depois que a política de cancelamento aprova e antes de cancelar.
+    Quando o vendor tem **cancelar o documento ao cancelar** (`voidAtCancellation`, desligado por
+    padrão), não há passo prévio: **chama-se só este endpoint**. O Fire pede a nota de crédito ao
+    provedor dentro desta mesma requisição, depois que a política de cancelamento aprova e antes de
+    cancelar.
 
-    - Com a nota de crédito numerada, o pedido é cancelado e o `200` traz
-      [`fiscal`](#o-bloco-fiscal-da-resposta).
-    - Se o cancelamento fiscal falhar, **o pedido não é cancelado**: `409` com
-      `FISCAL_VOID_FAILED`. Tente de novo a mesma requisição quando `data.retryable` for `true`.
-    - Se o seu caixa já cancelou por `/fiscal/numbering`, o Fire não cancela de novo: cancela com
-      essa nota de crédito.
+    - Se a nota de crédito sair, o pedido é cancelado e o `200` a traz em
+      [`fiscal.fiscalRepresentation`](#o-bloco-fiscal-da-resposta), pronta para imprimir.
+    - Se a nota de crédito não sair, `409` e **o pedido não é cancelado**. O que fazer dizem `code` e
+      `data.retryable`: veja as
+      [regras do cancelamento fiscal ao cancelar](#fiscal-gateway-cancelamento-fiscal-ao-cancelar).
+    - Se o seu caixa mesmo assim cancelou antes por `/fiscal/numbering`, o cancelamento responde
+      `200` com **essa mesma** nota de crédito em `fiscal.fiscalRepresentation`: o Fire não emite
+      outra.
+
+    Neste modo não sai `FISCAL_REPRESENTATION_NOT_VOIDED`: o caixa já não precisa pedir a nota de
+    crédito.
 
     A chamada pode demorar até uns 5 s a mais (a espera pelo provedor): dê ao seu cliente HTTP um
-    timeout folgado. O documento é lido depois com
+    timeout folgado. O documento pode ser lido de novo depois com
     [Impressão fiscal v2](/pt/api-reference/fiscal-print).
   </Tab>
 </Tabs>
 
-O Fire resolve sozinho qual dos dois casos se aplica, pela configuração daquela conta, país e
-vendor. **Você não precisa descobrir**: se a nota de crédito se aplica a você, o `409` avisa.
+O Fire resolve sozinho qual dos três casos se aplica, pela configuração daquela conta, país e
+vendor. **Você não precisa descobrir**: se você tiver que pedir a nota de crédito antes, o `409`
+avisa (`FISCAL_REPRESENTATION_NOT_VOIDED`).
 
 <ParamField header="Authorization" type="string" required>
   `Bearer <api-key>` com o escopo `orders:write`, restrita a um vendor.
@@ -154,7 +161,8 @@ Além do `code`, o corpo de um `409` traz o motivo pronto para exibir:
 </ResponseField>
 
 <ResponseField name="data.reasonDetail" type="string">
-  O porquê, longo. Só vem se a regra tiver. Viaja separado do `message` para que você possa
+  O porquê, longo. Só vem se a regra tiver: quais regras do Fire o trazem está em
+  [Regras fixas do Fire](#regras-fixas-do-fire). Viaja separado do `message` para que você possa
   exibir só a manchete quando não há espaço para mais.
 </ResponseField>
 
@@ -177,16 +185,30 @@ ler e pode mudar ou ser traduzido sem aviso.
 | `CANCELLATION_IN_PROGRESS` | Já há um cancelamento em andamento. | Aguardar; não repetir em laço. |
 | `FISCAL_ALREADY_CANCELLED` | O documento fiscal já está anulado. | Nada: o efeito desejado já ocorreu. |
 | `ORDER_NOT_CANCELLABLE` | O pedido já está fechado ou cancelado. | Nada: é estado terminal. |
-| `FISCAL_REPRESENTATION_NOT_VOIDED` | Há nota fiscal e ainda não há nota de crédito. | Pedir primeiro o cancelamento fiscal, aguardar a resposta, e só então cancelar. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | Só em vendors **sem** cancelamento fiscal ao cancelar: há nota fiscal e ainda não há nota de crédito. | Pedir primeiro o cancelamento fiscal, aguardar a resposta, e só então cancelar. |
 | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | Não se cancela pela API: cabe um ajuste contábil. |
 | `CANCELLATION_POLICY_DENIED` | Uma regra configurada pela conta negou. | Ler `message`: o motivo foi escrito pelo cliente. |
-| `FISCAL_VOID_FAILED` | Só com o cancelamento fiscal ao cancelar: o provedor não cancelou o comprovante, então o pedido **não** foi cancelado. `data.retryable` diz se tentar de novo pode dar certo, e `data.fiscal` traz `requestStatus` e `failure`. | Se `data.retryable`, tentar de novo a mesma requisição. Se não, ler `message`: corrigir a configuração, ou escalar se a nota de crédito foi recusada. |
+| `FISCAL_VOID_FAILED` | Só com o cancelamento fiscal ao cancelar: a nota de crédito não saiu, então o pedido **não** foi cancelado. Agrupa quatro casos (abaixo). | Decidir por `code` + `data.retryable`: com `true`, tentar de novo a mesma requisição; com `false`, corrigir a configuração ou escalar, conforme a regra. |
 | `FISCAL_INVOICE_UNRESOLVED` | Só com o cancelamento fiscal ao cancelar: a nota fiscal da venda ainda não tem um número confirmado (o provedor não respondeu quando ela foi numerada). O Fire a pediu de novo com a mesma chave e continuou sem resposta, então não havia nada para cancelar e o pedido **não** foi cancelado. | Se `data.retryable`, tentar de novo a mesma requisição: se o provedor responder, o Fire numera a nota fiscal, faz o cancelamento fiscal e cancela o pedido. Se não, escalar. |
 
+`FISCAL_VOID_FAILED` agrupa quatro regras: a nota de crédito foi recusada, não foi possível pedir o
+cancelamento fiscal, o cancelamento fiscal já está em andamento e não foi possível cancelar o
+documento (cada uma em
+[Fiscal Gateway (cancelamento fiscal ao cancelar)](#fiscal-gateway-cancelamento-fiscal-ao-cancelar)).
+Cada parte do `409` serve para uma coisa:
+
+- **Para decidir**: `code` + `data.retryable`. Com `true`, tentar de novo a mesma requisição pode dar
+  certo; com `false`, tentar de novo sem mudar nada dá a mesma recusa.
+- **Para mostrar ao operador de caixa**: `message` (o nome da regra) e `data.reasonDetail` (o que
+  aconteceu e o que fazer), no idioma de `?locale=`.
+- **Para os seus logs**: `data.fiscal.failure` (`code` e `message`), o detalhe do provedor. Não é
+  preciso ramificar por ele.
+
 <Warning>
-  Um `200` significa que **o pedido** foi cancelado. **Não** significa que o documento fiscal
-  já esteja anulado: com gateway você fez isso no passo anterior, e com emissão nativa se
-  resolve depois, pelo callback do provedor.
+  Um `200` significa que **o pedido** foi cancelado. Se o documento fiscal já está anulado depende
+  do caso: com numeração por gateway você o cancelou no passo anterior; com cancelamento fiscal ao
+  cancelar o Fire o cancelou nesta mesma requisição, e a nota de crédito vem em `fiscal`; com
+  emissão nativa se resolve depois, pelo callback do provedor.
 </Warning>
 
 ## O bloco `fiscal` da resposta
@@ -201,27 +223,212 @@ ler e pode mudar ou ser traduzido sem aviso.
   nunca foi numerado.
 </ResponseField>
 
-O `409` do cancelamento fiscal é uma **recusa da política de cancelamento como qualquer outra**: vem
-de uma das regras fixas do Fire, com a mesma forma. `message` é o nome da regra e `data.reasonDetail`
-o porquê, os dois no idioma de `?locale=` (espanhol por padrão); `data.resolvedFrom` é o recibo de
-com que se decidiu. Além disso, `data.retryable` e `data.fiscal` trazem o detalhe do provedor:
-`data.fiscal.failure.message` é o texto por falha do provedor (timeout, sem conexão, sem
-dispositivo…), no mesmo idioma. As regras fixas do cancelamento fiscal ao cancelar:
+## Regras fixas do Fire
 
-| `message` (pt) | `code` | O que fazer |
-|---|---|---|
-| A nota fiscal ainda não tem número confirmado | `FISCAL_INVOICE_UNRESOLVED` | Tentar de novo; se continuar igual, escalar. |
-| A nota de crédito foi recusada | `FISCAL_VOID_FAILED` | Não tentar de novo: escalar. |
-| Não foi possível pedir o cancelamento fiscal | `FISCAL_VOID_FAILED` | Corrigir a configuração fiscal do vendor (credenciais, país, dispositivo do caixa) e tentar de novo. |
-| O cancelamento fiscal desta venda já está em andamento | `FISCAL_VOID_FAILED` | Aguardar alguns segundos e tentar de novo (`failure.code` é `VOID_IN_PROGRESS`). |
-| Não foi possível cancelar o documento fiscal | `FISCAL_VOID_FAILED` | Tentar de novo. |
+São as regras da política de cancelamento que o Fire traz. Rodam **sempre** e antes das da conta, a
+conta não pode editá-las nem desligá-las, e aparecem na tela da política nestes dois grupos. Vale a
+primeira que coincidir.
 
-Decida por `code` e `data.retryable`; os textos são para pessoas e podem mudar.
+Todas respondem o `409` com a mesma forma: `code`, `message` (o nome da regra, no idioma de
+`?locale=`; espanhol por padrão) e, em `data`, o `reasonDetail` —quando a regra tem— e o
+`resolvedFrom`, o recibo de com que se decidiu. Os nomes e as explicações abaixo são os textos em
+português (`?locale=pt`); com `?locale=es` ou `?locale=en` chegam traduzidos.
 
-Com `FISCAL_VOID_FAILED`, o mesmo bloco viaja em `data.fiscal` do `409`, com
-`action: "REJECT"`:
+### Gerais
 
-```json
+Valem para todas as contas. As cinco podem ser antecipadas pela
+[elegibilidade](/pt/api-reference/cancellation-eligibility): o preflight devolve o mesmo `code` com
+`canCancel: false`. Não trazem `data.retryable`: tentar de novo não muda nada enquanto continuar o
+estado que as dispara.
+
+| Regra (`message`) | `code` | Quando dispara | `data.reasonDetail` | O que fazer |
+|---|---|---|---|---|
+| Já há um cancelamento em andamento | `CANCELLATION_IN_PROGRESS` | O estado fiscal do pedido é `cancelling`: outro cancelamento já está rodando. | — | Aguardar terminar; não repetir em laço. |
+| O documento fiscal já está anulado | `FISCAL_ALREADY_CANCELLED` | O estado fiscal do pedido é `cancelled`. | — | Nada: o efeito desejado já ocorreu. |
+| O pedido já não está num estado cancelável | `ORDER_NOT_CANCELLABLE` | O pedido está `FORCE_CLOSED` ou `CANCELLED`. | — | Nada: é estado terminal. |
+| Falta emitir a nota de crédito | `FISCAL_REPRESENTATION_NOT_VOIDED` | Só em vendors **sem** cancelamento fiscal ao cancelar: há nota fiscal e ainda não há nota de crédito. | Peça primeiro o cancelamento fiscal, aguarde a resposta, e depois cancele o pedido. | Cancelar com `/fiscal/numbering` (`operation: "CANCEL"`) e só depois cancelar o pedido. |
+| O dia de operação está fechado | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | O pedido é de um dia já fechado. Reabra o dia, ou faça uma nota de crédito ou ajuste. | Não se cancela pela API enquanto o dia continuar fechado. |
+
+### Fiscal Gateway (cancelamento fiscal ao cancelar)
+
+Só para vendors com [cancelamento fiscal ao cancelar](#a-ordem-dos-passos-depende-do-gateway-fiscal).
+O Fire as avalia **depois** de pedir a nota de crédito ao provedor, com o que o provedor respondeu;
+por isso a elegibilidade não pode antecipá-las: no preflight o pedido sai cancelável e o «não» só se
+sabe ao cancelar. A única exceção é **A nota de crédito foi recusada**: se a autoridade já recusou
+uma nota de crédito desta venda, a elegibilidade já responde `canCancel: false` com
+`FISCAL_VOID_FAILED`, e o cancelamento a nega sem chamar o provedor de novo.
+
+Além do que qualquer regra traz, o `409` delas traz:
+
+- `data.retryable`: se tentar de novo a mesma requisição pode dar certo.
+- `data.fiscal`: `{ action: "REJECT", requestStatus, retryable, failure: { code, message } }`, o
+  detalhe do provedor. `failure.message` chega no idioma de `?locale=` quando o Fire conhece o
+  `failure.code` (timeout, sem conexão, sem dispositivo…); o texto de uma recusa da autoridade vai
+  como chegou.
+
+| Regra (`message`) | `code` | A elegibilidade antecipa? | `data.retryable` |
+|---|---|---|---|
+| A nota fiscal ainda não tem número confirmado | `FISCAL_INVOICE_UNRESOLVED` | Não | O do provedor (`true` se não respondeu) |
+| A nota de crédito foi recusada | `FISCAL_VOID_FAILED` | **Sim** | `false` |
+| Não foi possível pedir o cancelamento fiscal | `FISCAL_VOID_FAILED` | Não | `false` em geral |
+| O cancelamento fiscal desta venda já está em andamento | `FISCAL_VOID_FAILED` | Não | `true` |
+| Não foi possível cancelar o documento fiscal | `FISCAL_VOID_FAILED` | Não | `true` |
+
+Os exemplos vão com `?locale=pt` e um `resolvedFrom` encurtado.
+
+#### A nota fiscal ainda não tem número confirmado
+
+- **`code`**: `FISCAL_INVOICE_UNRESOLVED`.
+- **Quando dispara**: a nota fiscal da venda ficou sem número confirmado (o provedor não respondeu
+  quando ela foi numerada). O Fire a pediu de novo com a mesma chave e continuou sem número, então
+  não havia o que cancelar.
+- **Elegibilidade**: não a antecipa.
+- **Tentar de novo**: sim, quando `data.retryable` é `true`. Se o provedor responder, o Fire numera
+  a nota fiscal, faz o cancelamento fiscal e cancela o pedido na mesma requisição.
+- **O que fazer**: tentar o cancelamento de novo; se continuar igual, escalar.
+
+{/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
+```json 409 — A nota fiscal ainda não tem número confirmado
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "FISCAL_INVOICE_UNRESOLVED",
+  "message": "A nota fiscal ainda não tem número confirmado",
+  "data": {
+    "reasonDetail": "O provedor fiscal não confirmou o número da nota fiscal, então não há o que cancelar. O pedido não foi cancelado: tente o cancelamento de novo e, se continuar igual, escale.",
+    "resolvedFrom": { "orderStatus": "COMPLETED", "countryCode": "BR", "fiscalVoidResult": "INVOICE_UNRESOLVED" },
+    "retryable": true,
+    "fiscal": {
+      "action": "REJECT",
+      "requestStatus": "PENDING",
+      "retryable": true,
+      "failure": {
+        "code": "PROVIDER_TIMEOUT",
+        "message": "O provedor fiscal não respondeu a tempo. Tente cancelar de novo."
+      }
+    }
+  }
+}
+```
+
+#### A nota de crédito foi recusada
+
+- **`code`**: `FISCAL_VOID_FAILED`.
+- **Quando dispara**: o provedor fiscal ou a autoridade recusou a nota de crédito em definitivo (não
+  por configuração). Também quando uma nota de crédito desta venda **já** tinha sido recusada: o Fire
+  não chama o provedor de novo.
+- **Elegibilidade**: **sim**, a antecipa quando a nota já foi recusada antes.
+- **Tentar de novo**: não (`data.retryable: false`): daria a mesma recusa.
+- **O que fazer**: escalar para revisar a venda.
+
+`data.fiscal.failure` traz a recusa da autoridade como chegou. Se o Fire não a tiver guardada (uma
+nota recusada antes), vem `CREDIT_NOTE_REJECTED`: «A nota de crédito desta venda foi recusada.».
+
+{/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
+```json 409 — A nota de crédito foi recusada
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "FISCAL_VOID_FAILED",
+  "message": "A nota de crédito foi recusada",
+  "data": {
+    "reasonDetail": "O provedor fiscal ou a autoridade recusou a nota de crédito, e tentar de novo daria a mesma recusa. O pedido não foi cancelado: escale para revisar a venda.",
+    "resolvedFrom": { "orderStatus": "COMPLETED", "countryCode": "BR", "fiscalVoidResult": "FAILED_FINAL" },
+    "retryable": false,
+    "fiscal": {
+      "action": "REJECT",
+      "requestStatus": "FAILED_FINAL",
+      "retryable": false,
+      "failure": {
+        "code": "FISCAL_REJECTED",
+        "message": "Rejeição: Prazo de Cancelamento Superior ao Previsto na Legislação"
+      }
+    }
+  }
+}
+```
+
+#### Não foi possível pedir o cancelamento fiscal
+
+- **`code`**: `FISCAL_VOID_FAILED`.
+- **Quando dispara**: a configuração fiscal do vendor ou do caixa falta ou falha; não é uma recusa
+  da autoridade. `failure.code` é `PROVIDER_AUTH_FAILED`, `FISCAL_COUNTRY_NOT_SUPPORTED`,
+  `FISCAL_CONFIGURATION_ERROR`, `FISCAL_DEVICE_MISSING` ou `FISCAL_IDEMPOTENCY_CONFLICT`.
+- **Elegibilidade**: não a antecipa.
+- **Tentar de novo**: não sem corrigir antes (`data.retryable` é `false` em geral).
+- **O que fazer**: corrigir a configuração (credenciais do provedor, país, dispositivo do caixa) e
+  tentar de novo.
+
+{/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
+```json 409 — Não foi possível pedir o cancelamento fiscal
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "FISCAL_VOID_FAILED",
+  "message": "Não foi possível pedir o cancelamento fiscal",
+  "data": {
+    "reasonDetail": "A configuração fiscal do vendor falta ou falha (credenciais do provedor, país, dispositivo do caixa). O pedido não foi cancelado: corrija a configuração e tente de novo.",
+    "resolvedFrom": { "orderStatus": "COMPLETED", "countryCode": "CO", "fiscalVoidResult": "NOT_VOIDABLE" },
+    "retryable": false,
+    "fiscal": {
+      "action": "REJECT",
+      "requestStatus": "FAILED_FINAL",
+      "retryable": false,
+      "failure": {
+        "code": "FISCAL_DEVICE_MISSING",
+        "message": "A venda não tem o dispositivo que a cobrou: não pode ser cancelada."
+      }
+    }
+  }
+}
+```
+
+#### O cancelamento fiscal desta venda já está em andamento
+
+- **`code`**: `FISCAL_VOID_FAILED`.
+- **Quando dispara**: outra requisição está cancelando esta mesma venda agora (`failure.code` é
+  `VOID_IN_PROGRESS`).
+- **Elegibilidade**: não a antecipa.
+- **Tentar de novo**: sim (`data.retryable: true`), depois de alguns segundos.
+- **O que fazer**: aguardar alguns segundos e tentar o cancelamento de novo.
+
+{/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
+```json 409 — O cancelamento fiscal desta venda já está em andamento
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "FISCAL_VOID_FAILED",
+  "message": "O cancelamento fiscal desta venda já está em andamento",
+  "data": {
+    "reasonDetail": "Outra requisição está cancelando esta venda agora. Aguarde alguns segundos e tente o cancelamento de novo.",
+    "resolvedFrom": { "orderStatus": "COMPLETED", "countryCode": "BR", "fiscalVoidResult": "IN_PROGRESS" },
+    "retryable": true,
+    "fiscal": {
+      "action": "REJECT",
+      "requestStatus": "FAILED_RETRYABLE",
+      "retryable": true,
+      "failure": {
+        "code": "VOID_IN_PROGRESS",
+        "message": "O cancelamento fiscal desta venda já está em andamento. Aguarde alguns segundos e tente de novo."
+      }
+    }
+  }
+}
+```
+
+#### Não foi possível cancelar o documento fiscal
+
+- **`code`**: `FISCAL_VOID_FAILED`.
+- **Quando dispara**: o provedor não emitiu a nota de crédito, mas dá para tentar de novo (timeout,
+  sem conexão, provedor indisponível…), ou o Fire não conseguiu verificar o documento fiscal
+  (`failure.code` é `FISCAL_STATE_UNAVAILABLE`): cancelar sem vê-lo poderia deixar a nota fiscal
+  viva com o dinheiro devolvido.
+- **Elegibilidade**: não a antecipa.
+- **Tentar de novo**: sim (`data.retryable: true`).
+- **O que fazer**: tentar o cancelamento de novo.
+
+{/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
+```json 409 — Não foi possível cancelar o documento fiscal
 {
   "success": false,
   "error": "CONFLICT",
@@ -229,13 +436,16 @@ Com `FISCAL_VOID_FAILED`, o mesmo bloco viaja em `data.fiscal` do `409`, com
   "message": "Não foi possível cancelar o documento fiscal",
   "data": {
     "reasonDetail": "O provedor fiscal não emitiu a nota de crédito ou não foi possível verificar o documento, então o pedido não foi cancelado. Tente o cancelamento de novo.",
-    "resolvedFrom": { "orderStatus": "COMPLETED", "fiscalVoidResult": "FAILED_RETRYABLE" },
+    "resolvedFrom": { "orderStatus": "COMPLETED", "countryCode": "BR", "fiscalVoidResult": "FAILED_RETRYABLE" },
     "retryable": true,
     "fiscal": {
       "action": "REJECT",
-      "requestStatus": "PENDING",
+      "requestStatus": "FAILED_RETRYABLE",
       "retryable": true,
-      "failure": { "code": "PROVIDER_TIMEOUT", "message": "…" }
+      "failure": {
+        "code": "PROVIDER_UNREACHABLE",
+        "message": "Não houve conexão com o provedor fiscal. Tente cancelar de novo."
+      }
     }
   }
 }

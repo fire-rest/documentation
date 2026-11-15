@@ -67,7 +67,7 @@ The verdict comes wrapped in the standard envelope: `{ "success": true, "data": 
 </ResponseField>
 
 <ResponseField name="reasonDetail" type="string | null">
-  The **long note** of that same rule, or `null`. Separate from `reason` so the consumer decides how much space to give it: a POS paints one line, a detail screen can paint both. Also editable text, not a contract. Fire's own rules carry no note, so a denial by a Fire rule always comes with `reasonDetail: null` — that is expected, not a bug. The note only appears on rules configured by the account.
+  The **long note** of that same rule, or `null`. Separate from `reason` so the consumer decides how much space to give it: a POS paints one line, a detail screen can paint both. Also editable text, not a contract. Among Fire's own rules, "The credit note has not been issued yet", "The business day is closed" and the void-at-cancellation rules carry it; the other three come with `reasonDetail: null`, and that is expected. A rule configured by the account carries it if the account wrote one. All of them in [Fixed Fire rules](/en/api-reference/cancel-order-partners#fixed-fire-rules).
 </ResponseField>
 
 <ResponseField name="source" type="string">
@@ -107,10 +107,15 @@ The real cancellation returns the same `code` when it denies for the same reason
 | `CANCELLATION_IN_PROGRESS` | Fire rule | A cancellation is already in flight. |
 | `FISCAL_ALREADY_CANCELLED` | Fire rule | The fiscal document is already voided. |
 | `ORDER_NOT_CANCELLABLE` | Fire rule | The order is `FORCE_CLOSED` or `CANCELLED`. |
-| `FISCAL_REPRESENTATION_NOT_VOIDED` | Fire rule | There is an invoice and no credit note yet. Request the fiscal void first. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | Fire rule | Only for vendors **without** void at cancellation: there is an invoice and no credit note yet. Request the fiscal void first. |
 | `BUSINESS_DAY_CLOSED` | Fire rule | The order belongs to a closed business day, or to a day before the active one. |
+| `FISCAL_VOID_FAILED` | Fire rule (void at cancellation) | Only "The credit note was rejected": the authority already rejected a credit note for this sale, and retrying would give the same rejection. |
+| `FISCAL_INVOICE_UNRESOLVED` | Fire rule (void at cancellation) | **Never comes out here**: "The invoice does not have a confirmed number yet" is only known when cancelling. |
 | `CANCELLATION_POLICY_DENIED` | account rule | A rule configured by the account denied it. The human-readable reason travels in `reason`. |
 
+With **void at cancellation**, of the five Fiscal Gateway rules only **The credit note was rejected** can come out here. The others —"The invoice does not have a confirmed number yet" (`FISCAL_INVOICE_UNRESOLVED`), "The fiscal void could not be requested", "The void of this sale is already in progress" and "The tax document could not be voided" (all three `FISCAL_VOID_FAILED`)— depend on what the provider answers when asked for the credit note, so **they are only known when cancelling**: a `canCancel: true` from here can still end in a `409` from those rules. The detail is in [Cancel order (partners)](/en/api-reference/cancel-order-partners#fiscal-gateway-void-at-cancellation).
+
+{/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
 <ResponseExample>
 ```json 200 — allowed
 {
@@ -155,6 +160,31 @@ The real cancellation returns the same `code` when it denies for the same reason
       "countryCode": "BR",
       "fiscalStatus": "cancelled",
       "minutesSinceCreation": "94.2"
+    }
+  }
+}
+```
+
+```json 200 — credit note rejected (void at cancellation)
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "Do not allow",
+    "code": "FISCAL_VOID_FAILED",
+    "reason": "The credit note was rejected",
+    "reasonDetail": "The fiscal provider or the tax authority rejected the credit note, and retrying would give the same rejection. The order was not cancelled: escalate to review the sale.",
+    "source": "baseline",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "minutesSinceCreation": "41.0",
+      "minutesSinceAuthorization": "40.6",
+      "fiscalVoidResult": "FAILED_FINAL"
     }
   }
 }

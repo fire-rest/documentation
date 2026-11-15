@@ -67,7 +67,7 @@ El veredicto llega envuelto en el sobre estándar: `{ "success": true, "data": {
 </ResponseField>
 
 <ResponseField name="reasonDetail" type="string | null">
-  La **nota larga** de esa misma regla, o `null`. Va aparte de `reason` para que el consumidor decida cuánto espacio le da: el POS pinta una línea, una pantalla de detalle puede pintar las dos. También es texto editable, no contrato. Las reglas propias de Fire no llevan nota, así que un rechazo por una regla de Fire trae siempre `reasonDetail: null` — es lo esperado, no un bug. La nota solo aparece en reglas configuradas por la cuenta.
+  La **nota larga** de esa misma regla, o `null`. Va aparte de `reason` para que el consumidor decida cuánto espacio le da: el POS pinta una línea, una pantalla de detalle puede pintar las dos. También es texto editable, no contrato. De las reglas propias de Fire la traen «Falta emitir la nota de crédito», «El día de negocio está cerrado» y las de la anulación al cancelar; las otras tres vienen con `reasonDetail: null`, y es lo esperado. Una regla configurada por la cuenta la trae si la cuenta la escribió. Todas, en [Reglas fijas de Fire](/es/api-reference/cancel-order-partners#reglas-fijas-de-fire).
 </ResponseField>
 
 <ResponseField name="source" type="string">
@@ -107,10 +107,15 @@ La cancelación real devuelve el mismo `code` cuando niega por el mismo motivo.
 | `CANCELLATION_IN_PROGRESS` | regla de Fire | Ya hay una cancelación en curso. |
 | `FISCAL_ALREADY_CANCELLED` | regla de Fire | El documento fiscal ya está anulado. |
 | `ORDER_NOT_CANCELLABLE` | regla de Fire | La orden está `FORCE_CLOSED` o `CANCELLED`. |
-| `FISCAL_REPRESENTATION_NOT_VOIDED` | regla de Fire | Hay factura y todavía no hay nota de crédito. Pedí primero la anulación fiscal. |
+| `FISCAL_REPRESENTATION_NOT_VOIDED` | regla de Fire | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. Pedí primero la anulación fiscal. |
 | `BUSINESS_DAY_CLOSED` | regla de Fire | La orden es de un día de negocio ya cerrado, o de un día anterior al activo. |
+| `FISCAL_VOID_FAILED` | regla de Fire (anular al cancelar) | Solo «La nota de crédito fue rechazada»: el ente ya rechazó una nota de crédito de esta venta, y reintentar daría el mismo rechazo. |
+| `FISCAL_INVOICE_UNRESOLVED` | regla de Fire (anular al cancelar) | **No sale acá**: «La factura todavía no tiene número confirmado» solo se sabe al cancelar. |
 | `CANCELLATION_POLICY_DENIED` | regla de la cuenta | Lo negó una regla configurada por la cuenta. El motivo legible viaja en `reason`. |
 
+Con **anular al cancelar**, de las cinco reglas del Fiscal Gateway acá solo puede salir **La nota de crédito fue rechazada**. Las demás —«La factura todavía no tiene número confirmado» (`FISCAL_INVOICE_UNRESOLVED`), «No se pudo pedir la anulación fiscal», «La anulación de esta venta ya está en curso» y «No se pudo anular el documento fiscal» (las tres, `FISCAL_VOID_FAILED`)— dependen de lo que contesta el proveedor al pedirle la nota de crédito, así que **solo se saben al cancelar**: un `canCancel: true` de acá puede terminar en un `409` de esas reglas. El detalle, en [Cancelar orden (partners)](/es/api-reference/cancel-order-partners#fiscal-gateway-anular-al-cancelar).
+
+{/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
 <ResponseExample>
 ```json 200 — permitido
 {
@@ -155,6 +160,31 @@ La cancelación real devuelve el mismo `code` cuando niega por el mismo motivo.
       "countryCode": "BR",
       "fiscalStatus": "cancelled",
       "minutesSinceCreation": "94.2"
+    }
+  }
+}
+```
+
+```json 200 — nota de crédito rechazada (anular al cancelar)
+{
+  "success": true,
+  "data": {
+    "canCancel": false,
+    "outcome": "DENY",
+    "outcomeLabel": "No permitir",
+    "code": "FISCAL_VOID_FAILED",
+    "reason": "La nota de crédito fue rechazada",
+    "reasonDetail": "El proveedor fiscal o el ente rechazó la nota de crédito, y reintentar daría el mismo rechazo. La orden no se canceló: escalá para revisar la venta.",
+    "source": "baseline",
+    "threshold": null,
+    "resolvedFrom": {
+      "orderStatus": "COMPLETED",
+      "paymentStatus": "SUCCEEDED",
+      "countryCode": "BR",
+      "fiscalStatus": "authorized",
+      "minutesSinceCreation": "41.0",
+      "minutesSinceAuthorization": "40.6",
+      "fiscalVoidResult": "FAILED_FINAL"
     }
   }
 }
