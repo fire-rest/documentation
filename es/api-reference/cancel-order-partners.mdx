@@ -188,7 +188,7 @@ mostrarle a una persona y puede cambiar o traducirse sin aviso.
 
 | `code` | Qué pasó | Qué hacer |
 |---|---|---|
-| `CANCELLATION_IN_PROGRESS` | Ya hay una cancelación disparada. | Esperar; no reintentar en bucle. |
+| `CANCELLATION_IN_PROGRESS` | Ya hay una cancelación disparada. | No reintentar: volver a consultar la orden. |
 | `ORDER_NOT_CANCELLABLE` | La orden ya está cerrada o cancelada. | Nada: es estado terminal. |
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. | Pedir primero la anulación fiscal, esperar la respuesta, y recién ahí cancelar. |
 | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | No se cancela por API: corresponde un ajuste contable. |
@@ -238,9 +238,10 @@ de `?locale=`; español por defecto) y, en `data`, el `reasonDetail` —cuando l
 `resolvedFrom`, el recibo de con qué se decidió. Los nombres y las explicaciones de abajo son los
 textos en español; con `?locale=en` o `?locale=pt` llegan traducidos.
 
-Hay una excepción: si dos cancelaciones de la misma orden llegan a la vez y las dos pasan la
-política, la segunda choca en la base y responde `CANCELLATION_IN_PROGRESS` **sin `data`** y con un
-`message` fijo en inglés (`A cancellation of this order is already in progress.`).
+Si dos cancelaciones de la misma orden llegan a la vez y las dos pasan la política, la segunda
+choca en la base y responde la regla «Ya hay una cancelación en curso» (`CANCELLATION_IN_PROGRESS`)
+con la misma forma; su `resolvedFrom` es lo que vio ese pedido al pasar la política. No la
+reintentes: vuelve a consultar la orden.
 
 ### Generales
 
@@ -251,7 +252,7 @@ las dispara.
 
 | Regla (`message`) | `code` | Cuándo dispara | `data.reasonDetail` | Qué hacer |
 |---|---|---|---|---|
-| Ya hay una cancelación en curso | `CANCELLATION_IN_PROGRESS` | El estado fiscal de la orden es `cancelling`: otra cancelación ya está corriendo. | — | Esperar a que termine; no reintentar en bucle. |
+| Ya hay una cancelación en curso | `CANCELLATION_IN_PROGRESS` | El estado fiscal de la orden es `cancelling`: otra cancelación ya está corriendo. | Esta orden ya tiene una cancelación en curso. No la reintentes: vuelve a consultar la orden para ver cómo quedó. | No reintentar: volver a consultar la orden. |
 | La orden ya no está en un estado cancelable | `ORDER_NOT_CANCELLABLE` | La orden está `FORCE_CLOSED` o `CANCELLED`. | — | Nada: es estado terminal. |
 | Falta emitir la nota de crédito | `FISCAL_REPRESENTATION_NOT_VOIDED` | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. | Pide primero la anulación fiscal, espera la respuesta, y después cancela la orden. | Anular con `/fiscal/numbering` (`operation: "CANCEL"`) y recién después cancelar. `/fiscal/numbering` se depreca a fines de diciembre de 2026 y lo reemplaza anular al cancelar: ver [Numeración fiscal v2](/es/api-reference/fiscal-documents-v2). |
 | El día de negocio está cerrado | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | La orden es de un día ya cerrado. Reabre el día, o haz una nota de crédito o un ajuste. | No se cancela por API mientras el día siga cerrado. |
@@ -427,7 +428,7 @@ rechazada.».
   "code": "FISCAL_VOID_FAILED",
   "message": "La anulación de esta venta ya está en curso",
   "data": {
-    "reasonDetail": "Otro pedido está anulando esta venta en este momento. Espera unos segundos y reintenta la cancelación.",
+    "reasonDetail": "Otra solicitud está anulando esta venta en este momento. Espera unos segundos y reintenta la cancelación.",
     "resolvedFrom": {
       "orderStatus": "COMPLETED",
       "paymentStatus": "SUCCEEDED",

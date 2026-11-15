@@ -192,7 +192,7 @@ ler e pode mudar ou ser traduzido sem aviso.
 
 | `code` | O que aconteceu | O que fazer |
 |---|---|---|
-| `CANCELLATION_IN_PROGRESS` | Já há um cancelamento em andamento. | Aguardar; não repetir em laço. |
+| `CANCELLATION_IN_PROGRESS` | Já há um cancelamento em andamento. | Não tentar de novo: consultar o pedido outra vez. |
 | `ORDER_NOT_CANCELLABLE` | O pedido já está fechado ou cancelado. | Nada: é estado terminal. |
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Só em vendors **sem** cancelamento fiscal ao cancelar: há nota fiscal e ainda não há nota de crédito. | Pedir primeiro o cancelamento fiscal, aguardar a resposta, e só então cancelar. |
 | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | Não se cancela pela API: cabe um ajuste contábil. |
@@ -244,9 +244,10 @@ Todas respondem o `409` com a mesma forma: `code`, `message` (o nome da regra, n
 `resolvedFrom`, o recibo de com que se decidiu. Os nomes e as explicações abaixo são os textos em
 português (`?locale=pt`); com `?locale=es` ou `?locale=en` chegam traduzidos.
 
-Há uma exceção: se dois cancelamentos do mesmo pedido chegam ao mesmo tempo e os dois passam pela
-política, o segundo colide no banco e responde `CANCELLATION_IN_PROGRESS` **sem `data`** e com um
-`message` fixo em inglês (`A cancellation of this order is already in progress.`).
+Se dois cancelamentos do mesmo pedido chegam ao mesmo tempo e os dois passam pela política, o
+segundo colide no banco e responde a regra «Já há um cancelamento em andamento»
+(`CANCELLATION_IN_PROGRESS`) com a mesma forma; o `resolvedFrom` dele é o que essa requisição viu ao
+passar pela política. Não tente de novo: consulte o pedido outra vez.
 
 ### Gerais
 
@@ -257,7 +258,7 @@ estado que as dispara.
 
 | Regra (`message`) | `code` | Quando dispara | `data.reasonDetail` | O que fazer |
 |---|---|---|---|---|
-| Já há um cancelamento em andamento | `CANCELLATION_IN_PROGRESS` | O estado fiscal do pedido é `cancelling`: outro cancelamento já está rodando. | — | Aguardar terminar; não repetir em laço. |
+| Já há um cancelamento em andamento | `CANCELLATION_IN_PROGRESS` | O estado fiscal do pedido é `cancelling`: outro cancelamento já está rodando. | Este pedido já tem um cancelamento em andamento. Não tente de novo: consulte o pedido outra vez para ver como ficou. | Não tentar de novo: consultar o pedido outra vez. |
 | O pedido já não está num estado cancelável | `ORDER_NOT_CANCELLABLE` | O pedido está `FORCE_CLOSED` ou `CANCELLED`. | — | Nada: é estado terminal. |
 | Falta emitir a nota de crédito | `FISCAL_REPRESENTATION_NOT_VOIDED` | Só em vendors **sem** cancelamento fiscal ao cancelar: há nota fiscal e ainda não há nota de crédito. | Peça primeiro o cancelamento fiscal, aguarde a resposta, e depois cancele o pedido. | Cancelar com `/fiscal/numbering` (`operation: "CANCEL"`) e só depois cancelar o pedido. `/fiscal/numbering` será desligado no fim de dezembro de 2026 e o cancelamento fiscal ao cancelar o substitui: ver [Numeração fiscal v2](/pt/api-reference/fiscal-documents-v2). |
 | O dia de operação está fechado | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | O pedido é de um dia já fechado. Reabra o dia, ou faça uma nota de crédito ou ajuste. | Não se cancela pela API enquanto o dia continuar fechado. |

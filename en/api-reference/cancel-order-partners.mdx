@@ -192,7 +192,7 @@ person to read and may change or be translated without notice.
 
 | `code` | What happened | What to do |
 |---|---|---|
-| `CANCELLATION_IN_PROGRESS` | A cancellation is already in flight. | Wait; do not retry in a loop. |
+| `CANCELLATION_IN_PROGRESS` | A cancellation is already in flight. | Do not retry: check the order again. |
 | `ORDER_NOT_CANCELLABLE` | The order is already closed or cancelled. | Nothing: it is a terminal state. |
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Only for vendors **without** void at cancellation: there is an invoice and no credit note yet. | Request the fiscal void first, wait for the response, and only then cancel. |
 | `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | Not cancellable over the API: an accounting adjustment applies. |
@@ -243,9 +243,10 @@ language of `?locale=`; Spanish by default) and, in `data`, the `reasonDetail` �
 one— and the `resolvedFrom`, the receipt of what was decided with. The names and explanations below
 are the English texts (`?locale=en`); with `?locale=es` or `?locale=pt` they come translated.
 
-There is one exception: if two cancellations of the same order arrive at once and both pass the
-policy, the second one collides in the database and answers `CANCELLATION_IN_PROGRESS` **without
-`data`** and with a fixed English `message` (`A cancellation of this order is already in progress.`).
+If two cancellations of the same order arrive at once and both pass the policy, the second one
+collides in the database and answers the rule "A cancellation is already in progress"
+(`CANCELLATION_IN_PROGRESS`) with the same shape; its `resolvedFrom` is what that request saw when it
+passed the policy. Do not retry it: check the order again.
 
 ### General
 
@@ -256,7 +257,7 @@ triggers them remains.
 
 | Rule (`message`) | `code` | When it triggers | `data.reasonDetail` | What to do |
 |---|---|---|---|---|
-| A cancellation is already in progress | `CANCELLATION_IN_PROGRESS` | The order's fiscal status is `cancelling`: another cancellation is already running. | — | Wait for it to finish; do not retry in a loop. |
+| A cancellation is already in progress | `CANCELLATION_IN_PROGRESS` | The order's fiscal status is `cancelling`: another cancellation is already running. | This order already has a cancellation in progress. Do not retry it: check the order again to see how it ended up. | Do not retry: check the order again. |
 | The order is no longer in a cancellable state | `ORDER_NOT_CANCELLABLE` | The order is `FORCE_CLOSED` or `CANCELLED`. | — | Nothing: it is a terminal state. |
 | The credit note has not been issued yet | `FISCAL_REPRESENTATION_NOT_VOIDED` | Only for vendors **without** void at cancellation: there is an invoice and no credit note yet. | Request the fiscal void first, wait for the response, then cancel the order. | Void with `/fiscal/numbering` (`operation: "CANCEL"`) and only then cancel. `/fiscal/numbering` is deprecated at the end of December 2026 and void at cancellation replaces it: see [Fiscal numbering v2](/en/api-reference/fiscal-documents-v2). |
 | The business day is closed | `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | The order belongs to a closed day. Re-open the day, or issue a credit memo or adjustment. | Not cancellable over the API while the day stays closed. |
