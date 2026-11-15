@@ -180,7 +180,7 @@ ler e pode mudar ou ser traduzido sem aviso.
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Há nota fiscal e ainda não há nota de crédito. | Pedir primeiro o cancelamento fiscal, aguardar a resposta, e só então cancelar. |
 | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | Não se cancela pela API: cabe um ajuste contábil. |
 | `CANCELLATION_POLICY_DENIED` | Uma regra configurada pela conta negou. | Ler `message`: o motivo foi escrito pelo cliente. |
-| `FISCAL_VOID_FAILED` | Só com o cancelamento fiscal ao cancelar: o provedor não cancelou o comprovante, então o pedido **não** foi cancelado. `data.retryable` diz se tentar de novo pode dar certo, e `data.fiscal` traz `requestStatus` e `failure`. | Se `data.retryable`, tentar de novo a mesma requisição. Se não, escalar: a autoridade recusou a nota de crédito. |
+| `FISCAL_VOID_FAILED` | Só com o cancelamento fiscal ao cancelar: o provedor não cancelou o comprovante, então o pedido **não** foi cancelado. `data.retryable` diz se tentar de novo pode dar certo, e `data.fiscal` traz `requestStatus` e `failure`. | Se `data.retryable`, tentar de novo a mesma requisição. Se não, ler `message`: corrigir a configuração, ou escalar se a nota de crédito foi recusada. |
 | `FISCAL_INVOICE_UNRESOLVED` | Só com o cancelamento fiscal ao cancelar: a nota fiscal da venda ainda não tem um número confirmado (o provedor não respondeu quando ela foi numerada). O Fire a pediu de novo com a mesma chave e continuou sem resposta, então não havia nada para cancelar e o pedido **não** foi cancelado. | Se `data.retryable`, tentar de novo a mesma requisição: se o provedor responder, o Fire numera a nota fiscal, faz o cancelamento fiscal e cancela o pedido. Se não, escalar. |
 
 <Warning>
@@ -201,11 +201,22 @@ ler e pode mudar ou ser traduzido sem aviso.
   nunca foi numerado.
 </ResponseField>
 
-`data.fiscal.failure.message`, no `409`, é o texto para o operador de caixa: vem no idioma de
-`?locale=` (espanhol por padrão), como o resto da recusa. O `message` de primeiro nível fica em
-inglês, para o integrador. Quando o cancelamento fiscal desta mesma venda já está em andamento (outra
-requisição o pedindo agora), `failure.code` é `VOID_IN_PROGRESS`: aguarde alguns segundos e tente de
-novo.
+O `409` do cancelamento fiscal é uma **recusa da política de cancelamento como qualquer outra**: vem
+de uma das regras fixas do Fire, com a mesma forma. `message` é o nome da regra e `data.reasonDetail`
+o porquê, os dois no idioma de `?locale=` (espanhol por padrão); `data.resolvedFrom` é o recibo de
+com que se decidiu. Além disso, `data.retryable` e `data.fiscal` trazem o detalhe do provedor:
+`data.fiscal.failure.message` é o texto por falha do provedor (timeout, sem conexão, sem
+dispositivo…), no mesmo idioma. As regras fixas do cancelamento fiscal ao cancelar:
+
+| `message` (pt) | `code` | O que fazer |
+|---|---|---|
+| A nota fiscal ainda não tem número confirmado | `FISCAL_INVOICE_UNRESOLVED` | Tentar de novo; se continuar igual, escalar. |
+| A nota de crédito foi recusada | `FISCAL_VOID_FAILED` | Não tentar de novo: escalar. |
+| Não foi possível pedir o cancelamento fiscal | `FISCAL_VOID_FAILED` | Corrigir a configuração fiscal do vendor (credenciais, país, dispositivo do caixa) e tentar de novo. |
+| O cancelamento fiscal desta venda já está em andamento | `FISCAL_VOID_FAILED` | Aguardar alguns segundos e tentar de novo (`failure.code` é `VOID_IN_PROGRESS`). |
+| Não foi possível cancelar o documento fiscal | `FISCAL_VOID_FAILED` | Tentar de novo. |
+
+Decida por `code` e `data.retryable`; os textos são para pessoas e podem mudar.
 
 Com `FISCAL_VOID_FAILED`, o mesmo bloco viaja em `data.fiscal` do `409`, com
 `action: "REJECT"`:
@@ -215,8 +226,10 @@ Com `FISCAL_VOID_FAILED`, o mesmo bloco viaja em `data.fiscal` do `409`, com
   "success": false,
   "error": "CONFLICT",
   "code": "FISCAL_VOID_FAILED",
-  "message": "Could not void the fiscal document — the order was not cancelled",
+  "message": "Não foi possível cancelar o documento fiscal",
   "data": {
+    "reasonDetail": "O provedor fiscal não emitiu a nota de crédito ou não foi possível verificar o documento, então o pedido não foi cancelado. Tente o cancelamento de novo.",
+    "resolvedFrom": { "orderStatus": "COMPLETED", "fiscalVoidResult": "FAILED_RETRYABLE" },
     "retryable": true,
     "fiscal": {
       "action": "REJECT",

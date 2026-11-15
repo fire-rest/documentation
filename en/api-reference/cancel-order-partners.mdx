@@ -183,7 +183,7 @@ person to read and may change or be translated without notice.
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | There is an invoice and no credit note yet. | Request the fiscal void first, wait for the response, and only then cancel. |
 | `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | Not cancellable over the API: an accounting adjustment applies. |
 | `CANCELLATION_POLICY_DENIED` | A rule configured by the account denied it. | Read `message`: the customer wrote it. |
-| `FISCAL_VOID_FAILED` | Only with void at cancellation: the provider did not void the receipt, so the order was **not** cancelled. `data.retryable` says whether retrying can work, and `data.fiscal` carries `requestStatus` and `failure`. | If `data.retryable`, retry the same request. If not, escalate: the tax authority rejected the credit note. |
+| `FISCAL_VOID_FAILED` | Only with void at cancellation: the provider did not void the receipt, so the order was **not** cancelled. `data.retryable` says whether retrying can work, and `data.fiscal` carries `requestStatus` and `failure`. | If `data.retryable`, retry the same request. If not, read `message`: fix the configuration, or escalate if the credit note was rejected. |
 | `FISCAL_INVOICE_UNRESOLVED` | Only with void at cancellation: the sale's invoice still has no confirmed number (the provider did not answer when it was numbered). Fire asked for it again with the same key and still got no answer, so there was nothing to void and the order was **not** cancelled. | If `data.retryable`, retry the same request: if the provider answers, Fire numbers the invoice, voids it and cancels. If not, escalate. |
 
 <Warning>
@@ -204,11 +204,22 @@ person to read and may change or be translated without notice.
   never numbered.
 </ResponseField>
 
-`data.fiscal.failure.message`, in the `409`, is the text for the cashier: it comes in the language
-of `?locale=` (Spanish by default), like the rest of the rejection. The top-level `message` stays in
-English, for the integrator. When the void of this same sale is already in progress (another
-request asking for it right now), `failure.code` is `VOID_IN_PROGRESS`: wait a few seconds and
-retry.
+The `409` of the void is a **cancellation-policy rejection like any other**: it comes from one of
+Fire's fixed rules, with the same shape. `message` is the rule's name and `data.reasonDetail` the
+why, both in the language of `?locale=` (Spanish by default); `data.resolvedFrom` is the receipt of
+what was decided with. On top of that, `data.retryable` and `data.fiscal` carry the provider's
+detail: `data.fiscal.failure.message` is the text per provider failure (timeout, no connection, no
+device…), in the same language. The fixed rules of the void at cancellation:
+
+| `message` (es) | `code` | What to do |
+|---|---|---|
+| La factura todavía no tiene número confirmado | `FISCAL_INVOICE_UNRESOLVED` | Retry; if it stays the same, escalate. |
+| La nota de crédito fue rechazada | `FISCAL_VOID_FAILED` | Do not retry: escalate. |
+| No se pudo pedir la anulación fiscal | `FISCAL_VOID_FAILED` | Fix the vendor's fiscal configuration (credentials, country, register device) and retry. |
+| La anulación de esta venta ya está en curso | `FISCAL_VOID_FAILED` | Wait a few seconds and retry (`failure.code` is `VOID_IN_PROGRESS`). |
+| No se pudo anular el documento fiscal | `FISCAL_VOID_FAILED` | Retry. |
+
+Decide by `code` and `data.retryable`; the texts are for people and can change.
 
 With `FISCAL_VOID_FAILED`, the same block travels in `data.fiscal` of the `409`, with
 `action: "REJECT"`:
@@ -218,8 +229,10 @@ With `FISCAL_VOID_FAILED`, the same block travels in `data.fiscal` of the `409`,
   "success": false,
   "error": "CONFLICT",
   "code": "FISCAL_VOID_FAILED",
-  "message": "Could not void the fiscal document — the order was not cancelled",
+  "message": "No se pudo anular el documento fiscal",
   "data": {
+    "reasonDetail": "El proveedor fiscal no dio la nota de crédito o no se pudo verificar el documento, así que la orden no se canceló. Reintentá la cancelación.",
+    "resolvedFrom": { "orderStatus": "COMPLETED", "fiscalVoidResult": "FAILED_RETRYABLE" },
     "retryable": true,
     "fiscal": {
       "action": "REJECT",
