@@ -42,6 +42,22 @@ Es la parte que más se equivoca al integrar, y la única donde el orden importa
   <Tab title="Sin numeración por gateway">
     No hay anulación previa que pedir: **se cancela directo**, con este endpoint y nada más.
   </Tab>
+  <Tab title="Con anulación al cancelar">
+    Cuando el vendor tiene **anular al cancelar** prendido (apagado por defecto), no hay paso
+    previo: **cancela directo**, y Fire anula el comprobante con el proveedor dentro de este mismo
+    pedido, después de que la política de cancelación aprueba y antes de cancelar.
+
+    - Con la nota de crédito numerada, la orden se cancela y el `200` trae
+      [`fiscal`](#el-bloque-fiscal-de-la-respuesta).
+    - Si la anulación falla, **la orden no se cancela**: `409` con `FISCAL_VOID_FAILED`. Reintenta
+      el mismo pedido cuando `data.retryable` es `true`.
+    - Si tu caja ya anuló por `/fiscal/numbering`, Fire no vuelve a anular: cancela con esa nota de
+      crédito.
+
+    La llamada puede tardar hasta unos 5 s más (la espera al proveedor): dale a tu cliente HTTP un
+    timeout holgado. El documento se lee después con
+    [Impresión fiscal v2](/es/api-reference/fiscal-print).
+  </Tab>
 </Tabs>
 
 Fire resuelve solo cuál de los dos casos aplica, por la configuración de esa cuenta, país y
@@ -110,6 +126,12 @@ dice.
   </Expandable>
 </ParamField>
 
+<ParamField body="device" type="object">
+  La caja que cancela: `uid` y, opcionales, `name`, `platform` y `metadata`. Solo se usa con
+  [anular al cancelar](#el-orden-de-los-pasos-depende-del-gateway-fiscal): la nota de crédito la emite
+  quien cancela. Sin él, Fire anula con el dispositivo de la orden.
+</ParamField>
+
 ```json Ejemplo de body
 {
   "reason": "Cliente desistiu",
@@ -157,9 +179,39 @@ mostrarle a una persona y puede cambiar o traducirse sin aviso.
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Hay factura y todavía no hay nota de crédito. | Pedir primero la anulación fiscal, esperar la respuesta, y recién ahí cancelar. |
 | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | No se cancela por API: corresponde un ajuste contable. |
 | `CANCELLATION_POLICY_DENIED` | Lo negó una regla que configuró la cuenta. | Leer `message`: el motivo lo escribió el cliente. |
+| `FISCAL_VOID_FAILED` | Solo con anular al cancelar: el proveedor no anuló el comprobante, así que la orden **no** se canceló. `data.retryable` dice si reintentar puede salir bien, y `data.fiscal` trae `requestStatus` y `failure`. | Si `data.retryable`, reintentar el mismo pedido. Si no, escalar: el ente rechazó la nota de crédito. |
 
 <Warning>
   Un `200` significa que **la orden** quedó cancelada. **No** significa que el documento
   fiscal ya esté anulado: con gateway eso lo hiciste vos en el paso previo, y con emisión
   nativa se resuelve después, por el callback del proveedor.
 </Warning>
+
+## El bloque `fiscal` de la respuesta
+
+<ResponseField name="data.fiscal" type="object | null">
+  Solo con anular al cancelar, cuando este pedido anuló el comprobante: `action: "CONTINUE"`,
+  `requestStatus: "GENERATED"`, `retryable` y `failure: null`. `null` cuando acá no se anuló nada:
+  el vendor no anula al cancelar, la orden nunca se numeró o la nota de crédito ya existía.
+</ResponseField>
+
+Con `FISCAL_VOID_FAILED`, el mismo bloque viaja en `data.fiscal` del `409`, con
+`action: "REJECT"`:
+
+```json
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "FISCAL_VOID_FAILED",
+  "message": "Could not void the fiscal document — the order was not cancelled",
+  "data": {
+    "retryable": true,
+    "fiscal": {
+      "action": "REJECT",
+      "requestStatus": "PENDING",
+      "retryable": true,
+      "failure": { "code": "PROVIDER_TIMEOUT", "message": "…" }
+    }
+  }
+}
+```

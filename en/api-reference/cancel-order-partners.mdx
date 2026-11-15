@@ -44,6 +44,22 @@ matters.
     There is no prior void to request: **cancel directly**, with this endpoint and nothing
     else.
   </Tab>
+  <Tab title="With void at cancellation">
+    When the vendor has **void at cancellation** turned on (off by default), there is no prior
+    step: **cancel directly**, and Fire voids the receipt with the provider inside this same
+    request, after the cancellation policy approves and before cancelling.
+
+    - With the credit note numbered, the order is cancelled and the `200` carries
+      [`fiscal`](#the-fiscal-block-in-the-response).
+    - If the void fails, **the order is not cancelled**: `409` with `FISCAL_VOID_FAILED`. Retry
+      the same request when `data.retryable` is `true`.
+    - If your register already voided with `/fiscal/numbering`, Fire does not void again: it
+      cancels with that credit note.
+
+    The call can take up to about 5 s longer (the wait for the provider): give your HTTP client a
+    generous timeout. The document is read afterwards with
+    [Fiscal print v2](/en/api-reference/fiscal-print).
+  </Tab>
 </Tabs>
 
 Fire works out which of the two cases applies on its own, from that account, country and
@@ -112,6 +128,12 @@ the `409` tells you.
   </Expandable>
 </ParamField>
 
+<ParamField body="device" type="object">
+  The register that cancels: `uid`, and optionally `name`, `platform` and `metadata`. Only used with
+  [void at cancellation](#the-order-of-the-steps-depends-on-the-fiscal-gateway): the credit note is
+  issued by whoever cancels. Without it, Fire voids with the order's device.
+</ParamField>
+
 ```json Body example
 {
   "reason": "Customer changed their mind",
@@ -159,9 +181,40 @@ person to read and may change or be translated without notice.
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | There is an invoice and no credit note yet. | Request the fiscal void first, wait for the response, and only then cancel. |
 | `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | Not cancellable over the API: an accounting adjustment applies. |
 | `CANCELLATION_POLICY_DENIED` | A rule configured by the account denied it. | Read `message`: the customer wrote it. |
+| `FISCAL_VOID_FAILED` | Only with void at cancellation: the provider did not void the receipt, so the order was **not** cancelled. `data.retryable` says whether retrying can work, and `data.fiscal` carries `requestStatus` and `failure`. | If `data.retryable`, retry the same request. If not, escalate: the tax authority rejected the credit note. |
 
 <Warning>
   A `200` means **the order** was cancelled. It does **not** mean the fiscal document is
   already voided: with a gateway you did that in the previous step, and with native issuing it
   settles later, through the provider's callback.
 </Warning>
+
+## The `fiscal` block in the response
+
+<ResponseField name="data.fiscal" type="object | null">
+  Only with void at cancellation, when this request voided the receipt: `action: "CONTINUE"`,
+  `requestStatus: "GENERATED"`, `retryable` and `failure: null`. `null` when nothing was voided
+  here: the vendor does not void at cancellation, the order was never numbered, or the credit note
+  already existed.
+</ResponseField>
+
+With `FISCAL_VOID_FAILED`, the same block travels in `data.fiscal` of the `409`, with
+`action: "REJECT"`:
+
+```json
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "FISCAL_VOID_FAILED",
+  "message": "Could not void the fiscal document — the order was not cancelled",
+  "data": {
+    "retryable": true,
+    "fiscal": {
+      "action": "REJECT",
+      "requestStatus": "PENDING",
+      "retryable": true,
+      "failure": { "code": "PROVIDER_TIMEOUT", "message": "…" }
+    }
+  }
+}
+```
