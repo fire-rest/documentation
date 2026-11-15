@@ -63,8 +63,10 @@ Diferente do endpoint de backoffice, você não precisa guardar o nosso UUID int
     - Se o seu caixa cancelou antes por `/fiscal/numbering` e a política aprova, o cancelamento
       responde `200` com **essa mesma** nota de crédito em `fiscal.fiscalRepresentation`: o Fire não
       emite outra. A política roda igual: se o dia fechou ou uma regra da conta nega, há `409` mesmo
-      com a nota existindo. E se o estado fiscal do pedido já passou para `cancelled` (pelo callback
-      do emissor), responde `FISCAL_ALREADY_CANCELLED`.
+      com a nota existindo.
+    - Se o emissor já cancelou o documento (o estado fiscal do pedido passou para `cancelled` pelo
+      callback dele) e o pedido continua vivo, o cancelamento responde `200` e o pedido é cancelado:
+      o Fire não pede outra nota de crédito. A política roda igual.
 
     Neste modo não sai `FISCAL_REPRESENTATION_NOT_VOIDED`: o caixa já não precisa pedir a nota de
     crédito.
@@ -191,7 +193,6 @@ ler e pode mudar ou ser traduzido sem aviso.
 | `code` | O que aconteceu | O que fazer |
 |---|---|---|
 | `CANCELLATION_IN_PROGRESS` | Já há um cancelamento em andamento. | Aguardar; não repetir em laço. |
-| `FISCAL_ALREADY_CANCELLED` | O documento fiscal já está anulado. | O documento já está anulado, mas o pedido pode continuar vivo no Fire: se continuar aberto, escalar. |
 | `ORDER_NOT_CANCELLABLE` | O pedido já está fechado ou cancelado. | Nada: é estado terminal. |
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Só em vendors **sem** cancelamento fiscal ao cancelar: há nota fiscal e ainda não há nota de crédito. | Pedir primeiro o cancelamento fiscal, aguardar a resposta, e só então cancelar. |
 | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | Não se cancela pela API: cabe um ajuste contábil. |
@@ -227,9 +228,9 @@ Cada parte do `409` serve para uma coisa:
   **`fiscalRepresentation`**: a nota de crédito, com a nota fiscal que ela cancela em `history` e
   `compensates`. É o que o caixa imprime (número, QR) sem outra requisição. Também vem quando a nota
   **já existia** (um cancelamento anterior cancelou e falhou depois, ou o caixa cancelou antes) e a
-  política aprova: o Fire não cancela de novo, mas a devolve. Se o estado fiscal já é `cancelled`,
-  em vez disso responde `409 FISCAL_ALREADY_CANCELLED`. `null` quando o vendor não cancela ao cancelar ou o pedido
-  nunca foi numerado.
+  política aprova: o Fire não cancela de novo, mas a devolve. `null` quando o vendor não cancela ao
+  cancelar, o pedido nunca foi numerado, ou o emissor já tinha cancelado o documento por conta
+  própria (não há nota de crédito do Fire para imprimir).
 </ResponseField>
 
 ## Regras fixas do Fire
@@ -257,7 +258,6 @@ estado que as dispara.
 | Regra (`message`) | `code` | Quando dispara | `data.reasonDetail` | O que fazer |
 |---|---|---|---|---|
 | Já há um cancelamento em andamento | `CANCELLATION_IN_PROGRESS` | O estado fiscal do pedido é `cancelling`: outro cancelamento já está rodando. | — | Aguardar terminar; não repetir em laço. |
-| O documento fiscal já está anulado | `FISCAL_ALREADY_CANCELLED` | O estado fiscal do pedido é `cancelled`. | — | O documento já está anulado, mas o pedido pode continuar vivo no Fire: se continuar aberto, escalar. |
 | O pedido já não está num estado cancelável | `ORDER_NOT_CANCELLABLE` | O pedido está `FORCE_CLOSED` ou `CANCELLED`. | — | Nada: é estado terminal. |
 | Falta emitir a nota de crédito | `FISCAL_REPRESENTATION_NOT_VOIDED` | Só em vendors **sem** cancelamento fiscal ao cancelar: há nota fiscal e ainda não há nota de crédito. | Peça primeiro o cancelamento fiscal, aguarde a resposta, e depois cancele o pedido. | Cancelar com `/fiscal/numbering` (`operation: "CANCEL"`) e só depois cancelar o pedido. `/fiscal/numbering` será desligado no fim de dezembro de 2026 e o cancelamento fiscal ao cancelar o substitui: ver [Numeração fiscal v2](/pt/api-reference/fiscal-documents-v2). |
 | O dia de operação está fechado | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | O pedido é de um dia já fechado. Reabra o dia, ou faça uma nota de crédito ou ajuste. | Não se cancela pela API enquanto o dia continuar fechado. |

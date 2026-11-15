@@ -58,9 +58,10 @@ Es la parte que más se equivoca al integrar, y la única donde el orden importa
       `data.retryable`: ver las [reglas de la anulación al cancelar](#fiscal-gateway-anular-al-cancelar).
     - Si tu caja anuló antes por `/fiscal/numbering` y la política aprueba, el cancel da `200` con
       **esa misma** nota de crédito en `fiscal.fiscalRepresentation`: Fire no emite otra. La política
-      corre igual: si el día cerró o una regla de la cuenta niega, hay `409` aunque la nota exista. Y
-      si el estado fiscal de la orden ya pasó a `cancelled` (por el callback del emisor), responde
-      `FISCAL_ALREADY_CANCELLED`.
+      corre igual: si el día cerró o una regla de la cuenta niega, hay `409` aunque la nota exista.
+    - Si el emisor ya anuló el documento (el estado fiscal de la orden pasó a `cancelled` por su
+      callback) y la orden sigue viva, el cancel da `200` y la orden se cancela: Fire no pide otra
+      nota de crédito. La política corre igual.
 
     En este modo no sale `FISCAL_REPRESENTATION_NOT_VOIDED`: la nota de crédito ya no la tiene que
     pedir la caja.
@@ -188,7 +189,6 @@ mostrarle a una persona y puede cambiar o traducirse sin aviso.
 | `code` | Qué pasó | Qué hacer |
 |---|---|---|
 | `CANCELLATION_IN_PROGRESS` | Ya hay una cancelación disparada. | Esperar; no reintentar en bucle. |
-| `FISCAL_ALREADY_CANCELLED` | El documento fiscal ya está anulado. | El documento ya está anulado, pero la orden puede seguir viva en Fire: si sigue abierta, escalar. |
 | `ORDER_NOT_CANCELLABLE` | La orden ya está cerrada o cancelada. | Nada: es estado terminal. |
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. | Pedir primero la anulación fiscal, esperar la respuesta, y recién ahí cancelar. |
 | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | No se cancela por API: corresponde un ajuste contable. |
@@ -223,8 +223,8 @@ sirve para una cosa:
   crédito, con la factura que anula en `history` y `compensates`. Es lo que imprime la caja (número,
   QR) sin otro pedido. También viene cuando la nota **ya existía** (un cancel anterior anuló y falló
   después, o la caja anuló antes) y la política aprueba: Fire no vuelve a anular, pero la devuelve.
-  Si el estado fiscal ya es `cancelled`, en cambio, responde `409 FISCAL_ALREADY_CANCELLED`. `null` cuando el vendor
-  no anula al cancelar o la orden nunca se numeró.
+  `null` cuando el vendor no anula al cancelar, la orden nunca se numeró, o el emisor ya había anulado
+  el documento por su cuenta (no hay nota de crédito de Fire que imprimir).
 </ResponseField>
 
 ## Reglas fijas de Fire
@@ -252,7 +252,6 @@ las dispara.
 | Regla (`message`) | `code` | Cuándo dispara | `data.reasonDetail` | Qué hacer |
 |---|---|---|---|---|
 | Ya hay una cancelación en curso | `CANCELLATION_IN_PROGRESS` | El estado fiscal de la orden es `cancelling`: otra cancelación ya está corriendo. | — | Esperar a que termine; no reintentar en bucle. |
-| El documento fiscal ya está anulado | `FISCAL_ALREADY_CANCELLED` | El estado fiscal de la orden es `cancelled`. | — | El documento ya está anulado, pero la orden puede seguir viva en Fire: si sigue abierta, escalar. |
 | La orden ya no está en un estado cancelable | `ORDER_NOT_CANCELLABLE` | La orden está `FORCE_CLOSED` o `CANCELLED`. | — | Nada: es estado terminal. |
 | Falta emitir la nota de crédito | `FISCAL_REPRESENTATION_NOT_VOIDED` | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. | Pide primero la anulación fiscal, espera la respuesta, y después cancela la orden. | Anular con `/fiscal/numbering` (`operation: "CANCEL"`) y recién después cancelar. `/fiscal/numbering` se depreca a fines de diciembre de 2026 y lo reemplaza anular al cancelar: ver [Numeración fiscal v2](/es/api-reference/fiscal-documents-v2). |
 | El día de negocio está cerrado | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | La orden es de un día ya cerrado. Reabre el día, o haz una nota de crédito o un ajuste. | No se cancela por API mientras el día siga cerrado. |

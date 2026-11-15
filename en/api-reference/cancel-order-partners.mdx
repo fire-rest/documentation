@@ -62,8 +62,10 @@ matters.
     - If your register voided beforehand with `/fiscal/numbering` and the policy approves, the cancel
       answers `200` with **that same** credit note in `fiscal.fiscalRepresentation`: Fire does not
       issue another. The policy still runs: if the day closed or an account rule denies, there is a
-      `409` even though the note exists. And if the order's fiscal status already moved to
-      `cancelled` (through the issuer's callback), it answers `FISCAL_ALREADY_CANCELLED`.
+      `409` even though the note exists.
+    - If the issuer already voided the document (the order's fiscal status moved to `cancelled`
+      through its callback) and the order is still alive, the cancel answers `200` and the order is
+      cancelled: Fire does not request another credit note. The policy still runs.
 
     In this mode `FISCAL_REPRESENTATION_NOT_VOIDED` does not come back: the register no longer has to
     request the credit note.
@@ -191,7 +193,6 @@ person to read and may change or be translated without notice.
 | `code` | What happened | What to do |
 |---|---|---|
 | `CANCELLATION_IN_PROGRESS` | A cancellation is already in flight. | Wait; do not retry in a loop. |
-| `FISCAL_ALREADY_CANCELLED` | The fiscal document is already voided. | The document is already voided, but the order may still be alive in Fire: if it is still open, escalate. |
 | `ORDER_NOT_CANCELLABLE` | The order is already closed or cancelled. | Nothing: it is a terminal state. |
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Only for vendors **without** void at cancellation: there is an invoice and no credit note yet. | Request the fiscal void first, wait for the response, and only then cancel. |
 | `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | Not cancellable over the API: an accounting adjustment applies. |
@@ -226,9 +227,9 @@ requested, the void is already in progress, and the document could not be voided
   credit note, with the invoice it voids in `history` and `compensates`. That is what the register
   prints (number, QR) without another request. It also comes when the credit note **already
   existed** (an earlier cancel voided and then failed, or the register voided before) and the policy
-  approves: Fire does not void again, but returns it. If the fiscal status is already `cancelled`,
-  instead, it answers `409 FISCAL_ALREADY_CANCELLED`. `null` when the vendor does not void at cancellation or the order was
-  never numbered.
+  approves: Fire does not void again, but returns it. `null` when the vendor does not void at
+  cancellation, the order was never numbered, or the issuer had already voided the document on its
+  own (there is no Fire credit note to print).
 </ResponseField>
 
 ## Fixed Fire rules
@@ -256,7 +257,6 @@ triggers them remains.
 | Rule (`message`) | `code` | When it triggers | `data.reasonDetail` | What to do |
 |---|---|---|---|---|
 | A cancellation is already in progress | `CANCELLATION_IN_PROGRESS` | The order's fiscal status is `cancelling`: another cancellation is already running. | — | Wait for it to finish; do not retry in a loop. |
-| The tax document is already voided | `FISCAL_ALREADY_CANCELLED` | The order's fiscal status is `cancelled`. | — | The document is already voided, but the order may still be alive in Fire: if it is still open, escalate. |
 | The order is no longer in a cancellable state | `ORDER_NOT_CANCELLABLE` | The order is `FORCE_CLOSED` or `CANCELLED`. | — | Nothing: it is a terminal state. |
 | The credit note has not been issued yet | `FISCAL_REPRESENTATION_NOT_VOIDED` | Only for vendors **without** void at cancellation: there is an invoice and no credit note yet. | Request the fiscal void first, wait for the response, then cancel the order. | Void with `/fiscal/numbering` (`operation: "CANCEL"`) and only then cancel. `/fiscal/numbering` is deprecated at the end of December 2026 and void at cancellation replaces it: see [Fiscal numbering v2](/en/api-reference/fiscal-documents-v2). |
 | The business day is closed | `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | The order belongs to a closed day. Re-open the day, or issue a credit memo or adjustment. | Not cancellable over the API while the day stays closed. |
