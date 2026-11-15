@@ -38,6 +38,11 @@ Es la parte que más se equivoca al integrar, y la única donde el orden importa
 
     Si invertís los pasos, este endpoint responde `409` con
     `FISCAL_REPRESENTATION_NOT_VOIDED`. No es transitorio: reintentar no lo arregla.
+
+    <Note>
+      `/fiscal/numbering` está deprecado: sigue funcionando hasta fines de diciembre de 2026, y lo
+      reemplaza anular al cancelar (el tercer tab). Ver [Numeración fiscal v2](/es/api-reference/fiscal-documents-v2).
+    </Note>
   </Tab>
   <Tab title="Sin numeración por gateway">
     No hay anulación previa que pedir: **se cancela directo**, con este endpoint y nada más.
@@ -51,8 +56,11 @@ Es la parte que más se equivoca al integrar, y la única donde el orden importa
       [`fiscal.fiscalRepresentation`](#el-bloque-fiscal-de-la-respuesta), lista para imprimir.
     - Si la nota de crédito no sale, `409` y **la orden no se cancela**. Qué hacer lo dicen `code` y
       `data.retryable`: ver las [reglas de la anulación al cancelar](#fiscal-gateway-anular-al-cancelar).
-    - Si tu caja igual anuló antes por `/fiscal/numbering`, el cancel da `200` con **esa misma** nota
-      de crédito en `fiscal.fiscalRepresentation`: Fire no emite otra.
+    - Si tu caja anuló antes por `/fiscal/numbering` y la política aprueba, el cancel da `200` con
+      **esa misma** nota de crédito en `fiscal.fiscalRepresentation`: Fire no emite otra. La política
+      corre igual: si el día cerró o una regla de la cuenta niega, hay `409` aunque la nota exista. Y
+      si el estado fiscal de la orden ya pasó a `cancelled` (por el callback del emisor), responde
+      `FISCAL_ALREADY_CANCELLED`.
 
     En este modo no sale `FISCAL_REPRESENTATION_NOT_VOIDED`: la nota de crédito ya no la tiene que
     pedir la caja.
@@ -180,7 +188,7 @@ mostrarle a una persona y puede cambiar o traducirse sin aviso.
 | `code` | Qué pasó | Qué hacer |
 |---|---|---|
 | `CANCELLATION_IN_PROGRESS` | Ya hay una cancelación disparada. | Esperar; no reintentar en bucle. |
-| `FISCAL_ALREADY_CANCELLED` | El documento fiscal ya está anulado. | Nada: el efecto deseado ya ocurrió. |
+| `FISCAL_ALREADY_CANCELLED` | El documento fiscal ya está anulado. | El documento ya está anulado, pero la orden puede seguir viva en Fire: si sigue abierta, escalar. |
 | `ORDER_NOT_CANCELLABLE` | La orden ya está cerrada o cancelada. | Nada: es estado terminal. |
 | `FISCAL_REPRESENTATION_NOT_VOIDED` | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. | Pedir primero la anulación fiscal, esperar la respuesta, y recién ahí cancelar. |
 | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | No se cancela por API: corresponde un ajuste contable. |
@@ -214,7 +222,8 @@ sirve para una cosa:
   `requestStatus: "GENERATED"`, `retryable`, `failure: null` y **`fiscalRepresentation`**: la nota de
   crédito, con la factura que anula en `history` y `compensates`. Es lo que imprime la caja (número,
   QR) sin otro pedido. También viene cuando la nota **ya existía** (un cancel anterior anuló y falló
-  después, o la caja anuló antes): Fire no vuelve a anular, pero la devuelve. `null` cuando el vendor
+  después, o la caja anuló antes) y la política aprueba: Fire no vuelve a anular, pero la devuelve.
+  Si el estado fiscal ya es `cancelled`, en cambio, responde `409 FISCAL_ALREADY_CANCELLED`. `null` cuando el vendor
   no anula al cancelar o la orden nunca se numeró.
 </ResponseField>
 
@@ -229,6 +238,10 @@ de `?locale=`; español por defecto) y, en `data`, el `reasonDetail` —cuando l
 `resolvedFrom`, el recibo de con qué se decidió. Los nombres y las explicaciones de abajo son los
 textos en español; con `?locale=en` o `?locale=pt` llegan traducidos.
 
+Hay una excepción: si dos cancelaciones de la misma orden llegan a la vez y las dos pasan la
+política, la segunda choca en la base y responde `CANCELLATION_IN_PROGRESS` **sin `data`** y con un
+`message` fijo en inglés (`A cancellation of this order is already in progress.`).
+
 ### Generales
 
 Aplican a todas las cuentas. Las cinco las puede adelantar la
@@ -239,14 +252,15 @@ las dispara.
 | Regla (`message`) | `code` | Cuándo dispara | `data.reasonDetail` | Qué hacer |
 |---|---|---|---|---|
 | Ya hay una cancelación en curso | `CANCELLATION_IN_PROGRESS` | El estado fiscal de la orden es `cancelling`: otra cancelación ya está corriendo. | — | Esperar a que termine; no reintentar en bucle. |
-| El documento fiscal ya está anulado | `FISCAL_ALREADY_CANCELLED` | El estado fiscal de la orden es `cancelled`. | — | Nada: el efecto deseado ya ocurrió. |
+| El documento fiscal ya está anulado | `FISCAL_ALREADY_CANCELLED` | El estado fiscal de la orden es `cancelled`. | — | El documento ya está anulado, pero la orden puede seguir viva en Fire: si sigue abierta, escalar. |
 | La orden ya no está en un estado cancelable | `ORDER_NOT_CANCELLABLE` | La orden está `FORCE_CLOSED` o `CANCELLED`. | — | Nada: es estado terminal. |
-| Falta emitir la nota de crédito | `FISCAL_REPRESENTATION_NOT_VOIDED` | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. | Pedí primero la anulación fiscal, esperá la respuesta, y después cancelá la orden. | Anular con `/fiscal/numbering` (`operation: "CANCEL"`) y recién después cancelar. |
+| Falta emitir la nota de crédito | `FISCAL_REPRESENTATION_NOT_VOIDED` | Solo en vendors **sin** anular al cancelar: hay factura y todavía no hay nota de crédito. | Pedí primero la anulación fiscal, esperá la respuesta, y después cancelá la orden. | Anular con `/fiscal/numbering` (`operation: "CANCEL"`) y recién después cancelar. `/fiscal/numbering` se depreca a fines de diciembre de 2026 y lo reemplaza anular al cancelar: ver [Numeración fiscal v2](/es/api-reference/fiscal-documents-v2). |
 | El día de negocio está cerrado | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | La orden es de un día ya cerrado. Reabrí el día, o hacé una nota de crédito o un ajuste. | No se cancela por API mientras el día siga cerrado. |
 
 ### Fiscal Gateway (anular al cancelar)
 
-Solo para vendors con [anular al cancelar](#el-orden-de-los-pasos-depende-del-gateway-fiscal). Fire
+Solo para vendors con [anular al cancelar](#el-orden-de-los-pasos-depende-del-gateway-fiscal), salvo
+un caso de «No se pudo anular el documento fiscal» (abajo). Fire
 las evalúa **después** de pedirle la nota de crédito al proveedor, con lo que el proveedor contestó;
 por eso la elegibilidad no las puede adelantar: en el preflight la orden sale cancelable y el «no»
 recién se sabe al cancelar. La única excepción es **La nota de crédito fue rechazada**: si el ente ya
@@ -277,6 +291,8 @@ Los ejemplos van con `?locale=es` y un `resolvedFrom` acortado.
 - **Cuándo dispara**: la factura de la venta quedó sin número confirmado (el proveedor no contestó
   cuando se numeró). Fire la volvió a pedir con su misma clave y siguió sin número, así que no había
   qué anular.
+- En ese reintento de la factura también pueden salir «La anulación de esta venta ya está en curso»
+  y «No se pudo pedir la anulación fiscal», según el `failure.code`.
 - **Elegibilidad**: no la adelanta.
 - **Reintentar**: sí, cuando `data.retryable` es `true`. Si el proveedor contesta, Fire numera la
   factura, la anula y cancela en el mismo pedido.
@@ -316,7 +332,8 @@ Los ejemplos van con `?locale=es` y un `resolvedFrom` acortado.
 - **Reintentar**: no (`data.retryable: false`): reintentar daría el mismo rechazo.
 - **Qué hacer**: escalar para revisar la venta.
 
-`data.fiscal.failure` trae el rechazo del ente tal como llegó. Si Fire no lo tiene guardado (una
+`data.fiscal.failure` trae el rechazo del ente: `FISCAL_BUSINESS_RULE` o el código propio del
+proveedor, con su texto tal como llegó. Si Fire no lo tiene guardado (una
 nota rechazada antes), viene `CREDIT_NOTE_REJECTED`: «La nota de crédito de esta venta fue
 rechazada.».
 
@@ -336,7 +353,7 @@ rechazada.».
       "requestStatus": "FAILED_FINAL",
       "retryable": false,
       "failure": {
-        "code": "FISCAL_REJECTED",
+        "code": "FISCAL_BUSINESS_RULE",
         "message": "Rejeição: Prazo de Cancelamento Superior ao Previsto na Legislação"
       }
     }
@@ -353,7 +370,8 @@ rechazada.».
 - **Elegibilidad**: no la adelanta.
 - **Reintentar**: no sin corregir antes (`data.retryable` es `false` en general).
 - **Qué hacer**: corregir la configuración (credenciales del proveedor, país, dispositivo de la caja)
-  y reintentar.
+  y reintentar. Con `FISCAL_IDEMPOTENCY_CONFLICT` (la clave de esta venta ya anuló otro `orderCode`)
+  ningún reintento lo arregla: escalar.
 
 {/* ejemplo armado desde el código; reemplazar con cuerpo real de LOAD */}
 ```json 409 — No se pudo pedir la anulación fiscal
@@ -418,7 +436,8 @@ rechazada.».
 - **Cuándo dispara**: el proveedor no dio la nota de crédito pero se puede reintentar (timeout, sin
   conexión, proveedor no disponible…), o Fire no pudo verificar el documento fiscal
   (`failure.code` es `FISCAL_STATE_UNAVAILABLE`): cancelar sin verlo podría dejar la factura viva con
-  el dinero devuelto.
+  el dinero devuelto. Este caso **no es solo con anular al cancelar**: también sale cuando Fire no
+  pudo leer la configuración del vendor y la orden la numeró el gateway.
 - **Elegibilidad**: no la adelanta.
 - **Reintentar**: sí (`data.retryable: true`).
 - **Qué hacer**: reintentar la cancelación.
