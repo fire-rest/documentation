@@ -8,7 +8,7 @@ authMethod: "bearer"
 Este endpoint es **entrante** — tu Sistema de Pantallas de Cocina (KDS) le hace POST cada vez que una orden avanza en la cocina: la cocina empezó a **prepararla**, quedó **lista** para entrega, fue **despachada** (entregada / retirada), o fue **cancelada**. Fire autentica la solicitud, la correlaciona con la orden, aplica idempotencia y una compuerta anti-regresión, y registra el evento en su log de eventos KDS para observabilidad.
 
 <Note>
-  **Este endpoint es asíncrono.** Fire autentica, corre el guard de source-of-truth + tenancy, deduplica y **encola** el evento — luego responde **`202 Accepted`** con un `webhookEventId` (típicamente en menos de 100&nbsp;ms). El evento se registra un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para verificar el resultado, consultá [`GET /v1/webhooks/events/{webhookEventId}`](#verificar-el-resultado). Los problemas corregibles por el cliente (payload inválido, `eventId` equivocado, tenant equivocado) se rechazan **síncronamente** con `4xx` **antes** del `202`.
+  **Este endpoint es asíncrono.** Fire autentica, corre el guard de source-of-truth + tenancy, deduplica y **encola** el evento — luego responde **`202 Accepted`** con un `webhookEventId` (típicamente en menos de 100&nbsp;ms). El evento se registra un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para verificar el resultado, consulta [`GET /v1/webhooks/events/{webhookEventId}`](#verificar-el-resultado). Los problemas corregibles por el cliente (payload inválido, `eventId` equivocado, tenant equivocado) se rechazan **síncronamente** con `4xx` **antes** del `202`.
 </Note>
 
 <Note>
@@ -29,7 +29,7 @@ El ciclo de vida del KDS tiene un orden estricto:
 Los valores son **minúscula, con punto** (`order.preparing`, no `ORDER_PREPARING`).
 
 <Note>
-  **`order.cancelled` es el estado terminal.** Envialo cuando tu KDS procesa la cancelación de una orden (iniciada desde Fire). Una vez registrado, cualquier evento posterior (`preparing`, `ready`, `dispatched`) se ignora como no-avanzante — la orden queda en `cancelled` permanentemente.
+  **`order.cancelled` es el estado terminal.** Envíalo cuando tu KDS procesa la cancelación de una orden (iniciada desde Fire). Una vez registrado, cualquier evento posterior (`preparing`, `ready`, `dispatched`) se ignora como no-avanzante — la orden queda en `cancelled` permanentemente.
 </Note>
 
 ## Autenticación
@@ -37,11 +37,11 @@ Los valores son **minúscula, con punto** (`order.preparing`, no `ORDER_PREPARIN
 Este endpoint requiere una **API key vendor-scoped con el scope `webhooks:kds`** (binding de cuenta + vendor). Fire valida que la orden pertenezca a esa cuenta y vendor. Las keys sin el scope, o sin binding de vendor, se rechazan con `403 Forbidden`.
 
 <ParamField header="x-api-key" type="string" required>
-  Tu API key vendor-scoped de Fire con scope `webhooks:kds`. Generá una desde **Developers → API Management** para la cuenta/vendor cuyas órdenes reportará esta key.
+  Tu API key vendor-scoped de Fire con scope `webhooks:kds`. Genera una desde **Developers → API Management** para la cuenta/vendor cuyas órdenes reportará esta key.
 </ParamField>
 
 <ParamField header="Authorization" type="string">
-  `Bearer <token>` opcional — aceptado como alternativa legacy a `x-api-key`. Enviá uno u otro.
+  `Bearer <token>` opcional — aceptado como alternativa legacy a `x-api-key`. Envía uno u otro.
 </ParamField>
 
 ## Cuerpo de la solicitud
@@ -51,7 +51,7 @@ Este endpoint requiere una **API key vendor-scoped con el scope `webhooks:kds`**
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  El id propio de tu KDS para esta entrega. Se guarda para auditoría/forense — **no es la llave de idempotencia**. Fire deduplica por `(orderId, eventId, eventType)`, así que podés enviar un `providerEventId` nuevo en cada reintento. Usá el id de evento nativo de tu KDS si lo tenés; si no, un UUID.
+  El id propio de tu KDS para esta entrega. Se guarda para auditoría/forense — **no es la llave de idempotencia**. Fire deduplica por `(orderId, eventId, eventType)`, así que puedes enviar un `providerEventId` nuevo en cada reintento. Usa el id de evento nativo de tu KDS si lo tienes; si no, un UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -63,10 +63,10 @@ Este endpoint requiere una **API key vendor-scoped con el scope `webhooks:kds`**
 </ParamField>
 
 <ParamField body="eventId" type="string" required>
-  UUID de correlación — el `event.id` del envelope que Fire emitió al **despachar la orden a tu device**. Ecoalo exacto; nunca lo inventes.
+  UUID de correlación — el `event.id` del envelope que Fire emitió al **despachar la orden a tu device**. Ecóalo exacto; nunca lo inventes.
 
   - **Chequeo de fuente de verdad.** Un `eventId` que no referencie un evento de Fire para esa orden se rechaza con `400` antes del `202`.
-  - **Un eventId para todo el recorrido.** Enviá el **mismo** `eventId` para `preparing`, `ready` y `dispatched` de ese dispatch — se distinguen por `eventType`. (Cada dispatch a un **device distinto** lleva su propio `eventId`, así que dos devices nunca colisionan.)
+  - **Un eventId para todo el recorrido.** Envía el **mismo** `eventId` para `preparing`, `ready` y `dispatched` de ese dispatch — se distinguen por `eventType`. (Cada dispatch a un **device distinto** lleva su propio `eventId`, así que dos devices nunca colisionan.)
 </ParamField>
 
 <ParamField body="stationName" type="string">
@@ -126,9 +126,9 @@ Los tres reportes del mismo dispatch comparten **un `eventId`** (el del dispatch
 
 ## Respuesta
 
-En éxito el endpoint responde **`202 Accepted`** — el evento fue autenticado, validado, deduplicado y **encolado**. Un `202` **no** significa que el evento ya se registró; eso ocurre de forma asíncrona. Usá el [endpoint de estado](#verificar-el-resultado) para confirmar.
+En éxito el endpoint responde **`202 Accepted`** — el evento fue autenticado, validado, deduplicado y **encolado**. Un `202` **no** significa que el evento ya se registró; eso ocurre de forma asíncrona. Usa el [endpoint de estado](#verificar-el-resultado) para confirmar.
 
-El body trae **dos ids distintos**: `eventId` es el id que **vos** enviaste (echo), `webhookEventId` es el id de **Fire** para el registro encolado. Misma forma que el [callback fiscal](/es/api-reference/fiscal-callback#respuesta).
+El body trae **dos ids distintos**: `eventId` es el id que **tú** enviaste (echo), `webhookEventId` es el id de **Fire** para el registro encolado. Misma forma que el [callback fiscal](/es/api-reference/fiscal-callback#respuesta).
 
 <ResponseField name="received" type="boolean">
   Siempre `true` cuando la solicitud fue aceptada y encolada.
@@ -143,7 +143,7 @@ El body trae **dos ids distintos**: `eventId` es el id que **vos** enviaste (ech
 </ResponseField>
 
 <ResponseField name="webhookEventId" type="string">
-  El id de Fire para el registro encolado. Pasalo a `GET /v1/webhooks/events/{webhookEventId}` para consultar el resultado. En un duplicado es el **mismo** id que se devolvió la primera vez.
+  El id de Fire para el registro encolado. Pásalo a `GET /v1/webhooks/events/{webhookEventId}` para consultar el resultado. En un duplicado es el **mismo** id que se devolvió la primera vez.
 </ResponseField>
 
 <ResponseField name="status" type="string">
@@ -207,7 +207,7 @@ El body trae **dos ids distintos**: `eventId` es el id que **vos** enviaste (ech
 }
 ```
 
-```json 503 — auth store temporalmente inalcanzable (reintentá)
+```json 503 — auth store temporalmente inalcanzable (reintenta)
 {
   "success": false,
   "error": "SERVICE_UNAVAILABLE",
@@ -218,7 +218,7 @@ El body trae **dos ids distintos**: `eventId` es el id que **vos** enviaste (ech
 
 ## Verificar el resultado
 
-Como el procesamiento es asíncrono, el `202` solo confirma que el evento fue **encolado**. Para ver si se registró, consultá el endpoint de estado con el `webhookEventId` que devolvió el `202`:
+Como el procesamiento es asíncrono, el `202` solo confirma que el evento fue **encolado**. Para ver si se registró, consulta el endpoint de estado con el `webhookEventId` que devolvió el `202`:
 
 ```
 GET https://app.fire.rest/api/v1/webhooks/events/{webhookEventId}
@@ -232,11 +232,11 @@ x-api-key: <tu key webhooks:kds>
 <ResponseField name="result" type="object | null">En éxito, el resultado del worker — ej. `{ "kind": "recorded" }` (avanzó la orden) o `{ "kind": "ignored" }` (no-avanzante).</ResponseField>
 <ResponseField name="error" type="object | null">`{ "message": "…" }` cuando el último intento falló; `null` si no.</ResponseField>
 
-Se devuelve `404` para ids desconocidos — o ids de otro tenant — sin filtrar existencia. Autenticá con la misma key `webhooks:kds` que usaste para el evento.
+Se devuelve `404` para ids desconocidos — o ids de otro tenant — sin filtrar existencia. Autentica con la misma key `webhooks:kds` que usaste para el evento.
 
 ## Idempotencia y el recorrido
 
-Fire deduplica por la tripla **`(orderId, eventId, eventType)`** — *no* por `providerEventId` (que podés regenerar libremente). Esto es lo que hace funcionar el recorrido:
+Fire deduplica por la tripla **`(orderId, eventId, eventType)`** — *no* por `providerEventId` (que puedes regenerar libremente). Esto es lo que hace funcionar el recorrido:
 
 | Escenario | Resultado |
 |---|---|
@@ -244,7 +244,7 @@ Fire deduplica por la tripla **`(orderId, eventId, eventType)`** — *no* por `p
 | El **mismo** reporte reenviado — misma `(orderId, eventId, eventType)` | `202` `duplicate:true` — registro existente devuelto, no reprocesado |
 | `eventId` no emitido por Fire para ese `orderId` | `400` |
 | Orden/evento fuera de la cuenta + vendor de tu API key | `403` |
-| Auth store momentáneamente inalcanzable | `503` — transitorio, **reintentá** |
+| Auth store momentáneamente inalcanzable | `503` — transitorio, **reintenta** |
 
 <Note>
   **Esta es la diferencia clave con el callback fiscal.** Allá, un `eventId` lleva exactamente **una** acción, así que reusarlo para otro `eventType` es un conflicto (`409`). Acá, un `eventId` de dispatch lleva legítimamente **todo el recorrido** (`preparing` → `ready` → `dispatched`) — el `eventType` es lo que distingue los pasos. Devices distintos reciben `eventId`s de dispatch distintos, así que sus reportes nunca colisionan.
@@ -265,7 +265,7 @@ El estado de la orden nunca debe retroceder. Fire rastrea la **etapa máxima alc
 - Un evento que **no avanza** — una regresión o una repetición — igual se **registra para observabilidad**, marcado como no-avanzante, y **no** retrocede la orden.
 - `order.cancelled` tiene rank 4: avanza sobre cualquier estado previo. Una vez registrado, es **irreversible** — cualquier evento posterior (incluso `order.dispatched`) se trata como no-avanzante.
 
-Esto hace el endpoint seguro ante entregas fuera de orden o tardías: enviá los eventos en cualquier orden y Fire mantiene la orden en su etapa más avanzada.
+Esto hace el endpoint seguro ante entregas fuera de orden o tardías: envía los eventos en cualquier orden y Fire mantiene la orden en su etapa más avanzada.
 
 ## Relacionado
 
