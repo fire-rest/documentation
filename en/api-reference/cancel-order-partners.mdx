@@ -182,6 +182,7 @@ person to read and may change or be translated without notice.
 | `BUSINESS_DAY_CLOSED` | The order belongs to a closed business day, or to one before the active day. | Not cancellable over the API: an accounting adjustment applies. |
 | `CANCELLATION_POLICY_DENIED` | A rule configured by the account denied it. | Read `message`: the customer wrote it. |
 | `FISCAL_VOID_FAILED` | Only with void at cancellation: the provider did not void the receipt, so the order was **not** cancelled. `data.retryable` says whether retrying can work, and `data.fiscal` carries `requestStatus` and `failure`. | If `data.retryable`, retry the same request. If not, escalate: the tax authority rejected the credit note. |
+| `FISCAL_INVOICE_UNRESOLVED` | Only with void at cancellation: the sale's invoice still has no confirmed number (the provider did not answer when it was numbered). Fire asked for it again with the same key and still got no answer, so there was nothing to void and the order was **not** cancelled. | If `data.retryable`, retry the same request: if the provider answers, Fire numbers the invoice, voids it and cancels. If not, escalate. |
 
 <Warning>
   A `200` means **the order** was cancelled. It does **not** mean the fiscal document is
@@ -193,10 +194,17 @@ person to read and may change or be translated without notice.
 
 <ResponseField name="data.fiscal" type="object | null">
   Only with void at cancellation, when this request voided the receipt: `action: "CONTINUE"`,
-  `requestStatus: "GENERATED"`, `retryable` and `failure: null`. `null` when nothing was voided
-  here: the vendor does not void at cancellation, the order was never numbered, or the credit note
-  already existed.
+  `requestStatus: "GENERATED"`, `retryable`, `failure: null` and **`fiscalRepresentation`**: the
+  credit note, with the invoice it voids in `history` and `compensates`. That is what the register
+  prints (number, QR) without another request. `null` when nothing was voided here: the vendor does
+  not void at cancellation, the order was never numbered, or the credit note already existed.
 </ResponseField>
+
+`data.fiscal.failure.message`, in the `409`, is the text for the cashier: it comes in the language
+of `?locale=` (Spanish by default), like the rest of the rejection. The top-level `message` stays in
+English, for the integrator. When the void of this same sale is already in progress (another
+request asking for it right now), `failure.code` is `VOID_IN_PROGRESS`: wait a few seconds and
+retry.
 
 With `FISCAL_VOID_FAILED`, the same block travels in `data.fiscal` of the `409`, with
 `action: "REJECT"`:

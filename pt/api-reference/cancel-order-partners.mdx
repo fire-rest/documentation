@@ -179,6 +179,7 @@ ler e pode mudar ou ser traduzido sem aviso.
 | `BUSINESS_DAY_CLOSED` | O pedido é de um dia de operação já fechado, ou anterior ao ativo. | Não se cancela pela API: cabe um ajuste contábil. |
 | `CANCELLATION_POLICY_DENIED` | Uma regra configurada pela conta negou. | Ler `message`: o motivo foi escrito pelo cliente. |
 | `FISCAL_VOID_FAILED` | Só com o cancelamento fiscal ao cancelar: o provedor não cancelou o comprovante, então o pedido **não** foi cancelado. `data.retryable` diz se tentar de novo pode dar certo, e `data.fiscal` traz `requestStatus` e `failure`. | Se `data.retryable`, tentar de novo a mesma requisição. Se não, escalar: a autoridade recusou a nota de crédito. |
+| `FISCAL_INVOICE_UNRESOLVED` | Só com o cancelamento fiscal ao cancelar: a nota fiscal da venda ainda não tem um número confirmado (o provedor não respondeu quando ela foi numerada). O Fire a pediu de novo com a mesma chave e continuou sem resposta, então não havia nada para cancelar e o pedido **não** foi cancelado. | Se `data.retryable`, tentar de novo a mesma requisição: se o provedor responder, o Fire numera a nota fiscal, cancela e cancela o pedido. Se não, escalar. |
 
 <Warning>
   Um `200` significa que **o pedido** foi cancelado. **Não** significa que o documento fiscal
@@ -190,10 +191,18 @@ ler e pode mudar ou ser traduzido sem aviso.
 
 <ResponseField name="data.fiscal" type="object | null">
   Só com o cancelamento fiscal ao cancelar, quando esta requisição cancelou o comprovante:
-  `action: "CONTINUE"`, `requestStatus: "GENERATED"`, `retryable` e `failure: null`. `null` quando
-  aqui não se cancelou nada: o vendor não cancela ao cancelar, o pedido nunca foi numerado ou a
-  nota de crédito já existia.
+  `action: "CONTINUE"`, `requestStatus: "GENERATED"`, `retryable`, `failure: null` e
+  **`fiscalRepresentation`**: a nota de crédito, com a nota fiscal que ela cancela em `history` e
+  `compensates`. É o que o caixa imprime (número, QR) sem outra requisição. `null` quando aqui não se
+  cancelou nada: o vendor não cancela ao cancelar, o pedido nunca foi numerado ou a nota de crédito
+  já existia.
 </ResponseField>
+
+`data.fiscal.failure.message`, no `409`, é o texto para o operador de caixa: vem no idioma de
+`?locale=` (espanhol por padrão), como o resto da recusa. O `message` de primeiro nível fica em
+inglês, para o integrador. Quando o cancelamento fiscal desta mesma venda já está em andamento (outra
+requisição o pedindo agora), `failure.code` é `VOID_IN_PROGRESS`: aguarde alguns segundos e tente de
+novo.
 
 Com `FISCAL_VOID_FAILED`, o mesmo bloco viaja em `data.fiscal` do `409`, com
 `action: "REJECT"`:

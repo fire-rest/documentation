@@ -180,6 +180,7 @@ mostrarle a una persona y puede cambiar o traducirse sin aviso.
 | `BUSINESS_DAY_CLOSED` | La orden es de un día de negocio ya cerrado, o anterior al activo. | No se cancela por API: corresponde un ajuste contable. |
 | `CANCELLATION_POLICY_DENIED` | Lo negó una regla que configuró la cuenta. | Leer `message`: el motivo lo escribió el cliente. |
 | `FISCAL_VOID_FAILED` | Solo con anular al cancelar: el proveedor no anuló el comprobante, así que la orden **no** se canceló. `data.retryable` dice si reintentar puede salir bien, y `data.fiscal` trae `requestStatus` y `failure`. | Si `data.retryable`, reintentar el mismo pedido. Si no, escalar: el ente rechazó la nota de crédito. |
+| `FISCAL_INVOICE_UNRESOLVED` | Solo con anular al cancelar: la factura de la venta todavía no tiene un número confirmado (el proveedor no contestó cuando se numeró). Fire la volvió a pedir con la misma clave y siguió sin respuesta, así que no había nada que anular y la orden **no** se canceló. | Si `data.retryable`, reintentar el mismo pedido: si el proveedor contesta, Fire numera la factura, la anula y cancela. Si no, escalar. |
 
 <Warning>
   Un `200` significa que **la orden** quedó cancelada. **No** significa que el documento
@@ -191,9 +192,17 @@ mostrarle a una persona y puede cambiar o traducirse sin aviso.
 
 <ResponseField name="data.fiscal" type="object | null">
   Solo con anular al cancelar, cuando este pedido anuló el comprobante: `action: "CONTINUE"`,
-  `requestStatus: "GENERATED"`, `retryable` y `failure: null`. `null` cuando acá no se anuló nada:
-  el vendor no anula al cancelar, la orden nunca se numeró o la nota de crédito ya existía.
+  `requestStatus: "GENERATED"`, `retryable`, `failure: null` y **`fiscalRepresentation`**: la nota de
+  crédito, con la factura que anula en `history` y `compensates`. Es lo que imprime la caja (número,
+  QR) sin otro pedido. `null` cuando aquí no se anuló nada: el vendor no anula al cancelar, la orden
+  nunca se numeró o la nota de crédito ya existía.
 </ResponseField>
+
+`data.fiscal.failure.message`, en el `409`, es el texto para el cajero: sale en el idioma de
+`?locale=` (español por defecto), como el resto del rechazo. El `message` de primer nivel queda en
+inglés, para el integrador. Cuando la anulación de esta misma venta ya está en curso (otro pedido la
+está pidiendo en este momento), `failure.code` es `VOID_IN_PROGRESS`: espera unos segundos y
+reintenta.
 
 Con `FISCAL_VOID_FAILED`, el mismo bloque viaja en `data.fiscal` del `409`, con
 `action: "REJECT"`:
