@@ -1,0 +1,198 @@
+---
+title: "Name filter: check"
+api: "POST https://app.fire.rest/api/v1/external/name-filter/check"
+description: "Ask, before sending the order, whether the customer's name can be shown on the pickup screen with the account's rules for your channel."
+authMethod: "key"
+---
+
+When the customer accepts their name, your kiosk, website or app asks here **whether that name can be shown on the pickup screen**, the in-store display where orders are called for pickup. Fire applies the account and country's list of blocked terms and, if your channel has them, the format rules. The list never leaves the server: you only get the verdict and the reason.
+
+The field rules are read beforehand with [Name filter: policy](/en/api-reference/name-filter-policy). How the list and channels are configured: [Pickup screen names](/en/manuals/kiosk/name-filter).
+
+<Warning>
+  **A rejection is not an HTTP error.** A name that does not pass returns `200` with `allowed: false`. A status other than `200` is a real error: authentication, unknown store, unknown channel.
+</Warning>
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `name-filter:check` **or** `kiosks:write` scope. Kiosk keys that already have `kiosks:write` work as they are. `Authorization: Bearer <your_api_key>` is also accepted.
+
+  The key **must be bound to an account**: without one, `403 API_KEY_ACCOUNT_REQUIRED`. The store is looked up inside your key's account; a store from another account returns `404 STORE_NOT_FOUND`, the same as one that does not exist.
+</ParamField>
+
+## Body
+
+<ParamField body="vendor_id" type="string" required>
+  The store's vendor, the same one used across the rest of the API. For example, `100.6.1350`. Up to 64 characters.
+</ParamField>
+
+<ParamField body="store_code" type="string" required>
+  The store code within that vendor. For example, `K000`. Up to 64 characters.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  The name exactly as the customer typed it. Up to 200 characters: the allowed length is set by the policy, not by this limit. An empty text returns `allowed: false` with `reason: EMPTY` if the filter applies to the channel.
+</ParamField>
+
+<ParamField body="channel_code" type="string" default="KIOSK">
+  The sales channel the order comes through (`KIOSK`, `WEB`, `RAPPI`…). Accepts letters, digits, `_` and `-`, and is upper-cased. Without it, the name is checked as `KIOSK`.
+
+  It must be a channel that exists in Fire: an unknown one returns `400 INVALID_CHANNEL`.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://app.fire.rest/api/v1/external/name-filter/check
+x-api-key: <your_api_key>
+Content-Type: application/json
+
+{
+  "vendor_id": "100.6.1350",
+  "store_code": "K000",
+  "name": "  Ana   Clara ",
+  "channel_code": "WEB"
+}
+```
+</RequestExample>
+
+## Response
+
+The verdict comes wrapped in the standard envelope: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="allowed" type="boolean">
+  Whether the name can be used. With the filter off in the country, or with the channel not selected in the configuration, it is always `true`.
+</ResponseField>
+
+<ResponseField name="reason" type="string | null">
+  Why it cannot be used. `null` when `allowed` is `true`. The possible values are in [Rejection reasons](#rejection-reasons).
+</ResponseField>
+
+<ResponseField name="display_name" type="string">
+  The name as it ends up, with extra spaces removed: `"  Ana   Clara "` comes back as `"Ana Clara"`. **This is the one you must send in the order.**
+</ResponseField>
+
+<ResponseField name="channel_code" type="string">
+  The channel the name was checked against, upper-cased.
+</ResponseField>
+
+### Rejection reasons
+
+Fire checks the list first and the format after, so a blocked term is reported as `BLOCKED_TERM` even if the name also fails the format.
+
+| `reason` | When |
+|---|---|
+| `BLOCKED_TERM` | The name contains a term from the list. Which one is not disclosed |
+| `EMPTY` | The name is empty or only has spaces |
+| `INVALID_CHARACTERS` | It has digits, symbols or emojis. Letters, accents and ç are accepted |
+| `MULTIPLE_WORDS` | It has more than one word and the policy requires `single_word` |
+| `TOO_SHORT` | It has fewer than `min_length` characters |
+| `TOO_LONG` | It has more than `max_length` characters |
+
+`INVALID_CHARACTERS`, `MULTIPLE_WORDS`, `TOO_SHORT` and `TOO_LONG` only appear in channels with format rules (`format_rules: true` in the [policy](/en/api-reference/name-filter-policy)). In a channel without them, only the list and the presence of a name are checked.
+
+<ResponseExample>
+```json 200 — allowed
+{
+  "success": true,
+  "data": {
+    "allowed": true,
+    "reason": null,
+    "display_name": "Ana Clara",
+    "channel_code": "WEB"
+  }
+}
+```
+
+```json 200 — blocked term
+{
+  "success": true,
+  "data": {
+    "allowed": false,
+    "reason": "BLOCKED_TERM",
+    "display_name": "1d10t4",
+    "channel_code": "KIOSK"
+  }
+}
+```
+
+```json 200 — two words in a first-name-only channel
+{
+  "success": true,
+  "data": {
+    "allowed": false,
+    "reason": "MULTIPLE_WORDS",
+    "display_name": "Ana Clara",
+    "channel_code": "KIOSK"
+  }
+}
+```
+
+```json 400 — store_code missing
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "expected": "string",
+      "code": "invalid_type",
+      "path": ["store_code"],
+      "message": "Invalid input: expected string, received undefined"
+    }
+  ]
+}
+```
+
+```json 403 — key without an account
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "code": "API_KEY_ACCOUNT_REQUIRED",
+  "message": "API key must be bound to an account"
+}
+```
+</ResponseExample>
+
+## How to use the verdict
+
+- **With `allowed: true`**, send `display_name` in the order, in `additionalInfo.kiosk.buzzer_name`: that is the field that reaches the pickup screen. See [Inject order (partners)](/en/api-reference/inject-order-partners).
+- **With `allowed: false`**, ask the customer for another name and count the attempt. Show a message based on `reason`, never the term.
+- **When you reach `max_attempts`** from the [policy](/en/api-reference/name-filter-policy), use `fallback_template` with the order code and move on to payment.
+- **If this request fails or is slow**, let the name through. Fire's kiosk waits 3 seconds and moves on. When the order arrives, Fire checks the name again in the channels where the filter applies and, if it has a blocked term, replaces it with the fallback name.
+
+## Limits
+
+Requests to this API and to the [policy](/en/api-reference/name-filter-policy) are counted together:
+
+- **600 requests per minute per store** (`vendor_id` + `store_code`, as you send them).
+- **60 `404` responses per minute per account**, to stop anyone probing store codes.
+
+Today the limits are **in log mode**: Fire records who would exceed them, but does not block. Once enabled, the response will be `429 RATE_LIMITED` with a `Retry-After` header in seconds. A real kiosk makes 1 to 3 requests per order and comes nowhere near those numbers.
+
+## Errors
+
+Errors come as `{ "success": false, "error": "<type>", "code": "<code>", "message": "..." }`. Decide by status and `code`; `message` is for your logs.
+
+| HTTP | `error` | `code` | When |
+|---|---|---|---|
+| `400` | `VALIDATION_ERROR` | — | The body is not JSON, `vendor_id`, `store_code` or `name` is missing, `name` is longer than 200 characters, or `channel_code` has invalid characters. Details come in `details` |
+| `400` | `VALIDATION_ERROR` | `INVALID_CHANNEL` | `channel_code` is not a Fire channel |
+| `400` | `VALIDATION_ERROR` | `STORE_COUNTRY_MISSING` | The store has no country configured |
+| `401` | `UNAUTHORIZED` | — | The API key is missing, or it is invalid, expired or revoked |
+| `403` | `FORBIDDEN` | `API_KEY_ACCOUNT_REQUIRED` | The key is not bound to an account |
+| `403` | `FORBIDDEN` | — | The key has neither `name-filter:check` nor `kiosks:write` |
+| `404` | `NOT_FOUND` | `STORE_NOT_FOUND` | The store does not exist or does not belong to your key's account |
+| `409` | `CONFLICT` | `STORE_CODE_AMBIGUOUS` | Your account has two stores with the same `vendor_id` and `store_code` |
+| `429` | `RATE_LIMITED` | `RATE_LIMITED` | You exceeded a limit (only once limits are enabled) |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Name filter: policy" icon="sliders" href="/en/api-reference/name-filter-policy">
+    The name field rules for your channel.
+  </Card>
+  <Card title="Inject order (partners)" icon="arrow-right-to-bracket" href="/en/api-reference/inject-order-partners">
+    Where the checked name goes in the order.
+  </Card>
+</CardGroup>

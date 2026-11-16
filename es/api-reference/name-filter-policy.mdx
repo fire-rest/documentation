@@ -1,0 +1,178 @@
+---
+title: "Filtro de nombres: política"
+api: "GET https://app.fire.rest/api/v1/external/name-filter/policy"
+description: "Lee las reglas del campo de nombre de una tienda y un canal: si el filtro aplica, el largo, una sola palabra, los intentos y el nombre genérico."
+authMethod: "key"
+---
+
+Antes de pedirle el nombre al cliente, tu kiosco, web o app lee aquí **cómo tiene que comportarse el campo**: si el filtro aplica en tu canal, cuántos caracteres acepta, si es una sola palabra, cuántos rechazos tolera y qué nombre genérico usar después. El nombre se valida con [Filtro de nombres: validar](/es/api-reference/name-filter-check).
+
+Las reglas y la lista de términos son **por cuenta y país**, y se configuran en el backoffice ([Nombres del turnero](/es/manuals/kiosk/name-filter)). La lista de términos **nunca sale del servidor**: este endpoint solo devuelve las reglas del campo.
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con el scope `name-filter:check` **o** `kiosks:write`. Las keys de kiosco que ya tienen `kiosks:write` sirven tal como están. También se acepta `Authorization: Bearer <tu_api_key>`.
+
+  La key **tiene que estar ligada a una cuenta**: sin cuenta, `403 API_KEY_ACCOUNT_REQUIRED`. La tienda se busca dentro de la cuenta de tu key; una tienda de otra cuenta responde `404 STORE_NOT_FOUND`, igual que una que no existe.
+</ParamField>
+
+## Parámetros de consulta
+
+<ParamField query="vendor_id" type="string" required>
+  El vendor de la tienda, el mismo que usa el resto de la API. Por ejemplo, `100.6.1350`. Hasta 64 caracteres.
+</ParamField>
+
+<ParamField query="store_code" type="string" required>
+  El código de la tienda dentro de ese vendor. Por ejemplo, `K000`. Hasta 64 caracteres.
+</ParamField>
+
+<ParamField query="channel_code" type="string" default="KIOSK">
+  El canal de venta por el que llega el pedido (`KIOSK`, `WEB`, `RAPPI`…). Acepta letras, números, `_` y `-`, y se pasa a mayúsculas. Sin este parámetro, la respuesta es la del canal `KIOSK`.
+
+  Tiene que ser un canal que exista en Fire: uno desconocido responde `400 INVALID_CHANNEL`.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/external/name-filter/policy?vendor_id=100.6.1350&store_code=K000&channel_code=KIOSK
+x-api-key: <tu_api_key>
+```
+</RequestExample>
+
+## Respuesta
+
+La política llega envuelta en el sobre estándar: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="enabled" type="boolean">
+  Si el filtro aplica en este canal: el filtro está activo en el país **y** el canal está marcado en la configuración. Con `false`, no hace falta llamar a [validar](/es/api-reference/name-filter-check): siempre responde `allowed: true`.
+</ResponseField>
+
+<ResponseField name="min_length" type="integer">
+  Mínimo de caracteres del nombre, contando espacios.
+</ResponseField>
+
+<ResponseField name="max_length" type="integer">
+  Máximo de caracteres del nombre, contando espacios. Úsalo como límite del campo de texto.
+</ResponseField>
+
+<ResponseField name="single_word" type="boolean">
+  Si el nombre tiene que ser una sola palabra.
+</ResponseField>
+
+<ResponseField name="max_attempts" type="integer">
+  Cuántos nombres rechazados aceptas en un mismo pedido antes de usar el nombre genérico (de 1 a 10).
+</ResponseField>
+
+<ResponseField name="fallback_template" type="string">
+  El nombre genérico. Reemplaza `{code}` por el código corto del pedido: `PEDIDO {code}` se muestra como `PEDIDO 83K`.
+</ResponseField>
+
+<ResponseField name="updated_at" type="string | null">
+  Cuándo se guardó la política por última vez (ISO 8601). `null` si el país nunca la guardó: en ese caso el filtro está apagado y los campos traen los valores por defecto.
+</ResponseField>
+
+<ResponseField name="channel_code" type="string">
+  El canal de la respuesta, en mayúsculas.
+</ResponseField>
+
+<ResponseField name="format_rules" type="boolean">
+  Si en este canal aplican las reglas de formato: largo, una sola palabra y solo letras. Con `false`, solo se revisa la lista de términos, y `min_length`, `max_length` y `single_word` vienen neutros (`1`, `40`, `false`) para que un cliente que no lea este campo tampoco recorte un nombre completo como «Juan Pérez».
+</ResponseField>
+
+<ResponseExample>
+```json 200 — kiosco con reglas de formato
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "min_length": 2,
+    "max_length": 12,
+    "single_word": true,
+    "max_attempts": 3,
+    "fallback_template": "PEDIDO {code}",
+    "updated_at": "2026-10-08T14:02:11.000Z",
+    "channel_code": "KIOSK",
+    "format_rules": true
+  }
+}
+```
+
+```json 200 — canal sin reglas de formato
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "min_length": 1,
+    "max_length": 40,
+    "single_word": false,
+    "max_attempts": 3,
+    "fallback_template": "PEDIDO {code}",
+    "updated_at": "2026-10-08T14:02:11.000Z",
+    "channel_code": "RAPPI",
+    "format_rules": false
+  }
+}
+```
+
+```json 400 — canal desconocido
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "code": "INVALID_CHANNEL",
+  "message": "Unknown channel_code: RAPI"
+}
+```
+
+```json 404 — la tienda no está en tu cuenta
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "code": "STORE_NOT_FOUND",
+  "message": "Store not found with ID 100.6.1350/K999"
+}
+```
+</ResponseExample>
+
+## Cómo usar la política
+
+- **Guárdala un rato.** No hace falta pedirla en cada pedido: el kiosco de Fire la guarda unos 5 minutos. Los cambios de reglas llegan en ese plazo; los términos de la lista se aplican en 1 minuto porque se revisan en cada [validación](/es/api-reference/name-filter-check).
+- **Aplica las reglas mientras el cliente escribe** solo si `format_rules` es `true`: limita el campo a `max_length` y, con `single_word`, pide un solo nombre.
+- **Cuenta los rechazos.** Al llegar a `max_attempts`, usa `fallback_template` con el código del pedido y sigue al pago. El pedido nunca debe quedar frenado por el nombre.
+- **Si la consulta falla**, sigue con la última política que tengas o con el campo sin restricciones. Fire vuelve a revisar el nombre cuando llega el pedido.
+
+## Límites
+
+Las consultas a esta API y a [validar](/es/api-reference/name-filter-check) se cuentan juntas:
+
+- **600 consultas por minuto por tienda** (`vendor_id` + `store_code`, tal como los mandas).
+- **60 respuestas `404` por minuto por cuenta**, para frenar a quien prueba códigos de tienda.
+
+Hoy los límites están **en modo registro**: Fire anota quién los pasaría, pero no corta. Cuando se activen, la respuesta será `429 RATE_LIMITED` con la cabecera `Retry-After` en segundos. Un kiosco real hace de 1 a 3 consultas por pedido y no se acerca a esos números.
+
+## Errores
+
+Los errores llegan con `{ "success": false, "error": "<tipo>", "code": "<código>", "message": "..." }`. Decide por el status y por `code`; `message` es para tus logs.
+
+| HTTP | `error` | `code` | Cuándo |
+|---|---|---|---|
+| `400` | `VALIDATION_ERROR` | — | Falta `vendor_id` o `store_code`, alguno pasa de 64 caracteres, o `channel_code` tiene caracteres inválidos. El detalle viene en `details` |
+| `400` | `VALIDATION_ERROR` | `INVALID_CHANNEL` | `channel_code` no es un canal de Fire |
+| `400` | `VALIDATION_ERROR` | `STORE_COUNTRY_MISSING` | La tienda no tiene país configurado |
+| `401` | `UNAUTHORIZED` | — | Falta la API key, o es inválida, vencida o revocada |
+| `403` | `FORBIDDEN` | `API_KEY_ACCOUNT_REQUIRED` | La key no está ligada a una cuenta |
+| `403` | `FORBIDDEN` | — | La key no tiene `name-filter:check` ni `kiosks:write` |
+| `404` | `NOT_FOUND` | `STORE_NOT_FOUND` | La tienda no existe o no es de la cuenta de tu key |
+| `409` | `CONFLICT` | `STORE_CODE_AMBIGUOUS` | Tu cuenta tiene dos tiendas con el mismo `vendor_id` y `store_code` |
+| `429` | `RATE_LIMITED` | `RATE_LIMITED` | Pasaste un límite (solo cuando los límites estén activos) |
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Filtro de nombres: validar" icon="spell-check" href="/es/api-reference/name-filter-check">
+    Pregunta si un nombre se puede mostrar en el turnero.
+  </Card>
+  <Card title="Nombres del turnero" icon="book-open" href="/es/manuals/kiosk/name-filter">
+    Cómo se configuran las reglas y la lista en el backoffice.
+  </Card>
+</CardGroup>

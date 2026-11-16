@@ -1,0 +1,178 @@
+---
+title: "Name filter: policy"
+api: "GET https://app.fire.rest/api/v1/external/name-filter/policy"
+description: "Read the name field rules for a store and channel: whether the filter applies, length, single word, attempts and the fallback name."
+authMethod: "key"
+---
+
+Before asking the customer for their name, your kiosk, website or app reads here **how the name field must behave**: whether the filter applies to your channel, how many characters it accepts, whether it must be a single word, how many rejections it tolerates and which fallback name to use after that. The name itself is validated with [Name filter: check](/en/api-reference/name-filter-check).
+
+The rules and the term list are **per account and country**, and they are configured in the backoffice ([Pickup screen names](/en/manuals/kiosk/name-filter)). The term list **never leaves the server**: this endpoint only returns the field rules.
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `name-filter:check` **or** `kiosks:write` scope. Kiosk keys that already have `kiosks:write` work as they are. `Authorization: Bearer <your_api_key>` is also accepted.
+
+  The key **must be bound to an account**: without one, `403 API_KEY_ACCOUNT_REQUIRED`. The store is looked up inside your key's account; a store from another account returns `404 STORE_NOT_FOUND`, the same as one that does not exist.
+</ParamField>
+
+## Query parameters
+
+<ParamField query="vendor_id" type="string" required>
+  The store's vendor, the same one used across the rest of the API. For example, `100.6.1350`. Up to 64 characters.
+</ParamField>
+
+<ParamField query="store_code" type="string" required>
+  The store code within that vendor. For example, `K000`. Up to 64 characters.
+</ParamField>
+
+<ParamField query="channel_code" type="string" default="KIOSK">
+  The sales channel the order comes through (`KIOSK`, `WEB`, `RAPPI`…). Accepts letters, digits, `_` and `-`, and is upper-cased. Without it, the response is the one for the `KIOSK` channel.
+
+  It must be a channel that exists in Fire: an unknown one returns `400 INVALID_CHANNEL`.
+</ParamField>
+
+<RequestExample>
+```http
+GET https://app.fire.rest/api/v1/external/name-filter/policy?vendor_id=100.6.1350&store_code=K000&channel_code=KIOSK
+x-api-key: <your_api_key>
+```
+</RequestExample>
+
+## Response
+
+The policy comes wrapped in the standard envelope: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="enabled" type="boolean">
+  Whether the filter applies to this channel: the filter is active in the country **and** the channel is selected in the configuration. With `false` there is no need to call [check](/en/api-reference/name-filter-check): it always answers `allowed: true`.
+</ResponseField>
+
+<ResponseField name="min_length" type="integer">
+  Minimum number of characters in the name, spaces included.
+</ResponseField>
+
+<ResponseField name="max_length" type="integer">
+  Maximum number of characters in the name, spaces included. Use it as the text field limit.
+</ResponseField>
+
+<ResponseField name="single_word" type="boolean">
+  Whether the name must be a single word.
+</ResponseField>
+
+<ResponseField name="max_attempts" type="integer">
+  How many rejected names you accept in one order before using the fallback name (1 to 10).
+</ResponseField>
+
+<ResponseField name="fallback_template" type="string">
+  The fallback name. Replace `{code}` with the order's short code: `PEDIDO {code}` is shown as `PEDIDO 83K`.
+</ResponseField>
+
+<ResponseField name="updated_at" type="string | null">
+  When the policy was last saved (ISO 8601). `null` if the country never saved one: in that case the filter is off and the fields carry the default values.
+</ResponseField>
+
+<ResponseField name="channel_code" type="string">
+  The channel of the response, upper-cased.
+</ResponseField>
+
+<ResponseField name="format_rules" type="boolean">
+  Whether format rules apply in this channel: length, single word and letters only. With `false`, only the term list is checked, and `min_length`, `max_length` and `single_word` come neutral (`1`, `40`, `false`) so that a client that does not read this field does not cut a full name such as "Juan Pérez" either.
+</ResponseField>
+
+<ResponseExample>
+```json 200 — kiosk with format rules
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "min_length": 2,
+    "max_length": 12,
+    "single_word": true,
+    "max_attempts": 3,
+    "fallback_template": "PEDIDO {code}",
+    "updated_at": "2026-10-08T14:02:11.000Z",
+    "channel_code": "KIOSK",
+    "format_rules": true
+  }
+}
+```
+
+```json 200 — channel without format rules
+{
+  "success": true,
+  "data": {
+    "enabled": true,
+    "min_length": 1,
+    "max_length": 40,
+    "single_word": false,
+    "max_attempts": 3,
+    "fallback_template": "PEDIDO {code}",
+    "updated_at": "2026-10-08T14:02:11.000Z",
+    "channel_code": "RAPPI",
+    "format_rules": false
+  }
+}
+```
+
+```json 400 — unknown channel
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "code": "INVALID_CHANNEL",
+  "message": "Unknown channel_code: RAPI"
+}
+```
+
+```json 404 — the store is not in your account
+{
+  "success": false,
+  "error": "NOT_FOUND",
+  "code": "STORE_NOT_FOUND",
+  "message": "Store not found with ID 100.6.1350/K999"
+}
+```
+</ResponseExample>
+
+## How to use the policy
+
+- **Cache it for a while.** There is no need to request it on every order: Fire's kiosk keeps it for about 5 minutes. Rule changes arrive within that window; terms in the list apply within 1 minute because they are checked on every [check](/en/api-reference/name-filter-check).
+- **Apply the rules while the customer types** only if `format_rules` is `true`: limit the field to `max_length` and, with `single_word`, ask for a single name.
+- **Count the rejections.** When you reach `max_attempts`, use `fallback_template` with the order code and move on to payment. The name must never block the order.
+- **If the request fails**, keep going with the last policy you have or with an unrestricted field. Fire checks the name again when the order arrives.
+
+## Limits
+
+Requests to this API and to [check](/en/api-reference/name-filter-check) are counted together:
+
+- **600 requests per minute per store** (`vendor_id` + `store_code`, as you send them).
+- **60 `404` responses per minute per account**, to stop anyone probing store codes.
+
+Today the limits are **in log mode**: Fire records who would exceed them, but does not block. Once enabled, the response will be `429 RATE_LIMITED` with a `Retry-After` header in seconds. A real kiosk makes 1 to 3 requests per order and comes nowhere near those numbers.
+
+## Errors
+
+Errors come as `{ "success": false, "error": "<type>", "code": "<code>", "message": "..." }`. Decide by status and `code`; `message` is for your logs.
+
+| HTTP | `error` | `code` | When |
+|---|---|---|---|
+| `400` | `VALIDATION_ERROR` | — | `vendor_id` or `store_code` missing, either longer than 64 characters, or `channel_code` with invalid characters. Details come in `details` |
+| `400` | `VALIDATION_ERROR` | `INVALID_CHANNEL` | `channel_code` is not a Fire channel |
+| `400` | `VALIDATION_ERROR` | `STORE_COUNTRY_MISSING` | The store has no country configured |
+| `401` | `UNAUTHORIZED` | — | The API key is missing, or it is invalid, expired or revoked |
+| `403` | `FORBIDDEN` | `API_KEY_ACCOUNT_REQUIRED` | The key is not bound to an account |
+| `403` | `FORBIDDEN` | — | The key has neither `name-filter:check` nor `kiosks:write` |
+| `404` | `NOT_FOUND` | `STORE_NOT_FOUND` | The store does not exist or does not belong to your key's account |
+| `409` | `CONFLICT` | `STORE_CODE_AMBIGUOUS` | Your account has two stores with the same `vendor_id` and `store_code` |
+| `429` | `RATE_LIMITED` | `RATE_LIMITED` | You exceeded a limit (only once limits are enabled) |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Name filter: check" icon="spell-check" href="/en/api-reference/name-filter-check">
+    Ask whether a name can be shown on the pickup screen.
+  </Card>
+  <Card title="Pickup screen names" icon="book-open" href="/en/manuals/kiosk/name-filter">
+    How the rules and the list are configured in the backoffice.
+  </Card>
+</CardGroup>
