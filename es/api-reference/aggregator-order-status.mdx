@@ -8,7 +8,7 @@ authMethod: "bearer"
 Este endpoint es **entrante** — tu agregador de delivery (Rappi, Uber, Didi, iFood, PedidosYa, Glovo…) le hace POST cada vez que avanza la orden de su lado: se asignó un repartidor, la orden fue retirada, está en ruta, fue entregada, y así. Fire autentica la solicitud, correlaciona la orden, refleja el último estado en `orders.aggregator`, y registra el evento en su log de eventos de agregador para observabilidad.
 
 <Note>
-  **Este endpoint es asíncrono.** Fire autentica, correlaciona la orden (guards de tenant + canal), deduplica y **encola** el evento — luego responde **`202 Accepted`** con un `webhookEventId` (típicamente en menos de 100&nbsp;ms). El espejo de la orden se actualiza un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para verificar el resultado, consultá [`GET /v1/webhooks/events/{webhookEventId}`](#verificar-el-resultado). Los problemas corregibles por el cliente (payload inválido, orden no encontrada, tenant o canal equivocado, ids en conflicto) se rechazan **síncronamente** con `4xx` **antes** del `202`.
+  **Este endpoint es asíncrono.** Fire autentica, correlaciona la orden (guards de tenant + canal), deduplica y **encola** el evento — luego responde **`202 Accepted`** con un `webhookEventId` (típicamente en menos de 100&nbsp;ms). El espejo de la orden se actualiza un instante después en un worker en segundo plano (normalmente en ~2&nbsp;segundos). Para verificar el resultado, consulta [`GET /v1/webhooks/events/{webhookEventId}`](#verificar-el-resultado). Los problemas corregibles por el cliente (payload inválido, orden no encontrada, tenant o canal equivocado, ids en conflicto) se rechazan **síncronamente** con `4xx` **antes** del `202`.
 </Note>
 
 <Note>
@@ -16,22 +16,22 @@ Este endpoint es **entrante** — tu agregador de delivery (Rappi, Uber, Didi, i
 </Note>
 
 <Note>
-  **No hay un `eventId` emitido por Fire para ecoar.** A diferencia del [callback fiscal](/es/api-reference/fiscal-callback) y los [estados KDS](/es/api-reference/kds-order-status) — que ecoan un `event.id` que Fire emitió — un estado de agregador es un **evento externo espontáneo**. Fire **no** es la fuente de verdad acá, así que no hay chequeo de fuente de verdad sobre un `eventId`. En cambio, vos le decís a Fire **a qué orden** pertenece el estado, vía [resolución de la orden](#resolución-de-la-orden) abajo. La idempotencia se llavea por tu `providerEventId` (ver [Idempotencia](#idempotencia-y-el-recorrido)).
+  **No hay un `eventId` emitido por Fire para ecoar.** A diferencia del [callback fiscal](/es/api-reference/fiscal-callback) y los [estados KDS](/es/api-reference/kds-order-status) — que ecoan un `event.id` que Fire emitió — un estado de agregador es un **evento externo espontáneo**. Fire **no** es la fuente de verdad acá, así que no hay chequeo de fuente de verdad sobre un `eventId`. En cambio, tú le dices a Fire **a qué orden** pertenece el estado, vía [resolución de la orden](#resolución-de-la-orden) abajo. La idempotencia se llavea por tu `providerEventId` (ver [Idempotencia](#idempotencia-y-el-recorrido)).
 </Note>
 
 ## Resolución de la orden
 
-Debés decirle a Fire a qué orden pertenece este estado. Hay **dos caminos**, y podés enviar **uno o ambos** — al menos uno es requerido:
+Debes decirle a Fire a qué orden pertenece este estado. Hay **dos caminos**, y puedes enviar **uno o ambos** — al menos uno es requerido:
 
 | Campo | Correlaciona por | Cuándo usarlo |
 |---|---|---|
 | `orderId` | Nuestro `orders.id` (UUID) | Guardaste el id de orden de Fire (ej. ecoado de un evento saliente o de la respuesta de inyección) |
-| `externalOrderId` | El id de orden externo (XMART/agregador), comparado contra el `metadata.order_id` de la orden | Solo conocés tu propia referencia de orden |
+| `externalOrderId` | El id de orden externo (XMART/agregador), comparado contra el `metadata.order_id` de la orden | Solo conoces tu propia referencia de orden |
 
 Ambos son **vendor-scoped**: la orden correlacionada debe pertenecer a la cuenta + vendor ligados a tu API key, y su canal debe coincidir con `channelCode`.
 
 <Warning>
-  **Si enviás ambos ids, deben apuntar a la misma orden.** Fire correlaciona cada uno de forma independiente; si `orderId` y `externalOrderId` correlacionan a órdenes **distintas**, la solicitud se rechaza con **`409 Conflict`** — Fire no va a adivinar a cuál te referías. Enviá uno, o enviá ambos apuntando a la misma orden.
+  **Si envías ambos ids, deben apuntar a la misma orden.** Fire correlaciona cada uno de forma independiente; si `orderId` y `externalOrderId` correlacionan a órdenes **distintas**, la solicitud se rechaza con **`409 Conflict`** — Fire no va a adivinar a cuál te referías. Envía uno, o envía ambos apuntando a la misma orden.
 </Warning>
 
 ## Autenticación
@@ -39,11 +39,11 @@ Ambos son **vendor-scoped**: la orden correlacionada debe pertenecer a la cuenta
 Este endpoint requiere una **API key vendor-scoped con el scope `webhooks:aggregator`** (binding de cuenta + vendor). Fire valida que la orden correlacionada pertenezca a ese vendor. Las keys sin el scope, o sin binding de vendor, se rechazan con `403 Forbidden`.
 
 <ParamField header="x-api-key" type="string" required>
-  Tu API key vendor-scoped de Fire con scope `webhooks:aggregator`. Generá una desde **Developers → API Management** para la cuenta/vendor cuyas órdenes reportará esta key.
+  Tu API key vendor-scoped de Fire con scope `webhooks:aggregator`. Genera una desde **Developers → API Management** para la cuenta/vendor cuyas órdenes reportará esta key.
 </ParamField>
 
 <ParamField header="Authorization" type="string">
-  `Bearer <token>` opcional — aceptado como alternativa legacy a `x-api-key`. Enviá uno u otro.
+  `Bearer <token>` opcional — aceptado como alternativa legacy a `x-api-key`. Envía uno u otro.
 </ParamField>
 
 ## Cuerpo de la solicitud
@@ -57,7 +57,7 @@ Este endpoint requiere una **API key vendor-scoped con el scope `webhooks:aggreg
 </ParamField>
 
 <ParamField body="providerEventId" type="string" required>
-  El id propio de tu agregador para esta entrega — la **llave de idempotencia** (junto con `channelCode`). Fire mapea `(channelCode, providerEventId)` a un id de evento interno estable, así que reenviar el mismo par con el mismo `status` es un replay seguro. Usá el id de evento nativo si lo tenés; si no, un UUID.
+  El id propio de tu agregador para esta entrega — la **llave de idempotencia** (junto con `channelCode`). Fire mapea `(channelCode, providerEventId)` a un id de evento interno estable, así que reenviar el mismo par con el mismo `status` es un replay seguro. Usa el id de evento nativo si lo tienes; si no, un UUID.
 </ParamField>
 
 <ParamField body="occurredAt" type="string" required>
@@ -114,7 +114,7 @@ Los reportes de la misma entrega comparten un `channelCode` y correlacionan a la
 
 ## Respuesta
 
-En éxito el endpoint responde **`202 Accepted`** — el evento fue autenticado, correlacionado, deduplicado y **encolado**. Un `202` **no** significa que el espejo de la orden ya se actualizó; eso ocurre de forma asíncrona. Usá el [endpoint de estado](#verificar-el-resultado) para confirmar.
+En éxito el endpoint responde **`202 Accepted`** — el evento fue autenticado, correlacionado, deduplicado y **encolado**. Un `202` **no** significa que el espejo de la orden ya se actualizó; eso ocurre de forma asíncrona. Usa el [endpoint de estado](#verificar-el-resultado) para confirmar.
 
 El body trae **dos ids distintos**: `eventId` es el id interno estable de Fire para este par `(channelCode, providerEventId)`, `webhookEventId` es el id de Fire para el registro encolado. Misma forma que el [callback fiscal](/es/api-reference/fiscal-callback#respuesta).
 
@@ -131,7 +131,7 @@ El body trae **dos ids distintos**: `eventId` es el id interno estable de Fire p
 </ResponseField>
 
 <ResponseField name="webhookEventId" type="string">
-  El id de Fire para el registro encolado. Pasalo a `GET /v1/webhooks/events/{webhookEventId}` para consultar el resultado. En un duplicado es el **mismo** id que se devolvió la primera vez.
+  El id de Fire para el registro encolado. Pásalo a `GET /v1/webhooks/events/{webhookEventId}` para consultar el resultado. En un duplicado es el **mismo** id que se devolvió la primera vez.
 </ResponseField>
 
 <ResponseField name="status" type="string">
@@ -211,7 +211,7 @@ El body trae **dos ids distintos**: `eventId` es el id interno estable de Fire p
 }
 ```
 
-```json 503 — auth store temporalmente inalcanzable (reintentá)
+```json 503 — auth store temporalmente inalcanzable (reintenta)
 {
   "success": false,
   "error": "SERVICE_UNAVAILABLE",
@@ -222,7 +222,7 @@ El body trae **dos ids distintos**: `eventId` es el id interno estable de Fire p
 
 ## Verificar el resultado
 
-Como el procesamiento es asíncrono, el `202` solo confirma que el evento fue **encolado**. Para ver si el espejo de la orden se actualizó, consultá el endpoint de estado con el `webhookEventId` que devolvió el `202`:
+Como el procesamiento es asíncrono, el `202` solo confirma que el evento fue **encolado**. Para ver si el espejo de la orden se actualizó, consulta el endpoint de estado con el `webhookEventId` que devolvió el `202`:
 
 ```
 GET https://app.fire.rest/api/v1/webhooks/events/{webhookEventId}
@@ -236,7 +236,7 @@ x-api-key: <tu key webhooks:aggregator>
 <ResponseField name="result" type="object | null">En éxito, el resultado del worker — ej. `{ "kind": "merged", "current": "delivered" }`.</ResponseField>
 <ResponseField name="error" type="object | null">`{ "message": "…" }` cuando el último intento falló; `null` si no.</ResponseField>
 
-Se devuelve `404` para ids desconocidos — o ids de otro tenant — sin filtrar existencia. Autenticá con la misma key `webhooks:aggregator` que usaste para el evento.
+Se devuelve `404` para ids desconocidos — o ids de otro tenant — sin filtrar existencia. Autentica con la misma key `webhooks:aggregator` que usaste para el evento.
 
 ## Idempotencia y el recorrido
 
@@ -250,10 +250,10 @@ Fire deduplica por la orden más **`(channelCode, providerEventId)` y el `status
 | Orden no encontrada para este vendor | `404` |
 | `orderId` y `externalOrderId` correlacionan a órdenes distintas | `409` |
 | `channelCode` ≠ el canal de la orden, o key no es de este vendor | `403` |
-| Auth store momentáneamente inalcanzable | `503` — transitorio, **reintentá** |
+| Auth store momentáneamente inalcanzable | `503` — transitorio, **reintenta** |
 
 <Note>
-  **Un `status` distinto nunca es un duplicado.** Como los agregadores reportan legítimamente muchos estados para una entrega, dos reportes con el mismo `(channelCode, providerEventId)` pero un **`status` distinto** son dos pasos distintos — Fire guarda ambos. Mantené `providerEventId` único por reporte de estado para no reproducir un paso por accidente.
+  **Un `status` distinto nunca es un duplicado.** Como los agregadores reportan legítimamente muchos estados para una entrega, dos reportes con el mismo `(channelCode, providerEventId)` pero un **`status` distinto** son dos pasos distintos — Fire guarda ambos. Mantén `providerEventId` único por reporte de estado para no reproducir un paso por accidente.
 </Note>
 
 ## El espejo de la orden
