@@ -27,6 +27,32 @@ description: Lo que cambia en Fire — integraciones, pantallas del producto, gu
   <a href="https://buttondown.com/fire-docs" target="_blank" rel="noopener" style={{display: 'inline-block', marginTop: '0.875rem', padding: '0.5rem 1.25rem', borderRadius: '0.5rem', background: '#E6293D', color: '#fff', fontSize: '0.875rem', fontWeight: 600, textDecoration: 'none'}}>Suscribirme</a>
 </div>
 
+## 15 de noviembre de 2026 — Numeración en la inyección: estado fiscal, tipo de documento y consumidor final
+
+**Para:** Integraciones, proveedores fiscales
+
+Cambios para los vendors que numeran en la inyección.
+
+- **Estado fiscal:** la orden que nace abierta pasa de `awaiting_payment` a `processing` cuando se cobra y se numera su factura. El aviso [`order.status_updated`](/es/events/order-status-updated) `fiscal` / `numbered` lo dice con `previousStatus: awaiting_payment` y `status: processing`. Con **anular al cancelar**, la orden cancelada con la nota de crédito de Fire queda en `cancelled`, ya no en `not_issued`. Ver [Listar órdenes](/es/api-reference/list-orders).
+- **[Impresión fiscal](/es/api-reference/fiscal-print) v2:** cuando `fiscal.source` es `representation`, `fiscal.documentType` trae el canónico `SALE_INVOICE` o `CREDIT_NOTE`, igual que `fiscalRepresentation.documentType`. Antes llegaba `unknown`. La v1 no cambia.
+- **Consumidor final:** con la regla de la cuenta prendida, el proveedor recibe `FINAL_CONSUMER` en `client` y en `billingInformation`, también cuando la caja mandó un documento que no pasó la validación, y sin los datos personales de ese comprador. Ver el [contrato del proveedor](/es/fiscal-providers/contract).
+- **Montos sin desglose:** si la venta no trae `taxes`, la entrada de IVA a la tasa del país usa como base lo cobrado sin el IVA, así que una venta con descuento ya no sale sin impuestos.
+
+Actualizado en **EN / ES / PT**.
+
+## 15 de noviembre de 2026 — Cancelar orden: el rechazo fiscal como regla fija
+
+**Para:** Integraciones
+
+Con **anular al cancelar** prendido, el `409` de [Cancelar orden](/es/api-reference/cancel-order-partners#reglas-fijas-de-fire) cuando la nota de crédito no sale pasa a ser una regla fija de la política de cancelación, con la misma forma que cualquier otro rechazo. **Los códigos no cambian** (`FISCAL_VOID_FAILED`, `FISCAL_INVOICE_UNRESOLVED`).
+
+- **`message`** es el nombre de la regla, en el idioma de `?locale=`; **`data.reasonDetail`** explica qué pasó y qué hacer, y **`data.resolvedFrom`** dice con qué datos se decidió.
+- **`data.retryable`** y **`data.fiscal`** siguen igual: decide por `code` + `data.retryable`, muéstrale al cajero `message` y `reasonDetail`, y guarda `data.fiscal.failure` en tus logs.
+- Una venta cuya nota de crédito **ya fue rechazada** responde `FISCAL_VOID_FAILED` («La nota de crédito fue rechazada») en vez de `FISCAL_REPRESENTATION_NOT_VOIDED`, y la [elegibilidad de cancelación](/es/api-reference/cancellation-eligibility#códigos-de-rechazo) ya lo adelanta.
+- **Documento ya anulado por el emisor:** si su callback dejó el estado fiscal en `cancelled` y la orden sigue viva, el cancel ahora responde `200` y cancela la orden, sin pedir otra nota de crédito. Antes respondía `409 FISCAL_ALREADY_CANCELLED` en cada intento y la orden no se podía cancelar; Cancelar orden ya no lo devuelve (`/fiscal/numbering` con `CANCEL` sí, porque ahí se pediría otra nota).
+
+Actualizado en **EN / ES / PT**.
+
 ## 13 de noviembre de 2026 — Eventos de orden: descripciones del catálogo y tipo de producto del menú
 
 **Para:** Integraciones
@@ -52,6 +78,8 @@ vendor; hasta entonces no cambia nada y las dos respuestas traen `fiscal: null`.
 - [Inyectar orden](/es/api-reference/inject-order-partners#numeración-fiscal-en-la-inyección), [Crear orden](/es/api-reference/create-order) y [Crear orden v2](/es/api-reference/create-order-v2): la venta que nace cobrada se numera en el mismo request, que puede tardar hasta unos 5 s más. La respuesta trae `fiscal` con `action` (`CONTINUE` o `REFUND`), `requestStatus` y `failure`. Con `REFUND` la orden no se crea: `400` con `details.code: FISCAL_NUMBERING_FAILED`.
 - [Confirmar pago](/es/api-reference/confirm-payment#numeración-fiscal-al-cobrar): la orden que nace abierta se numera al cobrarla. Campo nuevo opcional `device`: la caja que cobra.
 - **Proveedor caído o lento:** Fire espera al proveedor fiscal como máximo 5 s (2,8 s por defecto). El tope baja de 8 s a 5 s **también en `POST /fiscal/numbering`**. Después de 5 fallas seguidas Fire deja de llamar a un proveedor caído durante 30 s, para no frenar la venta.
+- **Los endpoints `/fiscal/numbering` están deprecados:** siguen funcionando como hoy hasta fines de diciembre de 2026, cuando se apagan. Planifica el cambio antes. La numeración ahora va directo en la inyección.
+- **Cancelar la orden anula el comprobante** (anular al cancelar, apagado por defecto, por vendor): [Cancelar orden](/es/api-reference/cancel-order-partners#el-orden-de-los-pasos-depende-del-gateway-fiscal) le pide la nota de crédito al proveedor antes de cancelar, y contesta `409 FISCAL_VOID_FAILED` si no puede. Campo nuevo opcional `device` y bloque `fiscal` en el `200`.
 
 Antes de que se prenda para tu vendor, tus cajas tienen que leer `fiscal.action` y devolver el dinero con `REFUND`.
 
