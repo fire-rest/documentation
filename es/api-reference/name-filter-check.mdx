@@ -1,0 +1,198 @@
+---
+title: "Filtro de nombres: validar"
+api: "POST https://app.fire.rest/api/v1/external/name-filter/check"
+description: "Pregunta, antes de mandar el pedido, si el nombre del cliente se puede mostrar en el turnero con las reglas de la cuenta para tu canal."
+authMethod: "key"
+---
+
+Cuando el cliente acepta su nombre, tu kiosco, web o app pregunta aquí **si ese nombre se puede mostrar en el turnero**, la pantalla del local donde se llama a retirar los pedidos. Fire aplica la lista de términos prohibidos de la cuenta y el país y, si tu canal las tiene, las reglas de formato. La lista nunca sale del servidor: solo recibes el veredicto y el motivo.
+
+Las reglas del campo se leen antes con [Filtro de nombres: política](/es/api-reference/name-filter-policy). Cómo se configuran la lista y los canales: [Nombres del turnero](/es/manuals/kiosk/name-filter).
+
+<Warning>
+  **Un rechazo no es un error HTTP.** Un nombre que no pasa responde `200` con `allowed: false`. Un status distinto de `200` es un error de verdad: autenticación, tienda inexistente, canal desconocido.
+</Warning>
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con el scope `name-filter:check` **o** `kiosks:write`. Las keys de kiosco que ya tienen `kiosks:write` sirven tal como están. También se acepta `Authorization: Bearer <tu_api_key>`.
+
+  La key **tiene que estar ligada a una cuenta**: sin cuenta, `403 API_KEY_ACCOUNT_REQUIRED`. La tienda se busca dentro de la cuenta de tu key; una tienda de otra cuenta responde `404 STORE_NOT_FOUND`, igual que una que no existe.
+</ParamField>
+
+## Cuerpo
+
+<ParamField body="vendor_id" type="string" required>
+  El vendor de la tienda, el mismo que usa el resto de la API. Por ejemplo, `100.6.1350`. Hasta 64 caracteres.
+</ParamField>
+
+<ParamField body="store_code" type="string" required>
+  El código de la tienda dentro de ese vendor. Por ejemplo, `K000`. Hasta 64 caracteres.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  El nombre tal como lo escribió el cliente. Hasta 200 caracteres: el largo permitido lo decide la política, no este límite. Un texto vacío responde `allowed: false` con `reason: EMPTY` si el filtro aplica en el canal.
+</ParamField>
+
+<ParamField body="channel_code" type="string" default="KIOSK">
+  El canal de venta por el que llega el pedido (`KIOSK`, `WEB`, `RAPPI`…). Acepta letras, números, `_` y `-`, y se pasa a mayúsculas. Sin este campo, se valida como `KIOSK`.
+
+  Tiene que ser un canal que exista en Fire: uno desconocido responde `400 INVALID_CHANNEL`.
+</ParamField>
+
+<RequestExample>
+```http
+POST https://app.fire.rest/api/v1/external/name-filter/check
+x-api-key: <tu_api_key>
+Content-Type: application/json
+
+{
+  "vendor_id": "100.6.1350",
+  "store_code": "K000",
+  "name": "  Ana   Clara ",
+  "channel_code": "WEB"
+}
+```
+</RequestExample>
+
+## Respuesta
+
+El veredicto llega envuelto en el sobre estándar: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="allowed" type="boolean">
+  Si el nombre se puede usar. Con el filtro apagado en el país, o con el canal sin marcar en la configuración, siempre es `true`.
+</ResponseField>
+
+<ResponseField name="reason" type="string | null">
+  Por qué no se puede usar. `null` cuando `allowed` es `true`. Los valores posibles están en [Motivos de rechazo](#motivos-de-rechazo).
+</ResponseField>
+
+<ResponseField name="display_name" type="string">
+  El nombre como queda, con los espacios sobrantes quitados: `"  Ana   Clara "` vuelve como `"Ana Clara"`. **Es el que tienes que mandar en el pedido.**
+</ResponseField>
+
+<ResponseField name="channel_code" type="string">
+  El canal con el que se validó, en mayúsculas.
+</ResponseField>
+
+### Motivos de rechazo
+
+Fire revisa primero la lista y después el formato, así que un término prohibido se informa como `BLOCKED_TERM` aunque el nombre tampoco cumpla el formato.
+
+| `reason` | Cuándo |
+|---|---|
+| `BLOCKED_TERM` | El nombre contiene un término de la lista. No se informa cuál |
+| `EMPTY` | El nombre está vacío o solo tiene espacios |
+| `INVALID_CHARACTERS` | Tiene números, símbolos o emojis. Se aceptan letras, tildes y ç |
+| `MULTIPLE_WORDS` | Tiene más de una palabra y la política pide `single_word` |
+| `TOO_SHORT` | Tiene menos de `min_length` caracteres |
+| `TOO_LONG` | Tiene más de `max_length` caracteres |
+
+`INVALID_CHARACTERS`, `MULTIPLE_WORDS`, `TOO_SHORT` y `TOO_LONG` solo aparecen en canales con reglas de formato (`format_rules: true` en la [política](/es/api-reference/name-filter-policy)). En un canal sin ellas, solo se revisa la lista y que haya un nombre.
+
+<ResponseExample>
+```json 200 — permitido
+{
+  "success": true,
+  "data": {
+    "allowed": true,
+    "reason": null,
+    "display_name": "Ana Clara",
+    "channel_code": "WEB"
+  }
+}
+```
+
+```json 200 — término prohibido
+{
+  "success": true,
+  "data": {
+    "allowed": false,
+    "reason": "BLOCKED_TERM",
+    "display_name": "1d10t4",
+    "channel_code": "KIOSK"
+  }
+}
+```
+
+```json 200 — dos palabras en un canal con solo el primer nombre
+{
+  "success": true,
+  "data": {
+    "allowed": false,
+    "reason": "MULTIPLE_WORDS",
+    "display_name": "Ana Clara",
+    "channel_code": "KIOSK"
+  }
+}
+```
+
+```json 400 — falta store_code
+{
+  "success": false,
+  "error": "VALIDATION_ERROR",
+  "message": "Datos de entrada inválidos",
+  "details": [
+    {
+      "expected": "string",
+      "code": "invalid_type",
+      "path": ["store_code"],
+      "message": "Invalid input: expected string, received undefined"
+    }
+  ]
+}
+```
+
+```json 403 — key sin cuenta
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "code": "API_KEY_ACCOUNT_REQUIRED",
+  "message": "API key must be bound to an account"
+}
+```
+</ResponseExample>
+
+## Cómo usar el veredicto
+
+- **Con `allowed: true`**, manda `display_name` en el pedido, en `additionalInfo.kiosk.buzzer_name`: es el campo que llega al turnero. Ver [Inyectar orden (partners)](/es/api-reference/inject-order-partners).
+- **Con `allowed: false`**, pídele otro nombre al cliente y cuenta el intento. Muestra un mensaje según `reason`, nunca el término.
+- **Al llegar a `max_attempts`** de la [política](/es/api-reference/name-filter-policy), usa `fallback_template` con el código del pedido y sigue al pago.
+- **Si esta llamada falla o tarda**, deja pasar el nombre. El kiosco de Fire espera 3 segundos y sigue. Cuando llega el pedido, Fire vuelve a revisar el nombre en los canales donde el filtro aplica y, si tiene un término prohibido, lo reemplaza por el nombre genérico.
+
+## Límites
+
+Las consultas a esta API y a la [política](/es/api-reference/name-filter-policy) se cuentan juntas:
+
+- **600 consultas por minuto por tienda** (`vendor_id` + `store_code`, tal como los mandas).
+- **60 respuestas `404` por minuto por cuenta**, para frenar a quien prueba códigos de tienda.
+
+Hoy los límites están **en modo registro**: Fire anota quién los pasaría, pero no corta. Cuando se activen, la respuesta será `429 RATE_LIMITED` con la cabecera `Retry-After` en segundos. Un kiosco real hace de 1 a 3 consultas por pedido y no se acerca a esos números.
+
+## Errores
+
+Los errores llegan con `{ "success": false, "error": "<tipo>", "code": "<código>", "message": "..." }`. Decide por el status y por `code`; `message` es para tus logs.
+
+| HTTP | `error` | `code` | Cuándo |
+|---|---|---|---|
+| `400` | `VALIDATION_ERROR` | — | El cuerpo no es JSON, falta `vendor_id`, `store_code` o `name`, `name` pasa de 200 caracteres, o `channel_code` tiene caracteres inválidos. El detalle viene en `details` |
+| `400` | `VALIDATION_ERROR` | `INVALID_CHANNEL` | `channel_code` no es un canal de Fire |
+| `400` | `VALIDATION_ERROR` | `STORE_COUNTRY_MISSING` | La tienda no tiene país configurado |
+| `401` | `UNAUTHORIZED` | — | Falta la API key, o es inválida, vencida o revocada |
+| `403` | `FORBIDDEN` | `API_KEY_ACCOUNT_REQUIRED` | La key no está ligada a una cuenta |
+| `403` | `FORBIDDEN` | — | La key no tiene `name-filter:check` ni `kiosks:write` |
+| `404` | `NOT_FOUND` | `STORE_NOT_FOUND` | La tienda no existe o no es de la cuenta de tu key |
+| `409` | `CONFLICT` | `STORE_CODE_AMBIGUOUS` | Tu cuenta tiene dos tiendas con el mismo `vendor_id` y `store_code` |
+| `429` | `RATE_LIMITED` | `RATE_LIMITED` | Pasaste un límite (solo cuando los límites estén activos) |
+
+## Relacionado
+
+<CardGroup cols={2}>
+  <Card title="Filtro de nombres: política" icon="sliders" href="/es/api-reference/name-filter-policy">
+    Las reglas del campo de nombre para tu canal.
+  </Card>
+  <Card title="Inyectar orden (partners)" icon="arrow-right-to-bracket" href="/es/api-reference/inject-order-partners">
+    Dónde va el nombre validado en el pedido.
+  </Card>
+</CardGroup>
