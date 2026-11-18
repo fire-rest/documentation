@@ -8,6 +8,9 @@ authMethod: "bearer"
 Returns a single order projected according to `fields`. If the order does not exist — or belongs to
 another tenant — the response is `404` (existence is never leaked across tenants).
 
+Without `fields` it returns the full order: lines, totals, payment methods, payment progress, billing
+data and the fiscal document with its journey. It is the endpoint to reconcile a single order.
+
 ## Authentication
 
 <ParamField header="x-api-key" type="string" required>
@@ -18,15 +21,17 @@ another tenant — the response is `404` (existence is never leaked across tenan
 ## Path parameters
 
 <ParamField path="orderId" type="string" required>
-  Any of the order's three public references:
+  Any of the order's public references:
 
   | reference | what it is |
   | --- | --- |
   | `orders.id` | Fire's internal UUID |
   | `order_external` | the id you assigned when creating the order |
   | `metadata.order_id` | a copy of the external id inside the order |
+  | `order_code` | the order code the cashier sees |
 
-  No translation needed: use the id you already have.
+  No translation needed: use the id you already have. `order_code` can repeat within your vendor; if
+  it matches more than one order the response is `409`, and in that case use the UUID or the external id.
 </ParamField>
 
 <Note>
@@ -52,12 +57,18 @@ x-api-key: <your_api_key>
 
 ## Response
 
-A single order object, projected according to `fields`. See the full field list in
+The response comes in the standard envelope `{ "success": true, "data": { … } }`. `data` is an order
+object, projected according to `fields`. See the full field list in
 [Field projection](/en/api-reference/list-orders#field-projection).
 
-To follow an order that is being charged in parts, ask for `settlement` (how much has been collected)
-and `payments` (with what) — see
-[Payment progress](/en/api-reference/list-orders#payment-progress-settlement-and-payments).
+To reconcile an order, read in [List orders](/en/api-reference/list-orders):
+
+- [Amount scales](/en/api-reference/list-orders#amount-scales): not every amount comes in the same
+  scale.
+- [Payment progress](/en/api-reference/list-orders#payment-progress-settlement-and-payments):
+  `settlement` (how much has been collected) and `payments` (with what).
+- [The `fiscal` block by country](/en/api-reference/list-orders#the-fiscal-block-by-country): the
+  fiscal document and its journey.
 
 Each `paymentMethods` entry carries `details.acquirer_configured`: who acquires that payment according to your account's configuration in Fire, or `null` — see
 [Configured acquirer](/en/events/order-completed#configured-acquirer).
@@ -69,50 +80,80 @@ Each `paymentMethods` entry carries `details.acquirer_configured`: who acquires 
 <ResponseExample>
 ```json 200
 {
-  "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-  "orderCode": "OC-1024",
-  "status": "COMPLETED",
-  "orderLines": [
-    { "productId": "p1", "quantity": 2 }
-  ],
-  "totals": [
-    { "currencyCode": "USD", "total": 125000 }
-  ]
+  "success": true,
+  "data": {
+    "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "status": "COMPLETED",
+    "orderLines": [
+      {
+        "item_id": "p1",
+        "item_type": "PRODUCT",
+        "item_description": "Combo familiar",
+        "quantity": "2",
+        "price": { "…": "…" }
+      }
+    ],
+    "totals": [
+      {
+        "currency_code": "COP",
+        "total": "319000000",
+        "subtotal": "268067200",
+        "taxes_value": "50932800",
+        "discount_value": "0"
+      }
+    ]
+  }
 }
 ```
 
-```json 200 — an order still being charged (fields=orderCode,status,settlement,payments)
+```json 200 — an open order with a declined charge (fields=orderCode,status,settlement,payments)
 {
-  "orderCode": "OC-1024",
-  "status": "OPEN",
-  "settlement": {
-    "status": "recorded",
-    "origin": "ledger",
-    "paidSoFar": "200000",
-    "total": "359000",
-    "currencyCode": "BRL",
-    "tenderCount": 1,
-    "declinedCount": 0,
-    "amountMismatch": true
-  },
-  "payments": [
-    {
-      "status": "approved",
-      "amount": "200000",
+  "success": true,
+  "data": {
+    "orderCode": "OC-1024",
+    "status": "OPEN",
+    "settlement": {
+      "status": "declined",
+      "origin": "ledger",
+      "paidSoFar": "0",
+      "total": "359000",
       "currencyCode": "BRL",
-      "method": "CASH",
-      "transactionId": "POS-0001",
-      "occurredAt": "2026-07-30T16:20:04.000Z"
-    }
-  ]
+      "tenderCount": 0,
+      "declinedCount": 1,
+      "amountMismatch": false,
+      "declaredMethods": ["CREDIT"]
+    },
+    "payments": [
+      {
+        "status": "declined",
+        "amount": "359000",
+        "currencyCode": "BRL",
+        "method": "CREDIT",
+        "transactionId": "POS-0001",
+        "declineReason": "51",
+        "declineReasonCode": "INSUFFICIENT_FUNDS",
+        "declineGroup": "FUNDS",
+        "occurredAt": "2026-07-30T16:20:04.000Z"
+      }
+    ]
+  }
 }
 ```
 
-```json 409 — the reference matches more than one order
+```json 401 — invalid, expired or revoked API key
 {
   "success": false,
-  "error": "CONFLICT",
-  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate"
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — key without the orders:read scope or not vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
 }
 ```
 
@@ -120,7 +161,17 @@ Each `paymentMethods` entry carries `details.acquirer_configured`: who acquires 
 {
   "success": false,
   "error": "NOT_FOUND",
-  "message": "Order not found with ID 7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+  "message": "InjectedOrder not found with ID 7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+}
+```
+
+```json 409 — the reference matches more than one order
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "AMBIGUOUS_ORDER_REFERENCE",
+  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate",
+  "data": { "reference": "ORD-77", "matchCount": 2 }
 }
 ```
 </ResponseExample>

@@ -7,7 +7,7 @@ authMethod: "bearer"
 
 A variante aninhada de [Listar pedidos](/pt/api-reference/list-orders): a loja é identificada pelo
 path param `{storeId}` em vez de um filtro de query. Os demais query params — paginação, filtros e
-[projeção de campos](/pt/api-reference/list-orders#projecao-de-campos) — comportam-se da mesma forma.
+[projeção de campos](/pt/api-reference/list-orders#projeção-de-campos) — comportam-se da mesma forma.
 
 O guard de tenant garante que um `storeId` de outro account/vendor retorne uma lista vazia — nunca
 pedidos de outro tenant.
@@ -25,17 +25,20 @@ pedidos de outro tenant.
   UUID da loja (`stores.id`).
 </ParamField>
 
+Para conciliar os pedidos de uma loja em um dia, filtre por `businessDayDate` e percorra as
+páginas. Cada pedido traz o mesmo formato de [Obter pedido](/pt/api-reference/get-order).
+
 ## Query params
 
 <Info>O account e o vendor são derivados da sua API key (vendor-scoped) — não são enviados por query.</Info>
 
 <ParamField query="fields" type="string">
-  Projeção — veja [Projeção de campos](/pt/api-reference/list-orders#projecao-de-campos).
+  Projeção — veja [Projeção de campos](/pt/api-reference/list-orders#projeção-de-campos).
 </ParamField>
 
 <ParamField query="status" type="string">`OPEN`, `COMPLETED`, `FORCE_CLOSED`, `CANCELLED`.</ParamField>
 <ParamField query="paymentStatus" type="string">`PENDING`, `SUCCEEDED`, `FAILED`.</ParamField>
-<ParamField query="businessDayDate" type="string">Dia de negócio exato, `YYYY-MM-DD`.</ParamField>
+<ParamField query="businessDayDate" type="string">Dia de negócio exato, `YYYY-MM-DD`. É ignorado se você enviar `dateFrom` ou `dateTo`.</ParamField>
 <ParamField query="dateFrom" type="string">Início do intervalo, `YYYY-MM-DD`.</ParamField>
 <ParamField query="dateTo" type="string">Fim do intervalo, `YYYY-MM-DD`.</ParamField>
 <ParamField query="dateFilterMode" type="string" default="business_day">`business_day` ou `created_at`.</ParamField>
@@ -59,28 +62,50 @@ x-api-key: <sua_api_key>
 
 ## Resposta
 
-Mesmo formato de [Listar pedidos](/pt/api-reference/list-orders): `{ orders, pagination }`.
+Mesmo formato de [Listar pedidos](/pt/api-reference/list-orders), no envelope padrão:
+`{ "success": true, "data": { orders, pagination } }`.
 
-Para ver como vai a cobrança de cada pedido, projete `settlement` — veja
-[Progresso da cobrança](/pt/api-reference/list-orders#progresso-da-cobranca-settlement-e-payments).
+Para conciliar, leia em Listar pedidos
+[Escalas dos valores](/pt/api-reference/list-orders#escalas-dos-valores),
+[Progresso da cobrança](/pt/api-reference/list-orders#progresso-da-cobrança-settlement-e-payments) e
+[O bloco `fiscal` por país](/pt/api-reference/list-orders#o-bloco-fiscal-por-país).
 
 <ResponseExample>
 ```json 200
 {
-  "orders": [
-    {
-      "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-      "orderCode": "OC-1024",
-      "storeId": "550e8400-e29b-41d4-a716-446655440000",
-      "status": "COMPLETED",
-      "paymentStatus": "SUCCEEDED",
-      "channel": "APP",
-      "businessDayDate": "2026-07-01",
-      "createdAt": "2026-07-01T14:03:00Z",
-      "updatedAt": "2026-07-01T14:20:00Z"
-    }
-  ],
-  "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+  "success": true,
+  "data": {
+    "orders": [
+      {
+        "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+        "orderCode": "OC-1024",
+        "storeId": "550e8400-e29b-41d4-a716-446655440000",
+        "status": "COMPLETED",
+        "paymentStatus": "SUCCEEDED",
+        "channel": "APP",
+        "businessDayDate": "2026-07-01",
+        "createdAt": "2026-07-01T14:03:00Z",
+        "updatedAt": "2026-07-01T14:20:00Z"
+      }
+    ],
+    "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+  }
+}
+```
+
+```json 401 — API key inválida, expirada ou revogada
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — key sem scope orders:read ou não vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
 }
 ```
 </ResponseExample>

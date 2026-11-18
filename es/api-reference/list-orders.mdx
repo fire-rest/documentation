@@ -27,7 +27,7 @@ listar las órdenes de una sola tienda, usa [Listar órdenes de tienda](/es/api-
 
 <ParamField query="status" type="string">`OPEN`, `COMPLETED`, `FORCE_CLOSED`, `CANCELLED`.</ParamField>
 <ParamField query="paymentStatus" type="string">`PENDING`, `SUCCEEDED`, `FAILED`.</ParamField>
-<ParamField query="businessDayDate" type="string">Día de negocio exacto, `YYYY-MM-DD`.</ParamField>
+<ParamField query="businessDayDate" type="string">Día de negocio exacto, `YYYY-MM-DD`. Se ignora si envías `dateFrom` o `dateTo`.</ParamField>
 <ParamField query="dateFrom" type="string">Inicio del rango, `YYYY-MM-DD`.</ParamField>
 <ParamField query="dateTo" type="string">Fin del rango, `YYYY-MM-DD`.</ParamField>
 <ParamField query="dateFilterMode" type="string" default="business_day">`business_day` o `created_at`.</ParamField>
@@ -69,9 +69,10 @@ El consumidor decide qué campos devuelve cada orden, similar al projection de M
 </Note>
 
 <Note>
-  Los snapshots JSONB (`totals`, `orderLines`, `paymentMethods`, `store`, `customer`, `fulfillment`,
-  `metadata`, `fiscal`) se devuelven en el formato de persistencia interno de Fire (por ejemplo, los
-  montos de `totals` van a escala ×10000).
+  Los snapshots (`totals`, `orderLines`, `paymentMethods`, `store`, `customer`, `fulfillment`,
+  `metadata`) se devuelven en el formato en que Fire los guarda: las claves internas van en
+  `snake_case` (`currency_code`, `item_id`, `total_bill`) y los montos suelen ser strings. La escala de
+  cada monto se detalla en [Escalas de los montos](#escalas-de-los-montos).
 </Note>
 
 <Note>
@@ -85,6 +86,23 @@ El consumidor decide qué campos devuelve cada orden, similar al projection de M
 <Note>
   Cada línea de `orderLines` y cada modificador pueden traer `descriptions` (`{ marketing, ops }`) del catálogo de Fire e `item_type` con el tipo del menú, como en los [eventos de orden](/es/events/order-completed#data-orderlines). `reported_item_type` es informativo: el tipo que envió el canal cuando no coincide con el menú, o `null` si no envió ninguno. No viene si el canal envió el tipo del menú.
 </Note>
+
+## Escalas de los montos
+
+No todos los montos de una orden vienen en la misma escala. Si los cruzas sin convertirlos, no van a
+cuadrar.
+
+| Campo | Escala | Ejemplo (venta de COP 31.900) |
+| --- | --- | --- |
+| `totals[].total`, `subtotal`, `taxes_value`, `discount_value` | ×10000 (string) | `"319000000"` |
+| precios de `orderLines` | ×10000 (string) | `"319000000"` |
+| `settlement.paidSoFar`, `settlement.total` | ×10000 (string) | `"319000000"` |
+| `payments[].amount` | ×10000 (string) | `"319000000"` |
+| `paymentMethods[].total` | unidades (string) | `"31900"` |
+| `paymentMethods[].details.total_bill`, `customer_cash_amount`, `change_amount` | unidades | `31900` |
+| `fiscal.metadata.totalAmount`, `fiscal.metadata.taxAmount` | unidades, tal como los informó el proveedor fiscal | `31900` |
+
+Para llevar un monto ×10000 a unidades, divídelo por `10000`.
 
 ## Progreso del cobro: `settlement` y `payments`
 
@@ -128,6 +146,9 @@ El cobro es todo o nada (ver [Confirmar pago](/es/api-reference/confirm-payment)
 `status` es uno de `pending`, `declined`, `settled`. `paidSoFar` y `total` usan la misma escala
 ×10000 que `totals` — arriba, 35,90 cobrados en dos piezas, después de un rechazo anterior.
 `tenderCount` cuenta solo las piezas aprobadas; las rechazadas van en `declinedCount`.
+
+Con `origin: "intake"` (la orden llegó ya pagada), `tenderCount` es la cantidad de medios de pago
+declarados y `payments` viene vacío. `tenderCount` y `payments` solo coinciden con `origin: "ledger"`.
 
 `amountMismatch` es siempre `false`: un cobro que no suma el total se rechaza de entrada, así que una
 orden saldada siempre cuadra. El campo se mantiene por compatibilidad.
@@ -194,21 +215,41 @@ Cuando una orden tiene un documento fiscal, el campo `fiscal` lleva su estado ac
   "status": "COMPLETED",
   "fiscal": {
     "status": "authorized",
+    "occurredAt": "2026-11-18T18:33:37.317Z",
     "countryCode": "CO",
+    "environment": "PRODUCTION",
+    "providerCode": "generic",
     "company": { "govIdType": "NIT", "govIdNumber": "9001234561", "legalName": "…", "tradeName": "…" },
     "store":   { "code": "CO-BOG-001", "name": "…", "govIdType": "NIT", "govIdNumber": "900123456-7" },
-    "buyer":   { "isFinalConsumer": true, "name": null, "govIdType": null, "govIdNumber": null },
-    "metadata": { "…": "see per-country tabs below" }
+    "buyer":   { "isFinalConsumer": true, "name": "CONSUMIDOR FINAL", "govIdType": "FINAL_CONSUMER", "govIdNumber": "222222222222" },
+    "metadata": { "…": "ver las pestañas por país abajo" },
+    "history": [ "…" ]
   }
 }
 ```
+
+| Campo | Qué es |
+| --- | --- |
+| `status` | Dónde está la orden fiscalmente (ver la tabla siguiente). |
+| `occurredAt` | Cuándo llegó a ese estado. |
+| `countryCode` | País del documento. Define qué identificadores trae `metadata`. |
+| `environment` | Ambiente del proveedor fiscal: `PRODUCTION` o `SANDBOX`. |
+| `providerCode` | Proveedor fiscal que emitió el documento. |
+| `company` / `store` | El emisor y la tienda. |
+| `buyer` | A quién se emitió el documento. |
+| `metadata` | El documento: número, identificadores del país, fechas, montos y archivos. |
+| `error` | `{ code, message }`, solo en los estados fallidos. |
+| `history` | Cada estado por el que pasó el documento (ver [el recorrido](#el-bloque-fiscal-trae-el-recorrido-completo-del-documento)). |
+
+Cuando la numeración se hace en la inyección, también viene `fiscalRepresentation`: lo que se
+imprimió en caja, con su número.
 
 `status` te dice dónde está la orden fiscalmente. Agrúpalo por lo que puedes hacer al respecto:
 
 | Grupo | Valores | Qué significa |
 |---|---|---|
 | **Sin documento** | `awaiting_payment`, `not_issued` | Nunca se emitió nada. `awaiting_payment` = la orden está abierta y sin pagar, así que todavía no corresponde emitir. `not_issued` = la orden se cerró sin haberse facturado nunca (cancelada antes del pago). |
-| **En vuelo** | `pending`, `processing`, `contingency`, `cancelling` | Hay una operación en curso y no se conoce su desenlace. No asumas éxito ni fracaso — espera. `contingency` es un documento legalmente emitido pendiente de transmitir. |
+| **En vuelo** | `pending`, `processing`, `cancelling` | Hay una operación en curso y no se conoce su desenlace. No asumas éxito ni fracaso — espera. |
 | **Resuelto** | `authorized`, `cancelled` | Terminal. Hay documento válido, o fue cancelado. |
 | **Fallido** | `rejected`, `denied`, `error` | No hay documento válido. `fiscal.error` (`{ code, message }`) también está presente. |
 | **Entrega** | `fiscal_graphic` | El proveedor está entregando el artefacto imprimible. No es aprobación ni estado terminal. |
@@ -226,29 +267,57 @@ Cuando una orden tiene un documento fiscal, el campo `fiscal` lleva su estado ac
   ente autorice la factura, queda en `cancelled`, no en `not_issued`: hubo factura y quedó anulada.
   Si la factura ya estaba `authorized`, el estado lo sigue moviendo la respuesta del ente.
 
-Los **campos comunes** de `metadata` (todos los países): `docType`, `docSubtype`, `providerDocId`,
-`pdfUrl`, `xmlUrl`, `emittedAt`, `cancelledAt`, `totalAmount`, `taxAmount`, `currencyCode`. Los
-identificadores específicos que se muestran abajo se agregan encima, pero `metadata` lleva **solo los
-identificadores del país del propio documento** — los de los otros países no se incluyen.
+Los **campos comunes** de `metadata` (todos los países):
+
+| Campo | Qué es |
+| --- | --- |
+| `documentType` | `SALE_INVOICE` (venta) o `CREDIT_NOTE` (nota de crédito). |
+| `docSubtype` | El tipo de documento en el vocabulario del país (`factura`, `boleta`, `nfce`, …). |
+| `providerDocId` | El id del documento en el proveedor fiscal. |
+| `issuedAt` | Cuándo se emitió el documento. |
+| `authorizedAt` | Cuándo lo autorizó el ente. Puede ser `null` si el proveedor no lo informa. |
+| `cancelledAt` | Cuándo se anuló, o `null`. |
+| `totalAmount`, `taxAmount`, `currencyCode` | Total, impuestos y moneda del documento. |
+| `pdfUrl`, `xmlUrl` | El documento descargable. |
+| `graphic` | Lo imprimible, por ejemplo `{ "qr": "…" }`. Solo si el proveedor lo mandó. |
+| `authorizationMode` | Solo si el proveedor lo informa. |
+| `documentNumber` | Solo si el proveedor declaró un número distinto del que ya traen los identificadores del país. |
+
+Los identificadores específicos que se muestran abajo se agregan encima, pero `metadata` lleva **solo
+los identificadores del país del propio documento** — los de los otros países no se incluyen.
+
+<Note>
+  Las pestañas muestran los identificadores **típicos** de cada país. Las claves exactas dependen del
+  contrato de documento configurado para tu vendor y de lo que mande tu proveedor fiscal: Fire
+  conserva todo lo que el proveedor envía en el documento, así que pueden venir claves adicionales.
+</Note>
+
+<Note>
+  Órdenes facturadas antes de septiembre de 2026 pueden traer los nombres anteriores: `docType`
+  (`invoice` / `cancellation`) en lugar de `documentType`, y `emittedAt` en lugar de `issuedAt`.
+</Note>
 
 <Warning>
   **`totalAmount` y `taxAmount` NO van escalados.** Llegan tal como los mandó el proveedor fiscal
   en el callback: `95000` son 95.000 COP, no 9,50.
 
-  Es la excepción en esta página: `totals`, `paidSoFar` y los montos de pago van **×10.000**,
-  porque son datos que FIRE calcula y almacena. Los de `metadata` son del documento del ente y
-  se guardan tal cual.
+  Es una de las excepciones de esta página (ver [Escalas de los montos](#escalas-de-los-montos)):
+  `totals`, `paidSoFar` y `payments[].amount` van **×10.000**, porque son datos que FIRE calcula y
+  almacena. Los de `metadata` son del documento del ente y se guardan tal cual.
 </Warning>
 
 <Tabs>
   <Tab title="Colombia (CO)">
     ```json metadata — CO (DIAN)
     {
-      "docType": "invoice",
+      "documentType": "SALE_INVOICE",
       "docSubtype": "factura",
+      "providerDocId": "dian-fe-co-0000001001",
       "pdfUrl": "https://…/co.pdf",
       "xmlUrl": "https://…/co.xml",
-      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "authorizedAt": "2026-04-26T14:32:12.000Z",
+      "cancelledAt": null,
       "totalAmount": 95000,
       "taxAmount": 15170,
       "currencyCode": "COP",
@@ -256,18 +325,21 @@ identificadores del país del propio documento** — los de los otros países no
       "prefijo": "FE-CO",
       "numeroDian": "1001",
       "numeroComprobante": "FE-CO1001",
-      "ambiente": "1"
+      "ambiente": "1",
+      "graphic": { "qr": "https://catalogo-vpfe.dian.gov.co/document/searchqr?documentkey=…" }
     }
     ```
   </Tab>
   <Tab title="Ecuador (EC)">
     ```json metadata — EC (SRI)
     {
-      "docType": "invoice",
+      "documentType": "SALE_INVOICE",
       "docSubtype": "factura",
       "pdfUrl": "https://…/ec.pdf",
       "xmlUrl": "https://…/ec.xml",
-      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "authorizedAt": "2026-04-26T14:32:12.000Z",
+      "cancelledAt": null,
       "totalAmount": 2450,
       "taxAmount": 315,
       "currencyCode": "USD",
@@ -275,16 +347,17 @@ identificadores del país del propio documento** — los de los otros países no
       "numeroAutorizacion": "AUT-EC-1001"
     }
     ```
-    <Note>El `qrCode` (CO) y el `ambiente` (EC) del callback **no** se persisten en `fiscal.metadata` — solo se guardan los identificadores listados acá.</Note>
   </Tab>
   <Tab title="Chile (CL)">
     ```json metadata — CL (SII)
     {
-      "docType": "invoice",
+      "documentType": "SALE_INVOICE",
       "docSubtype": "boleta",
       "pdfUrl": "https://…/cl.pdf",
       "xmlUrl": "https://…/cl.xml",
-      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "authorizedAt": "2026-04-26T14:32:12.000Z",
+      "cancelledAt": null,
       "totalAmount": 18900,
       "taxAmount": 3019,
       "currencyCode": "CLP",
@@ -298,11 +371,13 @@ identificadores del país del propio documento** — los de los otros países no
   <Tab title="Argentina (AR)">
     ```json metadata — AR (AFIP)
     {
-      "docType": "invoice",
+      "documentType": "SALE_INVOICE",
       "docSubtype": "factura_b",
       "pdfUrl": "https://…/ar.pdf",
       "xmlUrl": "https://…/ar.xml",
-      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "authorizedAt": "2026-04-26T14:32:12.000Z",
+      "cancelledAt": null,
       "totalAmount": 12100,
       "taxAmount": 2100,
       "currencyCode": "ARS",
@@ -317,11 +392,13 @@ identificadores del país del propio documento** — los de los otros países no
   <Tab title="Venezuela (VE)">
     ```json metadata — VE (SENIAT)
     {
-      "docType": "invoice",
+      "documentType": "SALE_INVOICE",
       "docSubtype": "factura",
       "pdfUrl": "https://…/ve.pdf",
       "xmlUrl": "https://…/ve.xml",
-      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "authorizedAt": "2026-04-26T14:32:12.000Z",
+      "cancelledAt": null,
       "totalAmount": 480,
       "taxAmount": 76,
       "currencyCode": "VES",
@@ -331,14 +408,16 @@ identificadores del país del propio documento** — los de los otros países no
     }
     ```
   </Tab>
-  <Tab title="Brazil (BR)">
-    ```json metadata — BR (SEFAZ, non-PlugNotas)
+  <Tab title="Brasil (BR)">
+    ```json metadata — BR (SEFAZ)
     {
-      "docType": "invoice",
+      "documentType": "SALE_INVOICE",
       "docSubtype": "nfce",
       "pdfUrl": "https://…/br.pdf",
       "xmlUrl": "https://…/br.xml",
-      "emittedAt": "2026-04-26T14:32:10.000Z",
+      "issuedAt": "2026-04-26T14:32:10.000Z",
+      "authorizedAt": "2026-04-26T14:32:12.000Z",
+      "cancelledAt": null,
       "totalAmount": 14290,
       "taxAmount": 1857,
       "currencyCode": "BRL",
@@ -355,7 +434,7 @@ identificadores del país del propio documento** — los de los otros países no
 ### El bloque `fiscal` trae el recorrido completo del documento
 
 `fiscal` sigue el mismo patrón que `kitchen`: el top-level es el estado **vigente**, y
-`fiscal.history[]` lista cada parada del documento fiscal, en orden cronológico.
+`fiscal.history[]` trae los estados por los que pasó el documento fiscal, en orden cronológico.
 
 ```jsonc
 "fiscal": {
@@ -365,48 +444,76 @@ identificadores del país del propio documento** — los de los otros países no
   "company": { … }, "store": { … },   // emisor + tienda, arrastrados
   "metadata": { … },                  // metadata del estado vigente
   "history": [
-    { "status": "processing",     "occurredAt": "…" },
-    { "status": "fiscal_graphic", "occurredAt": "…", "metadata": { "pdfUrl": "…" } },
-    { "status": "authorized",     "occurredAt": "…", "metadata": { "chaveAcesso": "…" } },
-    { "status": "cancelled",      "occurredAt": "…", "metadata": { "protocoloCancelamento": "…" } }
+    { "status": "processing",     "source": "fiscal.callback", "occurredAt": "…" },
+    { "status": "fiscal_graphic", "source": "fiscal.callback", "occurredAt": "…", "metadata": { "pdfUrl": "…" } },
+    { "status": "authorized",     "source": "order.invoiced",  "occurredAt": "…", "metadata": { "chaveAcesso": "…" } },
+    { "status": "cancelled",      "source": "order.reversed",  "occurredAt": "…", "metadata": { "protocoloCancelamento": "…" } }
   ]
 }
 ```
 
-Estados posibles: `pending`, `processing`, `contingency`, `fiscal_graphic`, `error`, `authorized`,
-`rejected`, `denied`, `cancelling`, `cancelled`. Ver
+Estados posibles: `awaiting_payment`, `not_issued`, `pending`, `processing`, `fiscal_graphic`,
+`error`, `authorized`, `rejected`, `denied`, `cancelling`, `cancelled`. Ver
 [Callback fiscal](/es/api-reference/fiscal-callback) para el significado de cada uno.
 
-Leer el top-level sigue funcionando igual que antes — `history` es aditivo. Te sirve cuando
+Cada entrada trae `status`, `occurredAt` y, según el caso, `source` (qué la produjo:
+`order.injected`, `fiscal.callback`, `order.invoiced`, `order.reversed`), `metadata`, `providerCode`,
+`countryCode` y `error`.
+
+<Warning>
+  `history` tiene **una entrada por estado**, no una por evento. Si el documento vuelve a un estado
+  (por ejemplo, un reintento), esa entrada se actualiza y su `occurredAt` pasa a ser el del último
+  ingreso. No la uses para contar intentos ni para saber cuándo se mandó la orden a facturar: el
+  `occurredAt` de `processing` suele ser el del último aviso del proveedor. Para saber cuándo se
+  autorizó, usa `metadata.authorizedAt`.
+</Warning>
+
+Agregar `history` no cambió el top-level: leerlo sigue funcionando igual que antes. Te sirve cuando
 necesitas los datos de autorización de un documento que después se canceló: viven en la entrada
 `authorized`.
 
 ## Respuesta
 
-<ResponseField name="orders" type="object[]">Array de órdenes, cada una proyectada según `fields`.</ResponseField>
-<ResponseField name="pagination" type="object">
-  <Expandable title="pagination">
-    <ResponseField name="page" type="integer">Página actual.</ResponseField>
-    <ResponseField name="size" type="integer">Tamaño de página.</ResponseField>
-    <ResponseField name="total" type="integer">Total de órdenes que matchean el query.</ResponseField>
-    <ResponseField name="totalPages" type="integer">Total de páginas.</ResponseField>
+La respuesta llega en el sobre estándar `{ "success": true, "data": { … } }`.
+
+<ResponseField name="success" type="boolean">`true` en una respuesta exitosa.</ResponseField>
+<ResponseField name="data" type="object">
+  <Expandable title="data">
+    <ResponseField name="orders" type="object[]">Array de órdenes, cada una proyectada según `fields`.</ResponseField>
+    <ResponseField name="pagination" type="object">
+      <Expandable title="pagination">
+        <ResponseField name="page" type="integer">Página actual.</ResponseField>
+        <ResponseField name="size" type="integer">Tamaño de página.</ResponseField>
+        <ResponseField name="total" type="integer">Total de órdenes que matchean el query.</ResponseField>
+        <ResponseField name="totalPages" type="integer">Total de páginas.</ResponseField>
+      </Expandable>
+    </ResponseField>
   </Expandable>
 </ResponseField>
 
 <ResponseExample>
 ```json 200
 {
-  "orders": [
-    {
-      "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-      "orderCode": "OC-1024",
-      "status": "COMPLETED",
-      "totals": [
-        { "currencyCode": "USD", "total": 125000 }
-      ]
-    }
-  ],
-  "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+  "success": true,
+  "data": {
+    "orders": [
+      {
+        "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+        "orderCode": "OC-1024",
+        "status": "COMPLETED",
+        "totals": [
+          {
+            "currency_code": "COP",
+            "total": "319000000",
+            "subtotal": "268067200",
+            "taxes_value": "50932800",
+            "discount_value": "0"
+          }
+        ]
+      }
+    ],
+    "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+  }
 }
 ```
 
@@ -418,11 +525,19 @@ necesitas los datos de autorización de un documento que después se canceló: v
 }
 ```
 
-```json 403 — account/vendor no coincide o key no vendor-scoped
+```json 401 — API key inválida, expirada o revocada
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — key sin scope orders:read o no vendor-scoped
 {
   "success": false,
   "error": "FORBIDDEN",
-  "message": "API key is not authorized for the requested vendor"
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
 }
 ```
 </ResponseExample>

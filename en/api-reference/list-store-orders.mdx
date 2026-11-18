@@ -25,6 +25,9 @@ list — never another tenant's orders.
   Store UUID (`stores.id`).
 </ParamField>
 
+To reconcile a store's orders for a day, filter by `businessDayDate` and walk through the pages.
+Each order has the same shape as [Get order](/en/api-reference/get-order).
+
 ## Query parameters
 
 <Info>The account and vendor are derived from your API key (vendor-scoped) — you do not send them as query params.</Info>
@@ -35,7 +38,7 @@ list — never another tenant's orders.
 
 <ParamField query="status" type="string">`OPEN`, `COMPLETED`, `FORCE_CLOSED`, `CANCELLED`.</ParamField>
 <ParamField query="paymentStatus" type="string">`PENDING`, `SUCCEEDED`, `FAILED`.</ParamField>
-<ParamField query="businessDayDate" type="string">Exact business day, `YYYY-MM-DD`.</ParamField>
+<ParamField query="businessDayDate" type="string">Exact business day, `YYYY-MM-DD`. Ignored if you send `dateFrom` or `dateTo`.</ParamField>
 <ParamField query="dateFrom" type="string">Range start, `YYYY-MM-DD`.</ParamField>
 <ParamField query="dateTo" type="string">Range end, `YYYY-MM-DD`.</ParamField>
 <ParamField query="dateFilterMode" type="string" default="business_day">`business_day` or `created_at`.</ParamField>
@@ -59,28 +62,50 @@ x-api-key: <your_api_key>
 
 ## Response
 
-Same shape as [List orders](/en/api-reference/list-orders): `{ orders, pagination }`.
+Same shape as [List orders](/en/api-reference/list-orders), in the standard envelope:
+`{ "success": true, "data": { orders, pagination } }`.
 
-To see how each order's collection is going, project `settlement` — see
-[Payment progress](/en/api-reference/list-orders#payment-progress-settlement-and-payments).
+To reconcile, read in List orders
+[Amount scales](/en/api-reference/list-orders#amount-scales),
+[Payment progress](/en/api-reference/list-orders#payment-progress-settlement-and-payments) and
+[The `fiscal` block by country](/en/api-reference/list-orders#the-fiscal-block-by-country).
 
 <ResponseExample>
 ```json 200
 {
-  "orders": [
-    {
-      "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-      "orderCode": "OC-1024",
-      "storeId": "550e8400-e29b-41d4-a716-446655440000",
-      "status": "COMPLETED",
-      "paymentStatus": "SUCCEEDED",
-      "channel": "APP",
-      "businessDayDate": "2026-07-01",
-      "createdAt": "2026-07-01T14:03:00Z",
-      "updatedAt": "2026-07-01T14:20:00Z"
-    }
-  ],
-  "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+  "success": true,
+  "data": {
+    "orders": [
+      {
+        "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+        "orderCode": "OC-1024",
+        "storeId": "550e8400-e29b-41d4-a716-446655440000",
+        "status": "COMPLETED",
+        "paymentStatus": "SUCCEEDED",
+        "channel": "APP",
+        "businessDayDate": "2026-07-01",
+        "createdAt": "2026-07-01T14:03:00Z",
+        "updatedAt": "2026-07-01T14:20:00Z"
+      }
+    ],
+    "pagination": { "page": 1, "size": 20, "total": 1, "totalPages": 1 }
+  }
+}
+```
+
+```json 401 — invalid, expired or revoked API key
+{
+  "success": false,
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — key without the orders:read scope or not vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
 }
 ```
 </ResponseExample>
