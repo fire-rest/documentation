@@ -8,6 +8,9 @@ authMethod: "bearer"
 Devuelve una orden proyectada según `fields`. Si la orden no existe — o pertenece a otro tenant — la
 respuesta es `404` (nunca se filtra la existencia entre tenants).
 
+Sin `fields` devuelve la orden completa: líneas, totales, medios de pago, progreso del cobro, datos de
+facturación y el documento fiscal con su recorrido. Es el endpoint para conciliar una orden puntual.
+
 ## Autenticación
 
 <ParamField header="x-api-key" type="string" required>
@@ -18,15 +21,17 @@ respuesta es `404` (nunca se filtra la existencia entre tenants).
 ## Path params
 
 <ParamField path="orderId" type="string" required>
-  Cualquiera de las tres referencias públicas de la orden:
+  Cualquiera de las referencias públicas de la orden:
 
   | referencia | qué es |
   | --- | --- |
   | `orders.id` | el UUID interno de Fire |
   | `order_external` | el id que asignaste al crear la orden |
   | `metadata.order_id` | copia del id externo dentro de la orden |
+  | `order_code` | el código de la orden que ve el cajero |
 
-  No hace falta traducir: usa el id que ya conoces.
+  No hace falta traducir: usa el id que ya conoces. `order_code` puede repetirse dentro de tu vendor;
+  si coincide con más de una orden la respuesta es `409`, y en ese caso usa el UUID o el id externo.
 </ParamField>
 
 <Note>
@@ -52,12 +57,18 @@ x-api-key: <tu_api_key>
 
 ## Respuesta
 
-Un objeto orden, proyectado según `fields`. Ver la lista completa de campos en
+La respuesta llega en el sobre estándar `{ "success": true, "data": { … } }`. `data` es un objeto
+orden, proyectado según `fields`. Ver la lista completa de campos en
 [Projection de campos](/es/api-reference/list-orders#projection-de-campos).
 
-Para seguir una orden que se está cobrando por partes, pide `settlement` (cuánto se cobró) y
-`payments` (con qué) — ver
-[Progreso del cobro](/es/api-reference/list-orders#progreso-del-cobro-settlement-y-payments).
+Para conciliar una orden, lee en [Listar órdenes](/es/api-reference/list-orders):
+
+- [Escalas de los montos](/es/api-reference/list-orders#escalas-de-los-montos): no todos los montos
+  vienen en la misma escala.
+- [Progreso del cobro](/es/api-reference/list-orders#progreso-del-cobro-settlement-y-payments):
+  `settlement` (cuánto se cobró) y `payments` (con qué).
+- [El bloque `fiscal` por país](/es/api-reference/list-orders#el-bloque-fiscal-por-país): el
+  documento fiscal y su recorrido.
 
 Cada entrada de `paymentMethods` trae `details.acquirer_configured`: quién cobra ese pago según la configuración de tu cuenta en Fire, o `null` — ver
 [Adquirente configurado](/es/events/order-completed#adquirente-configurado).
@@ -69,50 +80,80 @@ Cada entrada de `paymentMethods` trae `details.acquirer_configured`: quién cobr
 <ResponseExample>
 ```json 200
 {
-  "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
-  "orderCode": "OC-1024",
-  "status": "COMPLETED",
-  "orderLines": [
-    { "productId": "p1", "quantity": 2 }
-  ],
-  "totals": [
-    { "currencyCode": "USD", "total": 125000 }
-  ]
+  "success": true,
+  "data": {
+    "id": "7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f",
+    "orderCode": "OC-1024",
+    "status": "COMPLETED",
+    "orderLines": [
+      {
+        "item_id": "p1",
+        "item_type": "PRODUCT",
+        "item_description": "Combo familiar",
+        "quantity": "2",
+        "price": { "…": "…" }
+      }
+    ],
+    "totals": [
+      {
+        "currency_code": "COP",
+        "total": "319000000",
+        "subtotal": "268067200",
+        "taxes_value": "50932800",
+        "discount_value": "0"
+      }
+    ]
+  }
 }
 ```
 
-```json 200 — una orden que todavía se está cobrando (fields=orderCode,status,settlement,payments)
+```json 200 — una orden abierta con un cobro rechazado (fields=orderCode,status,settlement,payments)
 {
-  "orderCode": "OC-1024",
-  "status": "OPEN",
-  "settlement": {
-    "status": "recorded",
-    "origin": "ledger",
-    "paidSoFar": "200000",
-    "total": "359000",
-    "currencyCode": "BRL",
-    "tenderCount": 1,
-    "declinedCount": 0,
-    "amountMismatch": true
-  },
-  "payments": [
-    {
-      "status": "approved",
-      "amount": "200000",
+  "success": true,
+  "data": {
+    "orderCode": "OC-1024",
+    "status": "OPEN",
+    "settlement": {
+      "status": "declined",
+      "origin": "ledger",
+      "paidSoFar": "0",
+      "total": "359000",
       "currencyCode": "BRL",
-      "method": "CASH",
-      "transactionId": "POS-0001",
-      "occurredAt": "2026-07-30T16:20:04.000Z"
-    }
-  ]
+      "tenderCount": 0,
+      "declinedCount": 1,
+      "amountMismatch": false,
+      "declaredMethods": ["CREDIT"]
+    },
+    "payments": [
+      {
+        "status": "declined",
+        "amount": "359000",
+        "currencyCode": "BRL",
+        "method": "CREDIT",
+        "transactionId": "POS-0001",
+        "declineReason": "51",
+        "declineReasonCode": "INSUFFICIENT_FUNDS",
+        "declineGroup": "FUNDS",
+        "occurredAt": "2026-07-30T16:20:04.000Z"
+      }
+    ]
+  }
 }
 ```
 
-```json 409 — la referencia matchea más de una orden
+```json 401 — API key inválida, expirada o revocada
 {
   "success": false,
-  "error": "CONFLICT",
-  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate"
+  "error": "UNAUTHORIZED",
+  "message": "Invalid or expired API key"
+}
+```
+
+```json 403 — key sin scope orders:read o no vendor-scoped
+{
+  "success": false,
+  "error": "FORBIDDEN",
+  "message": "API key must be vendor-scoped (account + vendor binding) to access this endpoint"
 }
 ```
 
@@ -120,7 +161,17 @@ Cada entrada de `paymentMethods` trae `details.acquirer_configured`: quién cobr
 {
   "success": false,
   "error": "NOT_FOUND",
-  "message": "Order not found with ID 7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+  "message": "InjectedOrder not found with ID 7e2b8c10-1a2b-4c3d-8e9f-0a1b2c3d4e5f"
+}
+```
+
+```json 409 — la referencia coincide con más de una orden
+{
+  "success": false,
+  "error": "CONFLICT",
+  "code": "AMBIGUOUS_ORDER_REFERENCE",
+  "message": "External order id ORD-77 matches 2 orders across vendors; cannot disambiguate",
+  "data": { "reference": "ORD-77", "matchCount": 2 }
 }
 ```
 </ResponseExample>
