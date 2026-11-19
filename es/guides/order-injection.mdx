@@ -1,100 +1,102 @@
 ---
 title: "Inyección de órdenes"
-description: "Inyecta órdenes en Fire vía la API."
+description: "Qué endpoint usa tu sistema para inyectar órdenes en Fire, cómo es el flujo y qué revisar antes de certificar."
 ---
 
-Tu sistema puede inyectar órdenes en Fire usando la API de Orders. Fire luego administra el ciclo de vida de la orden y envía las actualizaciones de estado de vuelta vía webhooks.
+Tu sistema inyecta órdenes en Fire por la API REST. Fire valida la orden, la guarda en el día de
+negocio abierto de la tienda, completa lo que falte (en Brasil, los impuestos) y te avisa los
+cambios de estado con [eventos](/es/events/overview).
 
 <Note>
   La inyección es igual con o sin gateway fiscal. Con gateway, la caja pide los números antes de inyectar. Ver [Cómo funciona lo fiscal en Fire](/es/fiscal/overview).
 </Note>
 
+## Qué endpoint usar
+
+Hay cuatro entradas y todas terminan en el mismo núcleo: mismas validaciones, mismo día de negocio,
+mismos eventos. Elige por el formato que ya arma tu sistema.
+
+| Tu sistema | Endpoint | Referencia |
+|---|---|---|
+| Partner que envía órdenes en formato Fire y resuelve la tienda por `store.code` + `store.vendorId` (X-MART Gateway, kioscos y cajas de Brasil) | `POST /api/v1/adapters/xmart/stores/orders` | [Inyectar orden (partners)](/es/api-reference/inject-order-partners) |
+| Sistema propio que envía órdenes en formato Fire con su API key | `POST /api/v1/external/orders` | [Crear orden (v1)](/es/api-reference/create-order) |
+| Caja, kiosco o integrador que envía la estructura de caja y kiosco o la de agregadores | `POST /api/v2/external/orders` | [Crear orden (v2)](/es/api-reference/create-order-v2) |
+| Agregador (iFood, Rappi, Keeta…) por la integración de agregadores | `POST /api/v4/integrations/sales/aggregator/orders` | [Inyectar orden](/es/api-reference/orders) |
+
+El resto de esta guía usa el endpoint de partners como ejemplo; las reglas valen para todos.
+
 ## Flujo
 
-```
-Tu sistema recibe una orden → Tu sistema la inyecta en Fire → Fire confirma
-```
+1. Tu sistema cobra, o deja el pago pendiente, y arma la orden con tienda, canal, servicio,
+   productos y pagos.
+2. Envías la orden al endpoint con tu API key en el header `x-api-key`.
+3. Fire busca la tienda, verifica que esté activa y con el día de negocio abierto, resuelve canal y
+   servicio, y corre las reglas de validación activadas para tu vendor.
+4. En Brasil, Fire calcula los impuestos de cada línea con el grupo fiscal de la tienda y el NCM del
+   catálogo.
+5. Fire guarda la orden y responde `201` con `data.id`. Guárdalo: es el id con el que después la
+   consultas, [confirmas el pago](/es/api-reference/confirm-payment) o la
+   [cancelas](/es/api-reference/cancel-order-partners).
+6. Fire emite [`order.completed`](/es/events/order-completed) si todos los pagos venían
+   `APPROVED`, u [`order.opened`](/es/events/order-opened) si la orden nació abierta. Los cambios
+   posteriores llegan por eventos: ver
+   [Notificaciones de estado de orden](/es/guides/order-status).
 
-## Inyectar una orden
+## Lo que más falla en una certificación
 
-```http
-POST /v1/orders
-Authorization: Bearer <your_api_key>
-Content-Type: application/json
-```
+Cinco puntos concentran casi todos los rechazos y las órdenes desbalanceadas. Revísalos antes de
+mandar la primera orden.
 
-```json
-{
-  "channel_id": "channel_abc123",
-  "external_order_id": "uber_order_9876",
-  "customer": {
-    "name": "Jane Doe",
-    "phone": "+1555000111"
-  },
-  "items": [
-    {
-      "product_id": "prod_001",
-      "quantity": 2,
-      "unit_price": 1200,
-      "modifiers": []
-    }
-  ],
-  "delivery": {
-    "type": "delivery",
-    "address": "123 Main St"
-  },
-  "total": 2400
-}
-```
+1. **Tienda y vendor.** Fire busca la tienda por `store.code` + `store.vendorId`. `store.id` se
+   guarda como referencia pero no se usa para buscar: que apunte a la misma tienda que
+   `store.code`. Una tienda inactiva o con el día de negocio cerrado rechaza la orden con `400`.
+2. **Canal y servicio.** `channel.code` y `service.code` tienen que coincidir con los configurados
+   para tu vendor, con la misma grafía (`KIOSK`, no `Kiosk`). Un código que Fire no reconoce no
+   rechaza la orden, pero la deja sin canal y sin su política de pago e impresión.
+3. **Modificadores con cantidad.** Si el producto padre lleva `quantity: 2`, cada modificador va
+   con `quantity: 2` y `totalPrice.total = unitPrice.total × 2`. La suma de `totalPrice.total` de
+   productos y modificadores es el total de la orden; si no cuadra, `ORDER_NOT_BALANCED`.
+4. **Suma de pagos.** La suma de `paymentMethods[].totalBill` es igual a
+   `payments.totals[0].total`. Los descuentos van en `payments.discounts[]` y el total ya los
+   refleja.
+5. **Impuestos en Brasil.** No los mandes: Fire los calcula con el grupo fiscal de la tienda y el
+   NCM del catálogo. Antes de la primera orden, confirma que la tienda esté en un grupo fiscal y
+   que cada producto tenga categoría fiscal. Si mandas `taxes[]` o `payments.metadata.fiscal`,
+   Fire respeta tus impuestos y no calcula nada.
 
-{/* TODO: Insert complete order payload schema once confirmed by Fire team */}
+Cada punto está desarrollado, con ejemplos, en
+[Inyectar orden (partners)](/es/api-reference/inject-order-partners).
 
-### Campos requeridos
+## Duplicados y reintentos
 
-| Campo | Descripción |
-|---|---|
-| `channel_id` | El ID del canal de venta de Fire (de webhooks de publicación como [`channel.updated`](/es/webhook-reference/channel-updated) o [Integraciones de agregadores](/es/configuration/backoffice-integrations)) |
-| `external_order_id` | Tu propio ID de orden — usado para correlacionar las actualizaciones de estado |
-| `items` | Array de productos pedidos con cantidades y precios |
-
-### Respuesta
-
-```json
-{
-  "id": "fire_order_abc",
-  "external_order_id": "uber_order_9876",
-  "status": "received",
-  "created_at": "2025-01-15T14:30:00Z"
-}
-```
-
-Guarda el `id` devuelto por Fire para correlacionar futuros eventos `order.status_changed`.
-
-## Crear orden: v1 y v2
-
-Crear una orden tiene **dos versiones vigentes**, según el formato que envía tu sistema. Las dos
-terminan en el mismo lugar: mismas validaciones, misma respuesta.
-
-| Versión | Endpoint | Úsala si tu sistema envía |
-|---|---|---|
-| [v1](/es/api-reference/create-order) | `POST /api/v1/fire/external/orders` | Órdenes en formato Fire (el cuerpo de esta guía) |
-| [v2](/es/api-reference/create-order-v2) | `POST /api/v2/external/orders` | Órdenes con la estructura de caja y kiosco o con la de agregadores |
-
-Con la v2:
-
-- Envías el mismo cuerpo que ya armas; Fire reconoce el tipo de orden por `channel.uid`.
-- Te autenticas con tu API key de Fire, asociada a tu vendor.
-- La respuesta trae el `id` de la orden en Fire, que usas para consultarla, actualizarla o anularla.
-
-## Manejo de errores
-
-| Estado | Significado |
-|---|---|
-| `400` | Payload inválido — revisa los campos requeridos |
-| `404` | `channel_id` desconocido — vuelve a obtener los canales |
-| `409` | `external_order_id` duplicado — la orden ya existe |
-| `5xx` | Error del lado de Fire — reintenta con backoff exponencial |
+La clave de duplicados es `orderId` + `store.vendorId`. Reenviar una orden que ya entró responde
+`409` `DUPLICATE_ORDER` con el `id` de la existente: trátalo como ingerida, no como error.
 
 <Warning>
-  No envíes la misma orden dos veces con el mismo `external_order_id`. Fire rechazará los duplicados con un `409`.
+  Un `400` de validación se corrige y se reenvía con el mismo `orderId`; un reintento idéntico falla
+  igual. Un `500`, un `503` o un `400` cuyo `message` empieza por `Failed to` se reintenta con
+  backoff: si la orden ya había entrado, la respuesta es `409`.
 </Warning>
+
+## Referencias
+
+<CardGroup cols={2}>
+  <Card title="Inyectar orden (partners)" icon="plus" href="/es/api-reference/inject-order-partners">
+    Campo por campo, con los ejemplos de Brasil: modificadores, pagos, impuestos.
+  </Card>
+  <Card title="Crear orden (v1)" icon="code" href="/es/api-reference/create-order">
+    El mismo cuerpo, fuera del adapter de partners.
+  </Card>
+  <Card title="Crear orden (v2)" icon="code-branch" href="/es/api-reference/create-order-v2">
+    Estructura de caja y kiosco o de agregadores.
+  </Card>
+  <Card title="Inyectar orden" icon="truck" href="/es/api-reference/orders">
+    La integración de agregadores.
+  </Card>
+  <Card title="Confirmar pago" icon="credit-card" href="/es/api-reference/confirm-payment">
+    Cierra una orden que nació con el pago pendiente.
+  </Card>
+  <Card title="Notificaciones de estado de orden" icon="bell" href="/es/guides/order-status">
+    Qué eventos recibes después de inyectar.
+  </Card>
+</CardGroup>

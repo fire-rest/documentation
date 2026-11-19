@@ -155,8 +155,23 @@ como números decimales (`22.9`). Los campos que no figuran en esta página no p
 <ParamField body="orderComment" type="string">Comentario de la orden.</ParamField>
 
 <ParamField body="additionalInfo" type="object">
-  Datos adicionales. Fire lee `orderCode` (el código que muestra la cocina) y, para kioscos,
-  `kiosk.buzzer_name`, `kiosk.ip`, `kiosk.invoice_email` y `kiosk.invoice_print`.
+  Datos adicionales de la orden. Fire lee las claves de abajo; el resto se guarda tal cual.
+  <Expandable title="additionalInfo">
+    <ParamField body="orderCode" type="string">
+      El número corto que ve el cliente para retirar su pedido, por ejemplo `21K`. Se muestra
+      en la cocina y en Brasil se imprime como **Senha** en el comprobante. Es distinto del
+      `orderCode` de la raíz, que es el código de la orden. Si falta, el comprobante sale sin senha.
+    </ParamField>
+    <ParamField body="kiosk" type="object">
+      Datos del kiosco que tomó la orden.
+      <Expandable title="kiosk">
+        <ParamField body="buzzer_name" type="string">Nombre con el que se llama al cliente. En Brasil se imprime como **Nome** en el comprobante.</ParamField>
+        <ParamField body="invoice_print" type="boolean">Si se imprime el comprobante de la venta. Con `false`, no se imprime.</ParamField>
+        <ParamField body="invoice_email" type="string">Correo al que se envía el comprobante. Vacío si el cliente no lo pidió.</ParamField>
+        <ParamField body="ip" type="string">IP del kiosco. Ayuda a soporte a ubicar el equipo.</ParamField>
+      </Expandable>
+    </ParamField>
+  </Expandable>
 </ParamField>
 
 <ParamField body="shippingMethod" type="object">
@@ -203,7 +218,9 @@ error.
         <ParamField body="taxValue" type="number">Monto total de impuestos.</ParamField>
         <ParamField body="taxes" type="object[]">
           Impuestos detallados (`name`, `rate`, `amount`, `base`, `metadata`). Si vienen, tienen
-          prioridad sobre `taxesPercentage`.
+          prioridad sobre `taxesPercentage`. **En Brasil no los mandes**: con `taxes[]` en
+          cualquier nodo, Fire respeta tus impuestos y no calcula los suyos. Ver
+          [Impuestos en Brasil](#impuestos-en-brasil).
         </ParamField>
       </Expandable>
     </ParamField>
@@ -212,15 +229,48 @@ error.
       `selectedModifiers[]`; **cada modificador tiene la misma forma que un producto**
       (`productId`, `product`, `quantity`, `price`) y puede tener sus propios `modifierGroups`.
       El precio de un modificador es aparte del de su producto.
+
+      **Cantidad.** La `quantity` del modificador ya va multiplicada por la cantidad del producto
+      padre, y `totalPrice.total = unitPrice.total × quantity`. La suma de `totalPrice.total` de
+      productos y modificadores tiene que dar el total de la orden; si no cuadra, la regla
+      `ORDER_NOT_BALANCED` la rechaza. Ver el ejemplo del combo por 2 unidades más abajo.
     </ParamField>
     <ParamField body="type" type="string" default="PRODUCT">
       `PRODUCT`, `COMBO` o `PACKAGING`; en modificadores, `MODIFIER` o `PRODUCT`. Envía el tipo del menú sincronizado: si el producto está en el catálogo de Fire, la orden se guarda y se emite con el tipo del menú aunque envíes otro. Si tu vendor activó la regla de tipo de producto, un tipo distinto o ausente puede rechazar la orden con `PRODUCT_TYPE_MISMATCH`. Con esa regla activada, `type` es obligatorio en cada producto y modificador: uno sin `type` se rechaza aunque el producto no esté en el catálogo.
     </ParamField>
     <ParamField body="rewardId" type="string | null">Código de la recompensa o promoción, si aplica.</ParamField>
     <ParamField body="productComment" type="string">Comentario del producto.</ParamField>
-    <ParamField body="additionalInfo" type="object">Códigos del producto, por ejemplo `externalCode`, NCM o CFOP.</ParamField>
+    <ParamField body="additionalInfo" type="object">Códigos del producto, por ejemplo `externalCode`, `ncm` o CFOP. En Brasil, `ncm` es solo informativo: Fire calcula con el NCM del catálogo.</ParamField>
   </Expandable>
 </ParamField>
+
+**Combo por 2 unidades.** El combo va con precio `0` y el valor en sus modificadores. Como el
+producto padre lleva `quantity: 2`, cada modificador va con `quantity: 2` y su `totalPrice.total`
+es el doble del unitario. La suma de los modificadores (24.2 + 16.8 + 18.8 + 33.6) es el total de
+la orden, 93.4:
+
+```json
+"order": {
+  "products": [{
+    "productId": "big-box-crunch-salad", "product": "Big Box Crunch Salad", "quantity": 2,
+    "price": {
+      "unitPrice":  { "currencyCode": "BRL", "total": 0 },
+      "totalPrice": { "currencyCode": "BRL", "total": 0 }
+    },
+    "modifierGroups": [
+      { "id": "g-main",  "selectedModifiers": [{ "productId": "crunch-salad",  "product": "Crunch Salad",      "quantity": 2, "price": { "unitPrice": { "currencyCode": "BRL", "total": 12.1 }, "totalPrice": { "currencyCode": "BRL", "total": 24.2 } } }] },
+      { "id": "g-side",  "selectedModifiers": [{ "productId": "2-tiras",       "product": "2 Tiras de Frango", "quantity": 2, "price": { "unitPrice": { "currencyCode": "BRL", "total": 8.4 },  "totalPrice": { "currencyCode": "BRL", "total": 16.8 } } }] },
+      { "id": "g-fries", "selectedModifiers": [{ "productId": "batata-grande", "product": "Batata Grande",     "quantity": 2, "price": { "unitPrice": { "currencyCode": "BRL", "total": 9.4 },  "totalPrice": { "currencyCode": "BRL", "total": 18.8 } } }] },
+      { "id": "g-drink", "selectedModifiers": [{ "productId": "coca-700",      "product": "Coca Cola 700 ml",  "quantity": 2, "price": { "unitPrice": { "currencyCode": "BRL", "total": 16.8 }, "totalPrice": { "currencyCode": "BRL", "total": 33.6 } } }] }
+    ]
+  }]
+},
+"payments": { "totals": [{ "currencyCode": "BRL", "total": 93.4 }] }
+```
+
+Un error frecuente es mandar el modificador con `quantity: 1` y `totalPrice.total: 16.8` cuando el
+padre lleva 2 unidades: los nodos suman menos que el total declarado y la orden queda
+desbalanceada.
 
 ### Pagos
 
@@ -232,7 +282,7 @@ error.
     <ParamField body="subtotalWithoutTaxes" type="number">Subtotal sin impuestos.</ParamField>
     <ParamField body="taxValue" type="number">Impuestos.</ParamField>
     <ParamField body="discountsValue" type="number">Descuento de la orden.</ParamField>
-    <ParamField body="taxes" type="object[]">Impuestos detallados (`amount` y `base`).</ParamField>
+    <ParamField body="taxes" type="object[]">Impuestos detallados (`amount` y `base`). **En Brasil no los mandes**: desactivan el cálculo de Fire. Ver [Impuestos en Brasil](#impuestos-en-brasil).</ParamField>
   </Expandable>
 </ParamField>
 
@@ -255,7 +305,7 @@ error.
       Estado del pago. `APPROVED` lo aprueba; decide el estado de la orden: ver
       [Estado de la orden](#estado-de-la-orden).
     </ParamField>
-    <ParamField body="totalBill" type="number" required>Monto cobrado con este pago. Número, no string.</ParamField>
+    <ParamField body="totalBill" type="number" required>Monto cobrado con este pago. Número, no string. La suma de los `totalBill` de la orden tiene que ser igual a `payments.totals[0].total`.</ParamField>
     <ParamField body="changeAmount" type="number | null">
       Vuelto. Acepta un número o un string numérico (`"38.03"`); negativo es `400`. Para pagos
       que no son en efectivo, `0`.
@@ -297,7 +347,15 @@ error.
 
 <ParamField body="payments.metadata.fiscal" type="object">
   Totales fiscales de Brasil (`vNF`, `vBC`, `vICMS`, `vPIS`, `vCOFINS`, `vTotTrib`…), como números.
+  **Mandarlo desactiva el cálculo de impuestos de Fire en Brasil**: Fire respeta tus totales y no
+  calcula nada. Mándalo solo si tu sistema ya calcula los impuestos. Ver
+  [Impuestos en Brasil](#impuestos-en-brasil).
 </ParamField>
+
+**La suma de los pagos es el total.** La suma de `paymentMethods[].totalBill` tiene que ser igual a
+`payments.totals[0].total`. Si hubo un descuento, va en `payments.discounts[]` y el total ya lo
+refleja: no lo restes del `totalBill`. Una orden con total 34.9 y un único pago de 29.9 queda
+desbalanceada.
 
 **Un PIX** va como `method: "DIGITAL"` + `processor: "PIX"`:
 
@@ -311,7 +369,80 @@ pago real: es un descuento que financia el agregador (por ejemplo iFood). Va en
 fuera del cierre de caja y del documento fiscal.
 
 **Efectivo.** En un pago `CASH` con `customerCashAmount`, el efectivo entregado tiene que cubrir
-la cuenta y `changeAmount` tiene que ser la diferencia.
+la cuenta y `changeAmount` tiene que ser la diferencia. Así lo manda una caja: el cliente entregó
+20 por una cuenta de 19.9 y recibió 0.1 de vuelto.
+
+```json
+{
+  "method": "CASH", "processor": "CASH", "currencyCode": "BRL", "transactionStatus": "APPROVED",
+  "transactionId": "BR-K118-POS-7-1761523432",
+  "customerCashAmount": 20, "totalBill": 19.9, "changeAmount": 0.1, "exactPayment": false,
+  "transactionDate": { "date": "2026-10-27T00:13:52.000Z", "timeZoneType": 0, "timeZoneName": "" }
+}
+```
+
+**Tarjeta.** Para el documento fiscal y el cierre de caja, un pago con tarjeta lleva `method`
+(`CREDIT` o `DEBIT`), el adquirente (`acquirer.name` y `acquirer.cnpj`), la tarjeta (`card.brand`,
+`card.bin`, `card.last_four_digits`), `authorizationCode`, `tid` y `transactionDate`. Así lo manda
+un kiosco con un débito por SiTef (datos anonimizados). Si confirmas el pago después con
+[Confirmar pago](/es/api-reference/confirm-payment), estos datos pueden ir en esa llamada.
+
+```json
+{
+  "method": "DEBIT", "processor": "SiTef", "currencyCode": "BRL", "transactionStatus": "APPROVED",
+  "totalBill": 24.9, "changeAmount": 0, "customerCashAmount": 0, "exactPayment": false,
+  "transactionId": "BR-K203-09-1763563458", "authorizationCode": "1795099445424", "tid": "TF133700", "mid": "", "idAuth": "00",
+  "acquirer": { "code": "01027058000191", "name": "CIELO S.A. - INSTITUICAO DE PAGAMENTO", "cnpj": "01027058000191" },
+  "card": { "bin": "650000", "brand": "ELO", "last_four_digits": "1234", "holder": "", "mask": "", "external_card_brand_id": "" },
+  "transactionDate": { "date": "2026-11-19T14:44:18.000Z", "timeZoneType": 0, "timeZoneName": "" }
+}
+```
+
+### Impuestos en Brasil
+
+En Brasil **no mandas impuestos**: Fire los calcula al inyectar la orden. Envía los precios con
+`taxesPercentage: 0`, `taxValue: 0` y sin `taxes[]`, y deja fuera `payments.metadata.fiscal`. Para
+cada línea con precio, Fire resuelve el NCM del producto en su catálogo (por `productId`), toma la
+matriz del grupo fiscal de la tienda y agrega ICMS, PIS, COFINS, IBS y CBS **antes de validar la
+orden**. Así lo mandan los kioscos y cajas de Brasil en producción.
+
+Para que el cálculo funcione:
+
+- **La tienda tiene que estar en un grupo fiscal.** Si no está, el cálculo falla y la orden se
+  guarda sin impuestos. Se configura en
+  [Configuración fiscal](/es/manuals/backoffice/fiscal-configuration#grupos-fiscales).
+- **Cada producto y modificador con precio tiene que estar en el catálogo de Fire con una categoría
+  fiscal**, que es la que lleva el NCM. Si alguno falta, el cálculo queda parcial: esa línea sale sin
+  impuestos.
+- **`additionalInfo.ncm` del producto no se usa para calcular.** Es solo informativo; puedes
+  mandarlo o no.
+
+<Warning>
+  Si el payload trae `payments.metadata.fiscal` o `taxes[]` en cualquier nodo (producto,
+  modificador o totales), Fire respeta esos impuestos y **no calcula nada**. Mándalos solo si tu
+  sistema ya calcula los impuestos de Brasil por su cuenta.
+</Warning>
+
+Lo que mandas por producto:
+
+```json
+"price": {
+  "unitPrice":  { "currencyCode": "BRL", "total": 24.9, "taxesPercentage": 0, "taxValue": 0 },
+  "totalPrice": { "currencyCode": "BRL", "total": 24.9, "taxesPercentage": 0, "taxValue": 0 }
+}
+```
+
+Lo que Fire agrega a esa línea después del cálculo, y lo que ves en la orden y en los eventos:
+
+```json
+"taxes": [
+  { "name": "ICMS",   "rate": "0.04",   "base": "599000", "amount": "24000" },
+  { "name": "PIS",    "rate": "0.0165", "base": "599000", "amount": "9900"  },
+  { "name": "COFINS", "rate": "0.076",  "base": "599000", "amount": "45500" },
+  { "name": "IBS_UF", "rate": "0.0006", "base": "519600", "amount": "300"   },
+  { "name": "CBS",    "rate": "0.0054", "base": "519600", "amount": "2800"  }
+]
+```
 
 ### Entrega y retiro
 
@@ -530,8 +661,10 @@ En `ORDER_NOT_BALANCED`, `lines` dice cuánto suma cada producto.
 
 <Note>
   Pasar la validación del formato no garantiza que la orden se acepte. El ejemplo de esta página no
-  trae `taxes[]` por producto: con la regla de impuestos activada para tu vendor, se rechazaría con
-  `TAX_MISSING`.
+  trae `taxes[]` por producto. En Brasil eso es lo esperado: Fire agrega los impuestos antes de
+  validar, así que la regla de impuestos no lo rechaza (ver
+  [Impuestos en Brasil](#impuestos-en-brasil)). Fuera de Brasil, con la regla de impuestos activada
+  para tu vendor, se rechazaría con `TAX_MISSING`.
 </Note>
 
 ```json
@@ -640,6 +773,10 @@ curl -X POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders \
     "service": { "uid": "726c4892-48b9-45da-b066-2a8e83d2cb78", "code": "DINE_IN", "metadata": {} },
     "device": { "uid": "38e17b63dead6d59", "name": "KIOSK", "platform": "android", "metadata": { "ip": "10.32.43.194" } },
     "operator": { "uid": "16ca9b25-fba0-4705-bfb4-ef1f1968", "name": "Operador 1", "session": { "uid": "sess-ef1f1968" } },
+    "additionalInfo": {
+      "orderCode": "21K",
+      "kiosk": { "ip": "10.32.43.194", "buzzer_name": "Andréa", "invoice_email": "", "invoice_print": true }
+    },
     "order": {
       "products": [
         {
@@ -647,8 +784,8 @@ curl -X POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders \
           "product": "Crunch Salad + Batata Pequena + Refri",
           "quantity": 1,
           "price": {
-            "unitPrice": { "currencyCode": "BRL", "total": 22.9, "subtotalWithoutTaxes": 19.74 },
-            "totalPrice": { "currencyCode": "BRL", "total": 22.9, "subtotalWithoutTaxes": 19.74 }
+            "unitPrice": { "currencyCode": "BRL", "total": 22.9, "taxesPercentage": 0, "taxValue": 0 },
+            "totalPrice": { "currencyCode": "BRL", "total": 22.9, "taxesPercentage": 0, "taxValue": 0 }
           },
           "modifierGroups": []
         }
@@ -656,7 +793,7 @@ curl -X POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders \
     },
     "payments": {
       "totals": [
-        { "currencyCode": "BRL", "total": 22.9, "taxValue": 3.16, "subtotalWithoutTaxes": 19.74 }
+        { "currencyCode": "BRL", "total": 22.9 }
       ],
       "paymentMethods": [
         {
@@ -668,13 +805,7 @@ curl -X POST https://app.fire.rest/api/v1/adapters/xmart/stores/orders \
           "changeAmount": 0,
           "transactionId": "BR-K082-94-1776440456"
         }
-      ],
-      "metadata": {
-        "fiscal": {
-          "vBC": 22.9, "vNF": 22.9, "vICMS": 0.92, "vPIS": 0.38, "vCOFINS": 1.74,
-          "vIBSUF": 0.01, "vIBSMun": 0, "vCBS": 0.11, "vTotTrib": 3.16
-        }
-      }
+      ]
     }
   }'
 ```
