@@ -1,100 +1,101 @@
 ---
 title: "Injeção de pedidos"
-description: "Injete pedidos no Fire via API."
+description: "Qual endpoint o seu sistema usa para injetar pedidos no Fire, como é o fluxo e o que revisar antes de certificar."
 ---
 
-Seu sistema pode injetar pedidos no Fire usando a API de Orders. O Fire então gerencia o ciclo de vida do pedido e envia as atualizações de status de volta via webhooks.
+Seu sistema injeta pedidos no Fire pela API REST. O Fire valida o pedido, o guarda no dia de
+negócio aberto da loja, completa o que faltar (no Brasil, os impostos) e avisa as mudanças de
+status com [eventos](/pt/events/overview).
 
 <Note>
   A injeção é igual com ou sem gateway fiscal. Com gateway, o caixa pede os números antes de injetar. Veja [Como o fiscal funciona no Fire](/pt/fiscal/overview).
 </Note>
 
+## Qual endpoint usar
+
+Há quatro entradas e todas terminam no mesmo núcleo: mesmas validações, mesmo dia de negócio,
+mesmos eventos. Escolha pelo formato que o seu sistema já monta.
+
+| Seu sistema | Endpoint | Referência |
+|---|---|---|
+| Parceiro que envia pedidos no formato Fire e resolve a loja por `store.code` + `store.vendorId` (X-MART Gateway, quiosques e caixas do Brasil) | `POST /api/v1/adapters/xmart/stores/orders` | [Injetar pedido (parceiros)](/pt/api-reference/inject-order-partners) |
+| Sistema próprio que envia pedidos no formato Fire com a sua API key | `POST /api/v1/external/orders` | [Criar pedido (v1)](/pt/api-reference/create-order) |
+| Caixa, quiosque ou integrador que envia a estrutura de PDV e quiosque ou a de agregadores | `POST /api/v2/external/orders` | [Criar pedido (v2)](/pt/api-reference/create-order-v2) |
+| Agregador (iFood, Rappi, Keeta…) pela integração de agregadores | `POST /api/v4/integrations/sales/aggregator/orders` | [Injetar pedido](/pt/api-reference/orders) |
+
+O resto deste guia usa o endpoint de parceiros como exemplo; as regras valem para todos.
+
 ## Fluxo
 
-```
-Seu sistema recebe um pedido → Seu sistema injeta no Fire → Fire confirma
-```
+1. Seu sistema cobra, ou deixa o pagamento pendente, e monta o pedido com loja, canal, serviço,
+   produtos e pagamentos.
+2. Você envia o pedido ao endpoint com a sua API key no header `x-api-key`.
+3. O Fire busca a loja, verifica que está ativa e com o dia de negócio aberto, resolve canal e
+   serviço, e roda as regras de validação ativadas para o seu vendor.
+4. No Brasil, o Fire calcula os impostos de cada linha com o grupo fiscal da loja e o NCM do
+   catálogo.
+5. O Fire guarda o pedido e responde `201` com `data.id`. Guarde-o: é o id com o qual depois você
+   o consulta, [confirma o pagamento](/pt/api-reference/confirm-payment) ou o
+   [cancela](/pt/api-reference/cancel-order-partners).
+6. O Fire emite [`order.completed`](/pt/events/order-completed) se todos os pagamentos vieram
+   `APPROVED`, ou [`order.opened`](/pt/events/order-opened) se o pedido nasceu aberto. As mudanças
+   posteriores chegam por eventos: veja
+   [Notificações de status de pedido](/pt/guides/order-status).
 
-## Injetar um pedido
+## O que mais falha em uma certificação
 
-```http
-POST /v1/orders
-Authorization: Bearer <your_api_key>
-Content-Type: application/json
-```
+Cinco pontos concentram quase todas as rejeições e os pedidos desbalanceados. Revise-os antes de
+enviar o primeiro pedido.
 
-```json
-{
-  "channel_id": "channel_abc123",
-  "external_order_id": "uber_order_9876",
-  "customer": {
-    "name": "Jane Doe",
-    "phone": "+1555000111"
-  },
-  "items": [
-    {
-      "product_id": "prod_001",
-      "quantity": 2,
-      "unit_price": 1200,
-      "modifiers": []
-    }
-  ],
-  "delivery": {
-    "type": "delivery",
-    "address": "123 Main St"
-  },
-  "total": 2400
-}
-```
+1. **Loja e vendor.** O Fire busca a loja por `store.code` + `store.vendorId`. `store.id` é
+   guardado como referência, mas não é usado na busca: faça-o apontar para a mesma loja que
+   `store.code`. Uma loja inativa ou com o dia de negócio fechado rejeita o pedido com `400`.
+2. **Canal e serviço.** `channel.code` e `service.code` têm que coincidir com os configurados para
+   o seu vendor, com a mesma grafia (`KIOSK`, não `Kiosk`). Um código que o Fire não reconhece não
+   rejeita o pedido, mas o deixa sem canal e sem a sua política de pagamento e impressão.
+3. **Modificadores com quantidade.** Se o produto pai leva `quantity: 2`, cada modificador vai com
+   `quantity: 2` e `totalPrice.total = unitPrice.total × 2`. A soma de `totalPrice.total` de
+   produtos e modificadores é o total do pedido; se não fechar, `ORDER_NOT_BALANCED`.
+4. **Soma dos pagamentos.** A soma de `paymentMethods[].totalBill` é igual a
+   `payments.totals[0].total`. Os descontos vão em `payments.discounts[]` e o total já os reflete.
+5. **Impostos no Brasil.** Não os envie: o Fire os calcula com o grupo fiscal da loja e o NCM do
+   catálogo. Antes do primeiro pedido, confirme que a loja está em um grupo fiscal e que cada
+   produto tem categoria fiscal. Se você enviar `taxes[]` ou `payments.metadata.fiscal`, o Fire
+   respeita os seus impostos e não calcula nada.
 
-{/* TODO: Insert complete order payload schema once confirmed by Fire team */}
+Cada ponto está desenvolvido, com exemplos, em
+[Injetar pedido (parceiros)](/pt/api-reference/inject-order-partners).
 
-### Campos obrigatórios
+## Duplicados e retentativas
 
-| Campo | Descrição |
-|---|---|
-| `channel_id` | O ID do canal de venda do Fire (de webhooks de publicação como [`channel.updated`](/pt/webhook-reference/channel-updated) ou [Integrações de agregadores](/pt/configuration/backoffice-integrations)) |
-| `external_order_id` | Seu próprio ID de pedido — usado para correlacionar as atualizações de status |
-| `items` | Array de produtos pedidos com quantidades e preços |
-
-### Resposta
-
-```json
-{
-  "id": "fire_order_abc",
-  "external_order_id": "uber_order_9876",
-  "status": "received",
-  "created_at": "2025-01-15T14:30:00Z"
-}
-```
-
-Armazene o `id` devolvido pelo Fire para correlacionar eventos `order.status_changed` futuros.
-
-## Criar pedido: v1 e v2
-
-Criar um pedido tem **duas versões vigentes**, conforme o formato que o seu sistema envia. As duas
-terminam no mesmo lugar: mesmas validações, mesma resposta.
-
-| Versão | Endpoint | Use-a se o seu sistema envia |
-|---|---|---|
-| [v1](/pt/api-reference/create-order) | `POST /api/v1/fire/external/orders` | Pedidos no formato Fire (o corpo deste guia) |
-| [v2](/pt/api-reference/create-order-v2) | `POST /api/v2/external/orders` | Pedidos com a estrutura de PDV e quiosque ou com a de agregadores |
-
-Com a v2:
-
-- Você envia o mesmo corpo que já monta; o Fire reconhece o tipo de pedido pelo `channel.uid`.
-- Você se autentica com a sua API key do Fire, associada ao seu vendor.
-- A resposta traz o `id` do pedido no Fire, que você usa para consultá-lo, atualizá-lo ou cancelá-lo.
-
-## Tratamento de erros
-
-| Status | Significado |
-|---|---|
-| `400` | Payload inválido — verifique os campos obrigatórios |
-| `404` | `channel_id` desconhecido — re-obtenha os canais |
-| `409` | `external_order_id` duplicado — o pedido já existe |
-| `5xx` | Erro do lado do Fire — refaça a chamada com backoff exponencial |
+A chave de duplicados é `orderId` + `store.vendorId`. Reenviar um pedido que já entrou responde
+`409` `DUPLICATE_ORDER` com o `id` do existente: trate-o como ingerido, não como erro.
 
 <Warning>
-  Não envie o mesmo pedido duas vezes com o mesmo `external_order_id`. O Fire rejeitará duplicatas com um `409`.
+  Um `400` de validação é corrigido e reenviado com o mesmo `orderId`; uma retentativa idêntica
+  falha do mesmo jeito. Um `500`, um `503` ou um `400` cujo `message` começa por `Failed to` é
+  reenviado com backoff: se o pedido já tinha entrado, a resposta é `409`.
 </Warning>
+
+## Referências
+
+<CardGroup cols={2}>
+  <Card title="Injetar pedido (parceiros)" icon="plus" href="/pt/api-reference/inject-order-partners">
+    Campo a campo, com os exemplos do Brasil: modificadores, pagamentos, impostos.
+  </Card>
+  <Card title="Criar pedido (v1)" icon="code" href="/pt/api-reference/create-order">
+    O mesmo corpo, fora do adapter de parceiros.
+  </Card>
+  <Card title="Criar pedido (v2)" icon="code-branch" href="/pt/api-reference/create-order-v2">
+    Estrutura de PDV e quiosque ou de agregadores.
+  </Card>
+  <Card title="Injetar pedido" icon="truck" href="/pt/api-reference/orders">
+    A integração de agregadores.
+  </Card>
+  <Card title="Confirmar pagamento" icon="credit-card" href="/pt/api-reference/confirm-payment">
+    Fecha um pedido que nasceu com o pagamento pendente.
+  </Card>
+  <Card title="Notificações de status de pedido" icon="bell" href="/pt/guides/order-status">
+    Quais eventos você recebe depois de injetar.
+  </Card>
+</CardGroup>

@@ -1,100 +1,105 @@
 ---
 title: "Order injection"
-description: "Inject orders into Fire via the API."
+description: "Which endpoint your system uses to inject orders into Fire, how the flow works, and what to check before certifying."
 ---
 
-Your system can inject orders into Fire using the Orders API. Fire then manages the order lifecycle and sends status updates back via webhooks.
+Your system injects orders into Fire through the REST API. Fire validates the order, stores it in
+the store's open business day, fills in what is missing (in Brazil, the taxes) and notifies you of
+status changes with [events](/en/events/overview).
 
 <Note>
   Injection is the same with or without the fiscal gateway. With the gateway, the till requests the numbers before injecting. See [How fiscal works in Fire](/en/fiscal/overview).
 </Note>
 
+## Which endpoint to use
+
+There are four entry points and all of them end in the same core: same validations, same business
+day, same events. Choose by the format your system already builds.
+
+| Your system | Endpoint | Reference |
+|---|---|---|
+| Partner that sends orders in Fire format and resolves the store by `store.code` + `store.vendorId` (X-MART Gateway, kiosks and tills in Brazil) | `POST /api/v1/adapters/xmart/stores/orders` | [Inject order (partners)](/en/api-reference/inject-order-partners) |
+| Your own system sending orders in Fire format with its API key | `POST /api/v1/external/orders` | [Create order (v1)](/en/api-reference/create-order) |
+| Till, kiosk or integrator sending the POS and kiosk structure or the aggregator structure | `POST /api/v2/external/orders` | [Create order (v2)](/en/api-reference/create-order-v2) |
+| Aggregator (iFood, Rappi, Keeta…) through the aggregator integration | `POST /api/v4/integrations/sales/aggregator/orders` | [Inject order](/en/api-reference/orders) |
+
+The rest of this guide uses the partners endpoint as the example; the rules apply to all of them.
+
 ## Flow
 
-```
-Your system receives an order → Your system injects it into Fire → Fire confirms
-```
+1. Your system charges, or leaves the payment pending, and builds the order with store, channel,
+   service, products and payments.
+2. You send the order to the endpoint with your API key in the `x-api-key` header.
+3. Fire looks up the store, checks that it is active and has an open business day, resolves channel
+   and service, and runs the validation rules enabled for your vendor.
+4. In Brazil, Fire calculates the taxes of every line with the store's fiscal group and the
+   catalog's NCM.
+5. Fire stores the order and responds `201` with `data.id`. Keep it: it is the id you later use to
+   read the order, [confirm the payment](/en/api-reference/confirm-payment) or
+   [cancel it](/en/api-reference/cancel-order-partners).
+6. Fire emits [`order.completed`](/en/events/order-completed) if every payment came `APPROVED`,
+   or [`order.opened`](/en/events/order-opened) if the order was born open. Later changes arrive
+   as events: see [Order status notifications](/en/guides/order-status).
 
-## Injecting an order
+## What fails most often in a certification
 
-```http
-POST /v1/orders
-Authorization: Bearer <your_api_key>
-Content-Type: application/json
-```
+Five points account for almost every rejection and unbalanced order. Check them before sending the
+first order.
 
-```json
-{
-  "channel_id": "channel_abc123",
-  "external_order_id": "uber_order_9876",
-  "customer": {
-    "name": "Jane Doe",
-    "phone": "+1555000111"
-  },
-  "items": [
-    {
-      "product_id": "prod_001",
-      "quantity": 2,
-      "unit_price": 1200,
-      "modifiers": []
-    }
-  ],
-  "delivery": {
-    "type": "delivery",
-    "address": "123 Main St"
-  },
-  "total": 2400
-}
-```
+1. **Store and vendor.** Fire looks up the store by `store.code` + `store.vendorId`. `store.id`
+   is stored as a reference but not used for the lookup: make it point to the same store as
+   `store.code`. An inactive store, or one with a closed business day, rejects the order with
+   `400`.
+2. **Channel and service.** `channel.code` and `service.code` must match the ones configured for
+   your vendor, spelled the same way (`KIOSK`, not `Kiosk`). A code Fire does not recognize does
+   not reject the order, but leaves it without a channel and without its payment and printing
+   policy.
+3. **Modifiers with quantity.** If the parent product carries `quantity: 2`, every modifier
+   carries `quantity: 2` and `totalPrice.total = unitPrice.total × 2`. The sum of
+   `totalPrice.total` across products and modifiers is the order total; if it does not add up,
+   `ORDER_NOT_BALANCED`.
+4. **Sum of payments.** The sum of `paymentMethods[].totalBill` equals
+   `payments.totals[0].total`. Discounts go in `payments.discounts[]` and the total already
+   reflects them.
+5. **Taxes in Brazil.** Do not send them: Fire calculates them with the store's fiscal group and
+   the catalog's NCM. Before the first order, confirm that the store belongs to a fiscal group and
+   that every product has a fiscal category. If you send `taxes[]` or `payments.metadata.fiscal`,
+   Fire keeps your taxes and calculates nothing.
 
-{/* TODO: Insert complete order payload schema once confirmed by Fire team */}
+Each point is developed, with examples, in
+[Inject order (partners)](/en/api-reference/inject-order-partners).
 
-### Required fields
+## Duplicates and retries
 
-| Field | Description |
-|---|---|
-| `channel_id` | The Fire sales channel ID (from publication webhooks such as [`channel.updated`](/en/webhook-reference/channel-updated) or [Aggregator integrations](/en/configuration/backoffice-integrations)) |
-| `external_order_id` | Your own order ID — used to correlate status updates |
-| `items` | Array of ordered products with quantities and prices |
-
-### Response
-
-```json
-{
-  "id": "fire_order_abc",
-  "external_order_id": "uber_order_9876",
-  "status": "received",
-  "created_at": "2025-01-15T14:30:00Z"
-}
-```
-
-Store the `id` returned by Fire to correlate future `order.status_changed` events.
-
-## Create order: v1 and v2
-
-Creating an order has **two current versions**, depending on the format your system sends. Both end
-up in the same place: same validations, same response.
-
-| Version | Endpoint | Use it if your system sends |
-|---|---|---|
-| [v1](/en/api-reference/create-order) | `POST /api/v1/fire/external/orders` | Orders in Fire format (the body of this guide) |
-| [v2](/en/api-reference/create-order-v2) | `POST /api/v2/external/orders` | Orders with the POS and kiosk structure or the aggregator structure |
-
-With v2:
-
-- You send the same body you already build; Fire recognizes the kind of order from `channel.uid`.
-- You authenticate with your Fire API key, bound to your vendor.
-- The response carries the order's `id` in Fire, which you use to read, update, or cancel it.
-
-## Error handling
-
-| Status | Meaning |
-|---|---|
-| `400` | Invalid payload — check required fields |
-| `404` | Unknown `channel_id` — re-fetch channels |
-| `409` | Duplicate `external_order_id` — order already exists |
-| `5xx` | Fire-side error — retry with exponential backoff |
+The duplicate key is `orderId` + `store.vendorId`. Resending an order that already went in
+responds `409` `DUPLICATE_ORDER` with the existing order's `id`: treat it as ingested, not as an
+error.
 
 <Warning>
-  Do not send the same order twice with the same `external_order_id`. Fire will reject duplicates with a `409`.
+  A validation `400` is fixed and resent with the same `orderId`; an identical retry fails the same
+  way. A `500`, a `503` or a `400` whose `message` starts with `Failed to` is retried with
+  backoff: if the order had already gone in, the response is `409`.
 </Warning>
+
+## References
+
+<CardGroup cols={2}>
+  <Card title="Inject order (partners)" icon="plus" href="/en/api-reference/inject-order-partners">
+    Field by field, with the Brazil examples: modifiers, payments, taxes.
+  </Card>
+  <Card title="Create order (v1)" icon="code" href="/en/api-reference/create-order">
+    The same body, outside the partners adapter.
+  </Card>
+  <Card title="Create order (v2)" icon="code-branch" href="/en/api-reference/create-order-v2">
+    POS and kiosk structure or aggregator structure.
+  </Card>
+  <Card title="Inject order" icon="truck" href="/en/api-reference/orders">
+    The aggregator integration.
+  </Card>
+  <Card title="Confirm payment" icon="credit-card" href="/en/api-reference/confirm-payment">
+    Closes an order that was born with the payment pending.
+  </Card>
+  <Card title="Order status notifications" icon="bell" href="/en/guides/order-status">
+    Which events you receive after injecting.
+  </Card>
+</CardGroup>
