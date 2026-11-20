@@ -78,8 +78,11 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
                   Só em `CASH`. `null` nos demais meios.
                   <Expandable title="cash">
                     <ResponseField name="receivedFromCustomers" type="number">Dinheiro entregue pelos clientes.</ResponseField>
-                    <ResponseField name="changeGiven" type="number">Troco devolvido. O `changeAmount` que o seu POS enviou ou, se não enviou, `max(0, entregue − cobrado)`.</ResponseField>
+                    <ResponseField name="changeGiven" type="number">Troco devolvido **em dinheiro, da gaveta**. Parte do troco dos pedidos (o `changeAmount` que o seu POS enviou ou, se não enviou, `max(0, entregue − cobrado)`) e subtrai o troco dado fora do caixa no dia, com piso 0. Nos dias fechados antes de existir o troco fora do caixa é o troco total dos pedidos.</ResponseField>
                     <ResponseField name="paymentsWithoutReceived" type="integer">Pagamentos em dinheiro que chegaram sem o valor entregue. **Não** estão nas duas somas acima.</ResponseField>
+                    <ResponseField name="changeOutsideDrawer" type="object | null">
+                      Troco do dia dado ao cliente **por um meio fora do caixa** (por exemplo, Pago Móvil) em vez de dinheiro: `amount`, `count` (vendas com esse troco) e `byProcessor[]` com `method` (em maiúscula: `DIGITAL`), `processor` (como está configurado na sua conta: `pago_movil`), `name`, `amount` e `count`. Mesma forma que `shifts[].changeOutsideDrawer`. `null` se não houve e nos dias fechados antes deste campo. Quais processadores contam é configurado no seu catálogo de meios de pagamento com a caixa de seleção **"Serve para dar troco"**.
+                    </ResponseField>
                   </Expandable>
                 </ResponseField>
                 <ResponseField name="processors" type="object[] | null">
@@ -116,7 +119,10 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
                 <ResponseField name="openingBalance" type="number | null">Fundo de troco. Na v2 entra em `systemCash`. Na v1 é informativo: pode vir ou não, e **não** entra em `systemCash`.</ResponseField>
                 <ResponseField name="expectedCashSales" type="number">Dinheiro recebido durante o turno.</ResponseField>
                 <ResponseField name="withdrawalsTotal" type="number">Dinheiro retirado (sangrias) durante o turno. Sempre `0` em v1.</ResponseField>
-                <ResponseField name="systemCash" type="number">O que deveria haver na gaveta. v2: fundo + recebido − sangrias. v1: recebido.</ResponseField>
+                <ResponseField name="changeOutsideDrawer" type="object | null">
+                  Troco dado durante o turno **por um meio fora do caixa** (por exemplo, Pago Móvil): `{ amount, count, byProcessor: [{ method, processor, name, amount, count }] }`. O Fire registra a venda em dinheiro líquida do troco, mas esse dinheiro ficou na gaveta, então entra em `systemCash`. `null` se o turno não teve, em v1 e em turnos reportados antes deste campo.
+                </ResponseField>
+                <ResponseField name="systemCash" type="number">O que deveria haver na gaveta. v2: fundo + recebido + troco fora do caixa − sangrias. v1: recebido.</ResponseField>
                 <ResponseField name="declaredCash" type="number">O que foi contado. v2: a gaveta inteira, com o fundo. v1: líquido, sem o fundo.</ResponseField>
                 <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negativo = falta.</ResponseField>
                 <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` ou `OVERAGE`.</ResponseField>
@@ -172,7 +178,7 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
             },
             {
               "method": "CASH", "name": "Dinheiro", "count": 120, "total": 4850.00, "percentage": 37.8,
-              "cash": { "receivedFromCustomers": 5462.40, "changeGiven": 612.40, "paymentsWithoutReceived": 0 },
+              "cash": { "receivedFromCustomers": 5462.40, "changeGiven": 612.40, "paymentsWithoutReceived": 0, "changeOutsideDrawer": null },
               "processors": [ { "processor": null, "name": null, "count": 120, "total": 4850.00, "brands": [] } ]
             },
             {
@@ -200,6 +206,7 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
               "openingBalance": 200.00,
               "expectedCashSales": 2600.00,
               "withdrawalsTotal": 1500.00,
+              "changeOutsideDrawer": null,
               "systemCash": 1300.00,
               "declaredCash": 1295.00,
               "discrepancy": -5.00,
@@ -238,6 +245,25 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
 - **`summary.expectedCashSales` e os turnos não precisam somar igual.** O do dia é o dinheiro recebido no dia; o de cada turno, o que o Fire atribuiu a esse operador nessa faixa. Operadores que não fecharam, ou um turno reportado sem operador, fazem com que difiram.
 - **Leia `declaredCash` junto com `apiVersion`.** Um turno v2 conta a gaveta inteira, com o fundo; um turno v1 conta líquido, sem o fundo. `discrepancy` significa o mesmo nos dois.
 - **Uma bandeira que falta não é escondida.** Se o seu POS envia `card.brand` vazio, esses pagamentos aparecem em `brand: null`.
+- **O troco dado fora do caixa faz parte do esperado.** Quando um operador dá o troco por um meio configurado para isso (por exemplo, Pago Móvil), `expectedCashSales` fica líquido desse troco e o turno o traz em `changeOutsideDrawer`:
+
+  ```json
+  {
+    "openingBalance": 50.00,
+    "expectedCashSales": 840.00,
+    "withdrawalsTotal": 200.00,
+    "changeOutsideDrawer": {
+      "amount": 35.50,
+      "count": 4,
+      "byProcessor": [
+        { "method": "DIGITAL", "processor": "pago_movil", "name": "Pago Móvil", "amount": 35.50, "count": 4 }
+      ]
+    },
+    "systemCash": 725.50
+  }
+  ```
+
+  `systemCash` = 50.00 + 840.00 + 35.50 − 200.00 = 725.50. No nível do dia, `changeGiven` é só o troco em dinheiro e o resto está em `payments.byMethod[CASH].cash.changeOutsideDrawer`.
 
 ## Dias fechados antes deste contrato
 
@@ -247,6 +273,7 @@ O que um fechamento não guardou, não aparece depois. O Fire **não** reconstr�
 - Os dias fechados antes de se guardarem as bandeiras e o dinheiro entregue voltam com `brands: null` e `cash: null`.
 - Os turnos v1 voltam com `withdrawalsTotal: 0`, e `openingBalance` só se o POS o enviou (informativo).
 - Os dias sem resumo de caixa voltam com `unreconciledOperators: null`.
+- Os turnos reportados antes de existir o troco fora do caixa voltam com `changeOutsideDrawer: null`. Os dias fechados antes voltam com `payments.byMethod[CASH].cash.changeOutsideDrawer: null`, e seu `changeGiven` é o troco total dos pedidos.
 
 ## Erros
 
@@ -264,3 +291,4 @@ O que um fechamento não guardou, não aparece depois. O Fire **não** reconstr�
 
 - [Conciliações de caixa (v2)](/pt/api-reference/cash-reconciliations-v2) — como entra cada fechamento de turno.
 - [`store.business_day_closed`](/pt/events/store-day-closed) — o evento que avisa que um dia fechou.
+- [`store.register_closed`](/pt/events/store-register-closed) — o evento com a conferência de cada caixa ao fechar, com os mesmos nomes que `shifts[]`.

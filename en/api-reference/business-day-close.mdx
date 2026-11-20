@@ -78,8 +78,11 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
                   Only on `CASH`. `null` on every other method.
                   <Expandable title="cash">
                     <ResponseField name="receivedFromCustomers" type="number">Cash the customers handed over.</ResponseField>
-                    <ResponseField name="changeGiven" type="number">Change given back. The `changeAmount` your POS sent or, when it did not, `max(0, handed over − charged)`.</ResponseField>
+                    <ResponseField name="changeGiven" type="number">Change given back **in cash, from the drawer**. It starts from the orders' change (the `changeAmount` your POS sent or, when it did not, `max(0, handed over − charged)`) and subtracts the day's change given outside the drawer, with a floor of 0. On days closed before change outside the drawer existed it is the orders' total change.</ResponseField>
                     <ResponseField name="paymentsWithoutReceived" type="integer">Cash payments that came without the amount handed over. They are **not** in the two sums above.</ResponseField>
+                    <ResponseField name="changeOutsideDrawer" type="object | null">
+                      Change of the day handed to customers **through a payment method outside the drawer** (for example, Pago Móvil) instead of cash: `amount`, `count` (sales with that change) and `byProcessor[]` with `method` (uppercase: `DIGITAL`), `processor` (as configured in your account: `pago_movil`), `name`, `amount` and `count`. Same shape as `shifts[].changeOutsideDrawer`. `null` when there was none and on days closed before this field. Which processors count is set in your payment method catalog with the **"Used for change"** checkbox.
+                    </ResponseField>
                   </Expandable>
                 </ResponseField>
                 <ResponseField name="processors" type="object[] | null">
@@ -116,7 +119,10 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
                 <ResponseField name="openingBalance" type="number | null">Opening float. On v2 it is part of `systemCash`. On v1 it is informational: it may come or not, and it is **not** part of `systemCash`.</ResponseField>
                 <ResponseField name="expectedCashSales" type="number">Cash charged during the shift.</ResponseField>
                 <ResponseField name="withdrawalsTotal" type="number">Cash taken out during the shift. Always `0` on v1.</ResponseField>
-                <ResponseField name="systemCash" type="number">What should be in the drawer. v2: float + cash sales − withdrawals. v1: cash sales.</ResponseField>
+                <ResponseField name="changeOutsideDrawer" type="object | null">
+                  Change handed out during the shift **through a payment method outside the drawer** (for example, Pago Móvil): `{ amount, count, byProcessor: [{ method, processor, name, amount, count }] }`. Fire records the cash sale net of the change, but that cash stayed in the drawer, so it is part of `systemCash`. `null` when the shift had none, on v1 and on shifts reported before this field.
+                </ResponseField>
+                <ResponseField name="systemCash" type="number">What should be in the drawer. v2: float + cash sales + change outside the drawer − withdrawals. v1: cash sales.</ResponseField>
                 <ResponseField name="declaredCash" type="number">What was counted. v2: the whole drawer, float included. v1: net of the float.</ResponseField>
                 <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negative = shortage.</ResponseField>
                 <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` or `OVERAGE`.</ResponseField>
@@ -172,7 +178,7 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
             },
             {
               "method": "CASH", "name": "Dinheiro", "count": 120, "total": 4850.00, "percentage": 37.8,
-              "cash": { "receivedFromCustomers": 5462.40, "changeGiven": 612.40, "paymentsWithoutReceived": 0 },
+              "cash": { "receivedFromCustomers": 5462.40, "changeGiven": 612.40, "paymentsWithoutReceived": 0, "changeOutsideDrawer": null },
               "processors": [ { "processor": null, "name": null, "count": 120, "total": 4850.00, "brands": [] } ]
             },
             {
@@ -200,6 +206,7 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
               "openingBalance": 200.00,
               "expectedCashSales": 2600.00,
               "withdrawalsTotal": 1500.00,
+              "changeOutsideDrawer": null,
               "systemCash": 1300.00,
               "declaredCash": 1295.00,
               "discrepancy": -5.00,
@@ -238,6 +245,25 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
 - **`summary.expectedCashSales` and the shifts do not have to add up.** The day's figure is the cash charged in the day; each shift's is the cash Fire attributed to that cashier and time window. Cashiers who did not close their shift, or a shift reported without a cashier, make them differ.
 - **Read `declaredCash` with `apiVersion`.** A v2 shift counts the whole drawer, float included; a v1 shift counts net of the float. `discrepancy` means the same thing in both.
 - **A missing card brand is not hidden.** If your POS sends `card.brand` empty, those payments show under `brand: null`.
+- **Change given outside the drawer is part of what is expected.** When a cashier gives change through a method configured for it (for example, Pago Móvil), `expectedCashSales` stays net of that change, and the shift brings it in `changeOutsideDrawer`:
+
+  ```json
+  {
+    "openingBalance": 50.00,
+    "expectedCashSales": 840.00,
+    "withdrawalsTotal": 200.00,
+    "changeOutsideDrawer": {
+      "amount": 35.50,
+      "count": 4,
+      "byProcessor": [
+        { "method": "DIGITAL", "processor": "pago_movil", "name": "Pago Móvil", "amount": 35.50, "count": 4 }
+      ]
+    },
+    "systemCash": 725.50
+  }
+  ```
+
+  `systemCash` = 50.00 + 840.00 + 35.50 − 200.00 = 725.50. At day level, `changeGiven` is only the change given in cash and the rest is in `payments.byMethod[CASH].cash.changeOutsideDrawer`.
 
 ## Days closed before this contract
 
@@ -247,6 +273,7 @@ What a close did not store, it does not show later. Fire does **not** rebuild it
 - Days closed before card brands and cash handed over were recorded come back with `brands: null` and `cash: null`.
 - v1 shifts come back with `withdrawalsTotal: 0`, and `openingBalance` only when the POS sent it (informational).
 - Days without a cash summary come back with `unreconciledOperators: null`.
+- Shifts reported before change outside the drawer existed come back with `changeOutsideDrawer: null`. Days closed before it come back with `payments.byMethod[CASH].cash.changeOutsideDrawer: null`, and their `changeGiven` is the orders' total change.
 
 ## Errors
 
@@ -264,3 +291,4 @@ What a close did not store, it does not show later. Fire does **not** rebuild it
 
 - [Cash reconciliations (v2)](/en/api-reference/cash-reconciliations-v2) — how each shift close gets in.
 - [`store.business_day_closed`](/en/events/store-day-closed) — the event that tells you a day closed.
+- [`store.register_closed`](/en/events/store-register-closed) — the event with each register's cash count as it closes, with the same names as `shifts[]`.
