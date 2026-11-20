@@ -22,7 +22,7 @@ Una sola cosa, y no es un campo nuevo: **cambia quién hace la cuenta**.
 |  | v1 | v2 |
 |---|---|---|
 | `declaredCash` | **neto** — el POS resta el fondo antes de mandar | **bruto** — la plata contada en el cajón, fondo incluido |
-| `systemCash` | ventas en efectivo | fondo + ventas en efectivo − retiros |
+| `systemCash` | ventas en efectivo | fondo + ventas en efectivo + vuelto fuera de caja − retiros |
 | Retiros del turno | no hay dónde declararlos | `withdrawals[]`, con categoría y autorizante |
 
 `discrepancy` es la misma resta en las dos versiones: `declaredCash − systemCash`. Bajo v2 el fondo está a los dos lados, así que la diferencia significa exactamente lo mismo y una fila v1 y una v2 se comparan sin convertir nada.
@@ -124,6 +124,26 @@ Y la otra, que es la que sorprende: **un turno se cierra una sola vez**, sin imp
     </ParamField>
     <ParamField body="notes" type="string">
       Hasta 500 caracteres. **Obligatorio cuando `category` es `OTHER`.**
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="changeOutsideDrawer" type="object | null">
+  Vuelto que el cajero entregó durante el turno **por un medio fuera de la caja** — por ejemplo, Pago Móvil — en vez de billetes del cajón. Opcional: no lo mandes (o manda `null`) si no hubo.
+
+  Fire registra la venta en efectivo neta del vuelto, pero ese efectivo quedó en el cajón, así que este monto se **suma** a `systemCash`. Sin él, cada turno que dio vuelto así muestra un sobrante falso de exactamente ese vuelto.
+
+  Fire POS lo llena solo; mándalo si tu POS entrega vuelto por otro medio de pago. El detalle del turno queda en `details.change_outside_drawer` y vuelve en [Cierre de día](/es/api-reference/business-day-close) como `shifts[].changeOutsideDrawer`.
+
+  <Expandable title="campos de changeOutsideDrawer">
+    <ParamField body="amount" type="number" required>
+      Total del vuelto entregado fuera de caja. No negativo, con 2 decimales como máximo. Cuando `byProcessor` trae entradas, Fire usa su suma.
+    </ParamField>
+    <ParamField body="count" type="integer" required>
+      Ventas con vuelto fuera de caja.
+    </ParamField>
+    <ParamField body="byProcessor" type="array">
+      Detalle por medio y procesador, hasta 50 entradas. Cada una: `method` (ej. `DIGITAL`), `processor` (ej. `pago_movil`), `name` (ej. `Pago Móvil`), `amount` (no negativo, 2 decimales como máximo) y `count`. Las entradas con `amount: 0` se descartan.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -259,7 +279,7 @@ Los mismos que v1, más estos:
 </ResponseField>
 
 <ResponseField name="systemCash" type="number">
-  Lo que Fire calculó que debería haber en el cajón: `openingBalance + ventas en efectivo − withdrawalsTotal`.
+  Lo que Fire calculó que debería haber en el cajón: `openingBalance + ventas en efectivo + changeOutsideDrawer.amount − withdrawalsTotal`.
 </ResponseField>
 
 <ResponseField name="discrepancy" type="number">

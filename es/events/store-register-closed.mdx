@@ -1,0 +1,249 @@
+---
+title: "store.register_closed"
+description: "Se cerró una caja — el cuadre completo del turno: fondo, ventas en efectivo, vuelto entregado fuera de caja, retiros, lo contado y la diferencia."
+---
+
+`store.register_closed` dispara cada vez que se cierra una caja de Fire POS. A diferencia de [`store.business_day_closed`](/es/events/store-day-closed), **no** es un evento thin: lleva el **cuadre completo del turno** — fondo inicial, ventas en efectivo, vuelto entregado fuera de caja, retiros, lo contado, la diferencia y su motivo — así que no necesitas consultar nada más para registrarlo.
+
+Es un evento **a nivel tienda**: uno por cierre de caja, no uno por orden. Una caja cobra de todos los canales, así que el evento no lleva canal.
+
+## Condición de disparo
+
+Fire emite `store.register_closed` cuando se cierra una caja por cualquiera de las dos vías:
+
+| Quién cierra | Dónde | `closedBy.type` |
+|---|---|---|
+| El cajero | Desde el POS, al cerrar la caja | `cashier` |
+| Un encargado | Desde el Backoffice: **Terminales › Cerrar caja manualmente** | `admin` |
+
+**Los cierres forzados no lo emiten.** Cuando se revoca o se borra una terminal, Fire cierra su sesión abierta sin que nadie cuente el cajón: no hay cuadre que reportar.
+
+| | |
+|---|---|
+| Cobertura | **Universal** — todos los países con Fire POS. |
+| Llave de idempotencia | `data.registerSessionId` — ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado) |
+| Dispara más de una vez | No, salvo reintentos. Un evento por sesión de caja. |
+| Latencia respecto al cierre | Se encola apenas se guarda el cierre. El cierre nunca espera al evento ni falla por él. |
+
+## Qué hay en `data`
+
+La sesión de caja (`registerSessionId`), el día de negocio al que pertenece, el timing, quién la cerró, el cajero y la terminal, el cuadre `cash` y una ref mínima de `store`.
+
+**`cash` usa los mismos nombres que `cash.shifts[]` de [Cierre de día](/es/api-reference/business-day-close)** — `openingBalance`, `expectedCashSales`, `withdrawalsTotal`, `changeOutsideDrawer`, `systemCash`, `declaredCash`, `discrepancy`, `discrepancyType`, `reason`, `notes`, `authorization`, `withdrawals` — así cruzas el evento y la API campo por campo. `registerSessionId` es el `shifts[].sessionExternalId` de esa misma caja en la API.
+
+Todos los montos de `cash` van **en decimales, en la moneda de la tienda** (`cash.currency`): `725.50`, no `72550`.
+
+## Ejemplo — payload
+
+```json
+{
+  "event": {
+    "id": "8d2f4a61-9c3e-4b7a-a1d0-5e6f7a8b9c0d",
+    "type": "store.register_closed",
+    "emittedAt": "2026-11-19T20:05:31.540Z",
+    "createdAt": "2026-11-19T20:05:32.118Z"
+  },
+  "data": {
+    "registerSessionId": "5b0e8a3c-7d21-4f6a-9c1e-2a7b9d3e4f50",
+    "businessDayDate": "2026-11-19",
+    "timezone": "America/Caracas",
+    "openedAt": "2026-11-19T12:00:00.000Z",
+    "closedAt": "2026-11-19T20:05:31.204Z",
+    "postClose": false,
+    "closedBy": { "type": "cashier", "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "VE-K000-POS-01" },
+    "cash": {
+      "currency": "USD",
+      "openingBalance": 50.00,
+      "expectedCashSales": 840.00,
+      "withdrawalsTotal": 200.00,
+      "changeOutsideDrawer": {
+        "amount": 35.50,
+        "count": 4,
+        "byProcessor": [
+          { "method": "DIGITAL", "processor": "pago_movil", "name": "Pago Móvil", "amount": 35.50, "count": 4 }
+        ]
+      },
+      "systemCash": 725.50,
+      "declaredCash": 725.50,
+      "discrepancy": 0.00,
+      "discrepancyType": "MATCH",
+      "reason": "OTHER",
+      "notes": "Sin discrepancia",
+      "authorization": null,
+      "withdrawals": [
+        {
+          "amount": 200.00,
+          "category": "BANK_DEPOSIT",
+          "withdrawnAt": "2026-11-19T16:30:00.000Z",
+          "authorizer": { "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "name": "Luis Gómez" },
+          "notes": null
+        }
+      ]
+    },
+    "store": {
+      "uid": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+      "code": "K000",
+      "externalId": null,
+      "countryCode": "VE",
+      "timezone": "America/Caracas",
+      "currencyCode": "USD"
+    }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "flowName": "...", "attempt": 0, "triggerEntityId": "5b0e8a3c-7d21-4f6a-9c1e-2a7b9d3e4f50" }
+}
+```
+
+El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de eventos](/es/events/overview).
+
+## Evento vs. Cierre de día
+
+`cash` y una entrada de `cash.shifts[]` de [Cierre de día](/es/api-reference/business-day-close) comparten los nombres, y estos identificadores son la misma caja:
+
+| Evento | API (`shifts[]`) |
+|---|---|
+| `registerSessionId` | `sessionExternalId` |
+| `terminal.uid` | `terminalUid` |
+| `openedAt` / `closedAt` | `shiftStart` / `shiftEnd` |
+
+<Note>
+  **Algunos valores pueden diferir entre los dos.** En el evento, `systemCash` y `expectedCashSales` son los valores que quedaron al cerrar la caja — lo que vio quien cerró. En la API son los que recalculó la conciliación. `postClose` se calcula al emitir el evento; en la API, al registrar la conciliación. Y `authorization` significa algo distinto en cada uno (ver el campo más abajo).
+</Note>
+
+## Referencia de `data.*`
+
+### Identidad y temporal
+
+<ResponseField name="registerSessionId" type="string">
+  UUID de la sesión de caja que se cerró. También viene como `_meta.triggerEntityId`. Úsalo como llave de idempotencia de tu lado. Es el mismo valor que `cash.shifts[].sessionExternalId` en [Cierre de día](/es/api-reference/business-day-close).
+</ResponseField>
+<ResponseField name="businessDayDate" type="string | null">
+  Día de negocio en que se **abrió** la caja (`YYYY-MM-DD`, calendario local de la tienda) — no el día en que cerró. Una caja que quedó abierta y se cierra a la mañana siguiente conserva el día anterior, que puede estar ya cerrado: ver `postClose`. `null` solo en sesiones abiertas antes de que Fire registrara esta fecha.
+</ResponseField>
+<ResponseField name="timezone" type="string | null">
+  Timezone IANA de la tienda, como en `store.business_day_closed`.
+</ResponseField>
+<ResponseField name="openedAt" type="string">
+  Timestamp ISO 8601 UTC en que se abrió la caja.
+</ResponseField>
+<ResponseField name="closedAt" type="string">
+  Timestamp ISO 8601 UTC en que se cerró la caja.
+</ResponseField>
+<ResponseField name="postClose" type="boolean">
+  `true` cuando la caja cerró con su `businessDayDate` ya cerrado. La misma regla que `shifts[].postClose` en [Cierre de día](/es/api-reference/business-day-close).
+</ResponseField>
+
+### `closedBy`, `operator`, `terminal`
+
+<ResponseField name="closedBy" type="object">
+  Quién cerró la caja.
+
+  <Expandable title="closedBy">
+    <ResponseField name="type" type="string">
+      `cashier` — la cerró el cajero desde el POS; `uid` es el mismo que `operator.uid`. `admin` — la cerró a mano un usuario del Backoffice.
+    </ResponseField>
+    <ResponseField name="uid" type="string | null">Id del usuario que la cerró.</ResponseField>
+    <ResponseField name="name" type="string | null">Nombre para mostrar.</ResponseField>
+  </Expandable>
+</ResponseField>
+<ResponseField name="operator" type="object">
+  El cajero de la sesión, sea cual sea la vía de cierre: `uid` y `name` (`string | null`).
+</ResponseField>
+<ResponseField name="terminal" type="object">
+  La terminal de la caja: `uid` y `name` (`string | null`).
+</ResponseField>
+
+### `cash` — el cuadre del turno
+
+<ResponseField name="cash" type="object">
+  Los mismos nombres que `cash.shifts[]` en [Cierre de día](/es/api-reference/business-day-close). Todos los montos son decimales en `currency`.
+
+  <Expandable title="cash">
+    <ResponseField name="currency" type="string">Código ISO 4217 de todos los montos de `cash` — la moneda de la tienda.</ResponseField>
+    <ResponseField name="openingBalance" type="number">Fondo con que se abrió la caja.</ResponseField>
+    <ResponseField name="expectedCashSales" type="number">Ventas en efectivo del turno según Fire, netas del vuelto.</ResponseField>
+    <ResponseField name="withdrawalsTotal" type="number">Suma de `withdrawals[].amount`.</ResponseField>
+    <ResponseField name="changeOutsideDrawer" type="object | null">
+      Vuelto entregado al cliente **por un medio fuera de la caja** — por ejemplo, Pago Móvil — en vez de billetes del cajón. Fire registra la venta en efectivo neta del vuelto, pero ese efectivo quedó en el cajón, así que se suma a `systemCash`. `null` si no hubo, igual que `shifts[].changeOutsideDrawer` de la API.
+
+      Qué medios cuentan se configura por procesador en el catálogo de medios de pago de tu cuenta, con la casilla **"Sirve para dar vuelto"**.
+
+      <Expandable title="changeOutsideDrawer">
+        <ResponseField name="amount" type="number">Total del vuelto entregado fuera de caja en el turno.</ResponseField>
+        <ResponseField name="count" type="integer">Ventas con vuelto fuera de caja.</ResponseField>
+        <ResponseField name="byProcessor" type="object[]">
+          Una entrada por medio y procesador: `method` (en mayúscula, como en las órdenes: `DIGITAL`), `processor` (tal como está configurado en tu cuenta: `pago_movil`), `name`, `amount` y `count`.
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+    <ResponseField name="systemCash" type="number">
+      Lo que debería haber en el cajón: `openingBalance + expectedCashSales + changeOutsideDrawer.amount − withdrawalsTotal` (`0` si `changeOutsideDrawer` es `null`), tal como quedó al cerrar la caja.
+    </ResponseField>
+    <ResponseField name="declaredCash" type="number">Lo contado en el cajón, con el fondo adentro.</ResponseField>
+    <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negativo = faltante.</ResponseField>
+    <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` u `OVERAGE` — los mismos valores que la API.</ResponseField>
+    <ResponseField name="reason" type="string | null">
+      Motivo de la diferencia: `WRONG_CHANGE_GIVEN`, `COUNTING_ERROR`, `INCOMPLETE_CUSTOMER_PAYMENT`, `MINOR_UNIDENTIFIED_DIFFERENCE`, `THEFT_SUSPECTED`, `UNRECORDED_PAYMENT` u `OTHER`. En el POS sale del código de autorización que aprobó el faltante, y es `OTHER` si no hubo. En el Backoffice es el que eligió quien cerró.
+    </ResponseField>
+    <ResponseField name="notes" type="string | null">Notas del cierre, tal cual — pueden ser `""` (por ejemplo, un código de autorización sin notas). `null` solo si no hay de dónde sacarlas. La misma regla que `shifts[].notes` en la API.</ResponseField>
+    <ResponseField name="authorization" type="object | null">
+      `approvedBy` (id del usuario que **generó el código** que autorizó el faltante) y `approvedAt` (cuándo **se usó** el código). `null` si no hubo autorización — siempre en los cierres desde el Backoffice. **No es lo mismo que `shifts[].authorization`** de la API, que trae quién reportó la conciliación (`terminal:<id>` o `user:<id>`) y la hora de la conciliación.
+    </ResponseField>
+    <ResponseField name="withdrawals" type="object[]">
+      Retiros del turno, con la misma forma que `shifts[].withdrawals[]`: `amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) y `notes`. `[]` si no hubo.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `store` — ref mínima de tienda
+
+<ResponseField name="store" type="object">
+  La misma referencia mínima que [`store.business_day_closed`](/es/events/store-day-closed#store-—-ref-mínima-de-tienda): `uid`, `code`, `externalId` (`null` si la tienda no tiene — nunca `""`), `countryCode`, `timezone` y `currencyCode`.
+</ResponseField>
+
+## Ejemplo de handler
+
+```js
+async function onRegisterClosed(data) {
+  const { registerSessionId, businessDayDate, postClose, closedBy, operator, cash, store } = data;
+
+  // 1. Idempotencia — saltar si ya registramos este cierre
+  const existing = await db.registerCloses.findUnique({ where: { registerSessionId } });
+  if (existing) return;
+
+  // 2. Registrar el cuadre. Todos los montos son decimales en cash.currency.
+  await db.registerCloses.create({
+    data: {
+      registerSessionId,
+      storeCode: store.code,
+      businessDayDate,          // el día en que se ABRIÓ la caja
+      lateForItsDay: postClose, // ese día ya estaba cerrado
+      closedByType: closedBy.type,
+      cashierUid: operator.uid,
+      currency: cash.currency,
+      expected: cash.systemCash,
+      counted: cash.declaredCash,
+      difference: cash.discrepancy,
+      changeOutsideDrawer: cash.changeOutsideDrawer?.amount ?? 0, // null si no hubo
+    },
+  });
+}
+```
+
+## Errores comunes
+
+- **`businessDayDate` es el día en que se abrió la caja, no el día en que cerró.** Una caja cerrada después de medianoche pertenece al día anterior. Si ese día ya estaba cerrado, `postClose` es `true`.
+- **`expectedCashSales` no incluye el vuelto entregado fuera de caja.** Suma `changeOutsideDrawer.amount` cuando no es `null` — o lee directamente `systemCash`, que ya lo trae.
+- **Los montos son decimales en `cash.currency`.** No vienen escalados ×100 ni ×10000 como otros montos de Fire.
+
+## Relacionados
+
+<CardGroup cols={2}>
+  <Card title="store.business_day_closed" icon="calendar-check" href="/es/events/store-day-closed">
+    Dispara una vez por tienda al cerrar el día de negocio.
+  </Card>
+  <Card title="Cierre de día" icon="cash-register" href="/es/api-reference/business-day-close">
+    Los cobros del día y el cuadre de cada turno, con los mismos nombres que `cash`.
+  </Card>
+</CardGroup>

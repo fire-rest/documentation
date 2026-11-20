@@ -78,10 +78,11 @@ El mismo hecho te puede llegar más de una vez, así que **tu endpoint debe ser 
 | `order.status_updated` | `data.orderId` + `data.source` + el cambio del carril (`kitchen.status`, `lifecycle.event` + `lifecycle.revision`, o `fiscal.sequence`) — ver [la página del evento](/es/events/order-status-updated) |
 | `store.updated` | `data.publication.id` |
 | `store.business_day_closed` | `data.businessDayId` |
+| `store.register_closed` | `data.registerSessionId` |
 | `menu.updated` | `data.groupId` + `data.menuSyncId` |
 | `product.updated` | `data.groupId` + `data.changes` + `data.targets[0].store.uid` (trae valores absolutos: aplicarlo dos veces deja lo mismo) |
 
-La llave de los eventos de orden cubre los **reencolados automáticos**, que conservan `event.emittedAt`. Una **reproducción manual desde el dead letter** llega como un evento nuevo, con `event.emittedAt` nuevo, así que tu dedup la deja pasar: si ya procesaste ese hecho, decide por el estado de la orden en tu sistema. Las llaves de `order.status_updated`, `store.updated` y `store.business_day_closed` salen de `data` y no cambian en una reproducción. En `order.status_updated` eso significa que la reproducción manual de un aviso que ya procesaste **se descarta como duplicado**: es lo que quieres, siempre que guardes la llave solo después de procesar bien el aviso. Si el primer intento falló de tu lado, la reproducción tiene que pasar.
+La llave de los eventos de orden cubre los **reencolados automáticos**, que conservan `event.emittedAt`. Una **reproducción manual desde el dead letter** llega como un evento nuevo, con `event.emittedAt` nuevo, así que tu dedup la deja pasar: si ya procesaste ese hecho, decide por el estado de la orden en tu sistema. Las llaves de `order.status_updated`, `store.updated`, `store.business_day_closed` y `store.register_closed` salen de `data` y no cambian en una reproducción. En `order.status_updated` eso significa que la reproducción manual de un aviso que ya procesaste **se descarta como duplicado**: es lo que quieres, siempre que guardes la llave solo después de procesar bien el aviso. Si el primer intento falló de tu lado, la reproducción tiene que pasar.
 
 ```js
 const seen = new Map(); // Redis o DB en producción
@@ -93,7 +94,7 @@ function statusKey(d) {
   return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
 }
 
-const key = data.publication?.id ?? data.businessDayId
+const key = data.publication?.id ?? data.businessDayId ?? data.registerSessionId
   ?? (event.type === "order.status_updated" ? statusKey(data)
       : `${data.orderId}:${event.type}:${event.emittedAt}`);
 if (seen.has(key)) return; // ya manejado

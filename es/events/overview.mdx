@@ -6,7 +6,7 @@ description: "Fire es event-driven. Cuando algo significativo pasa dentro de Fir
 Fire emite **eventos** cada vez que ocurre una transición de negocio relevante — una orden se completa, una orden se cancela, un documento fiscal es autorizado por la autoridad tributaria, la cocina avanza un pedido. Cada evento se entrega a tu endpoint por un **Integration Flow** que configuras en el dashboard de Fire.
 
 <Note>
-  Fire emite hoy **seis** tipos de evento de orden, **dos** de tienda y **dos** de catálogo: [`order.opened`](/es/events/order-opened), [`order.completed`](/es/events/order-completed), [`order.cancelled`](/es/events/order-cancelled), [`order.invoiced`](/es/events/order-invoiced), [`order.reversed`](/es/events/order-reversed) y [`order.status_updated`](/es/events/order-status-updated), más el evento programado [`store.business_day_closed`](/es/events/store-day-closed) al cierre del día, [`store.updated`](/es/events/store-updated) cada vez que se publica la configuración de una tienda, y los de catálogo [`menu.updated`](/es/events/menu-updated) (se sincronizó el menú de una terna) y [`product.updated`](/es/events/product-updated) (cambió la disponibilidad o el precio de productos).
+  Fire emite hoy **seis** tipos de evento de orden, **tres** de tienda y **dos** de catálogo: [`order.opened`](/es/events/order-opened), [`order.completed`](/es/events/order-completed), [`order.cancelled`](/es/events/order-cancelled), [`order.invoiced`](/es/events/order-invoiced), [`order.reversed`](/es/events/order-reversed) y [`order.status_updated`](/es/events/order-status-updated), más el evento programado [`store.business_day_closed`](/es/events/store-day-closed) al cierre del día, [`store.register_closed`](/es/events/store-register-closed) cada vez que se cierra una caja, [`store.updated`](/es/events/store-updated) cada vez que se publica la configuración de una tienda, y los de catálogo [`menu.updated`](/es/events/menu-updated) (se sincronizó el menú de una terna) y [`product.updated`](/es/events/product-updated) (cambió la disponibilidad o el precio de productos).
 </Note>
 
 ## Fire es la fuente de verdad del ciclo de vida
@@ -52,6 +52,9 @@ sequenceDiagram
     K->>F: reporta avance (preparing · ready · dispatched)
     F->>Y: order.status_updated
     end
+
+    Note over F: cierre de caja (POS o Backoffice)
+    F->>Y: store.register_closed
 
     Note over F: cierre del día (programado)
     F->>Y: store.business_day_closed
@@ -143,10 +146,10 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
 
   <Expandable title="event">
     <ResponseField name="id" type="string">
-      Identificador de esta **ejecución del flow**. Es el mismo en los reintentos del propio nodo HTTP, pero es **nuevo** cuando Fire reencola la entrega o alguien la reproduce a mano — así que no identifica el hecho. Para deduplicar usa una llave de dominio: `data.orderId` + `event.type` + `event.emittedAt` en los eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`. La llave de orden cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo. Ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado).
+      Identificador de esta **ejecución del flow**. Es el mismo en los reintentos del propio nodo HTTP, pero es **nuevo** cuando Fire reencola la entrega o alguien la reproduce a mano — así que no identifica el hecho. Para deduplicar usa una llave de dominio: `data.orderId` + `event.type` + `event.emittedAt` en los eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`, `data.registerSessionId` en `store.register_closed`. La llave de orden cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo. Ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado).
     </ResponseField>
     <ResponseField name="type" type="string">
-      Tipo de evento. Uno de: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.updated`, `menu.updated`, `product.updated`.
+      Tipo de evento. Uno de: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.register_closed`, `store.updated`, `menu.updated`, `product.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
       Timestamp ISO 8601 UTC del momento en que Fire **emitió el hecho** — cuando el evento se encoló. **Es estable entre reintentos**: todas las entregas reencoladas del mismo evento traen el mismo valor; una reproducción manual desde el dead letter trae uno nuevo. **Ordena los eventos por este campo**: las entregas pueden llegar tarde o desordenadas, así que ni el orden de llegada ni `createdAt` te dicen qué hecho ocurrió primero. Solo te llega si el body de tu flow lo incluye: si tu flow se creó antes de que existiera este campo, agrega `"emittedAt": "{{trigger.event.emittedAt}}"` al bloque `event` del body del nodo HTTP — el path ya está disponible.
@@ -171,11 +174,13 @@ Cuando dispara un flow, tu endpoint recibe un `POST` HTTP. El body tiene **tres 
 | [`order.invoiced`](/es/events/order-invoiced) | Snapshot V4 de orden + bloque `fiscal`: `authority` (campos canónicos, `amounts`, `countryData`, `graphic`), `history`, `compensates` |
 | [`order.reversed`](/es/events/order-reversed) | Snapshot V4 de orden + bloque `cancellation` de auditoría + `cancellation.fiscal` con el documento cancelado, `history` y `compensates` |
 | [`order.status_updated`](/es/events/order-status-updated) | Aviso liviano de seguimiento, **no** el snapshot V4 completo: identidad de la orden (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), una tienda mínima (`code`, `name`, `account`, `vendor`), `fulfillment.service.code`, `source` (`kds` / `order` / `fiscal`) y solo el bloque de su carril: `kitchen`, `lifecycle` o `fiscal` (los otros dos en `null`) |
+| [`store.business_day_closed`](/es/events/store-day-closed) | Un aviso thin de que el día cerró: `businessDayId`, `businessDayDate`, `timezone`, `status`, `openedAt`, `closedAt`, `closedBy` y una tienda mínima |
+| [`store.register_closed`](/es/events/store-register-closed) | El cuadre completo de una caja: `registerSessionId`, `businessDayDate`, `postClose`, `closedBy` (`cashier` / `admin`), `operator`, `terminal`, `cash` — los mismos nombres que `cash.shifts[]` de [Cierre de día](/es/api-reference/business-day-close), en decimales de `cash.currency`, con `changeOutsideDrawer` — y una tienda mínima |
 | [`store.updated`](/es/events/store-updated) | La tienda completa: bloque `store` V4 + `metadata`, `channels[]` con horarios resueltos, `operationSchedule`, `salesSchedule` y el bloque `publication` (`id`, `sequence`, `reason`, …) |
 | [`menu.updated`](/es/events/menu-updated) | El menú completo de una terna (tienda × canal × tipo de servicio): contexto (`store`, `channel`, `fulfillment`, `menuSyncId`, `groupId`) y `menu` con productos, categorías, grupos de opciones y horarios |
 | [`product.updated`](/es/events/product-updated) | Un parche: `changes`, `targets[]` con la tienda y sus ternas afectadas, y `products[]` con solo el bloque que cambió (`availability` o `pricing`) |
 
-El bloque `store` completo —con `email`, `metadata` y `locationInfo.country.phoneCode`— viaja en los eventos que llevan el snapshot completo de la orden (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) y en `store.updated`. `order.status_updated` y `store.business_day_closed` llevan una referencia mínima de la tienda.
+El bloque `store` completo —con `email`, `metadata` y `locationInfo.country.phoneCode`— viaja en los eventos que llevan el snapshot completo de la orden (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) y en `store.updated`. `order.status_updated`, `store.business_day_closed` y `store.register_closed` llevan una referencia mínima de la tienda.
 
 ### `_meta`
 
@@ -237,7 +242,7 @@ app.post("/fire/events", express.json(), async (req, res) => {
   res.status(200).end();
 
   // 2. Deduplica por una llave de dominio — event.id cambia cuando Fire reencola una entrega
-  const key = data?.publication?.id ?? data?.businessDayId
+  const key = data?.publication?.id ?? data?.businessDayId ?? data?.registerSessionId
     ?? (event.type === "order.status_updated" ? statusKey(data)
         : `${data?.orderId}:${event.type}:${event.emittedAt}`);
   if (seen.has(key)) return;
@@ -285,7 +290,7 @@ app.listen(8080);
     Valida la credencial de auth que envía el flow (Bearer token, API key u OAuth2 access token). Rechaza cualquier petición que no haga match.
   </Step>
   <Step title="Deduplica">
-    Busca una **llave de dominio** en un store — `data.orderId` + `event.type` + `event.emittedAt` en eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`. Si ya lo procesaste, salta. La llave de orden cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo — si ya procesaste ese hecho, decide por el estado de la orden en tu sistema. No uses `event.id`: cambia cuando Fire reencola una entrega.
+    Busca una **llave de dominio** en un store — `data.orderId` + `event.type` + `event.emittedAt` en eventos de orden, `data.publication.id` en `store.updated`, `data.businessDayId` en `store.business_day_closed`, `data.registerSessionId` en `store.register_closed`. Si ya lo procesaste, salta. La llave de orden cubre los reencolados automáticos; una reproducción manual desde el dead letter llega como evento nuevo — si ya procesaste ese hecho, decide por el estado de la orden en tu sistema. No uses `event.id`: cambia cuando Fire reencola una entrega.
   </Step>
   <Step title="Valida el payload">
     Chequea que `event.type` sea lo que esperas y que el bloque `data` tenga los campos esperados. Devuelve `400` ante inputs malformados para que no entren en tu cola de retry desde Fire.
