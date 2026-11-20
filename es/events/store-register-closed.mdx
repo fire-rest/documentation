@@ -52,7 +52,7 @@ Todos los montos de `cash` van **en decimales, en la moneda de la tienda** (`cas
     "postClose": false,
     "closedBy": { "type": "cashier", "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
     "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
-    "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "K000-POS-01" },
+    "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "VE-K000-POS-01" },
     "cash": {
       "currency": "USD",
       "openingBalance": 50.00,
@@ -96,6 +96,20 @@ Todos los montos de `cash` van **en decimales, en la moneda de la tienda** (`cas
 ```
 
 El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de eventos](/es/events/overview).
+
+## Evento vs. Cierre de día
+
+`cash` y una entrada de `cash.shifts[]` de [Cierre de día](/es/api-reference/business-day-close) comparten los nombres, y estos identificadores son la misma caja:
+
+| Evento | API (`shifts[]`) |
+|---|---|
+| `registerSessionId` | `sessionExternalId` |
+| `terminal.uid` | `terminalUid` |
+| `openedAt` / `closedAt` | `shiftStart` / `shiftEnd` |
+
+<Note>
+  **Algunos valores pueden diferir entre los dos.** En el evento, `systemCash` y `expectedCashSales` son los valores que quedaron al cerrar la caja — lo que vio quien cerró. En la API son los que recalculó la conciliación. `postClose` se calcula al emitir el evento; en la API, al registrar la conciliación. Y `authorization` significa algo distinto en cada uno (ver el campo más abajo).
+</Note>
 
 ## Referencia de `data.*`
 
@@ -150,8 +164,8 @@ El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de
     <ResponseField name="openingBalance" type="number">Fondo con que se abrió la caja.</ResponseField>
     <ResponseField name="expectedCashSales" type="number">Ventas en efectivo del turno según Fire, netas del vuelto.</ResponseField>
     <ResponseField name="withdrawalsTotal" type="number">Suma de `withdrawals[].amount`.</ResponseField>
-    <ResponseField name="changeOutsideDrawer" type="object">
-      Vuelto entregado al cliente **por un medio fuera de la caja** — por ejemplo, Pago Móvil — en vez de billetes del cajón. Fire registra la venta en efectivo neta del vuelto, pero ese efectivo quedó en el cajón, así que se suma a `systemCash`. Siempre presente: `amount: 0`, `count: 0` y `byProcessor: []` si no hubo.
+    <ResponseField name="changeOutsideDrawer" type="object | null">
+      Vuelto entregado al cliente **por un medio fuera de la caja** — por ejemplo, Pago Móvil — en vez de billetes del cajón. Fire registra la venta en efectivo neta del vuelto, pero ese efectivo quedó en el cajón, así que se suma a `systemCash`. `null` si no hubo, igual que `shifts[].changeOutsideDrawer` de la API.
 
       Qué medios cuentan se configura por procesador en el catálogo de medios de pago de tu cuenta, con la casilla **"Sirve para dar vuelto"**.
 
@@ -164,7 +178,7 @@ El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de
       </Expandable>
     </ResponseField>
     <ResponseField name="systemCash" type="number">
-      Lo que debería haber en el cajón: `openingBalance + expectedCashSales + changeOutsideDrawer.amount − withdrawalsTotal`.
+      Lo que debería haber en el cajón: `openingBalance + expectedCashSales + changeOutsideDrawer.amount − withdrawalsTotal` (`0` si `changeOutsideDrawer` es `null`), tal como quedó al cerrar la caja.
     </ResponseField>
     <ResponseField name="declaredCash" type="number">Lo contado en el cajón, con el fondo adentro.</ResponseField>
     <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negativo = faltante.</ResponseField>
@@ -172,9 +186,9 @@ El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de
     <ResponseField name="reason" type="string | null">
       Motivo de la diferencia: `WRONG_CHANGE_GIVEN`, `COUNTING_ERROR`, `INCOMPLETE_CUSTOMER_PAYMENT`, `MINOR_UNIDENTIFIED_DIFFERENCE`, `THEFT_SUSPECTED`, `UNRECORDED_PAYMENT` u `OTHER`. En el POS sale del código de autorización que aprobó el faltante, y es `OTHER` si no hubo. En el Backoffice es el que eligió quien cerró.
     </ResponseField>
-    <ResponseField name="notes" type="string | null">Notas del cierre. `null` si no hay.</ResponseField>
+    <ResponseField name="notes" type="string | null">Notas del cierre, tal cual — pueden ser `""` (por ejemplo, un código de autorización sin notas). `null` solo si no hay de dónde sacarlas. La misma regla que `shifts[].notes` en la API.</ResponseField>
     <ResponseField name="authorization" type="object | null">
-      `approvedBy` (id del usuario que generó el código que autorizó el faltante) y `approvedAt`. `null` si no hubo autorización — siempre en los cierres desde el Backoffice.
+      `approvedBy` (id del usuario que **generó el código** que autorizó el faltante) y `approvedAt` (cuándo **se usó** el código). `null` si no hubo autorización — siempre en los cierres desde el Backoffice. **No es lo mismo que `shifts[].authorization`** de la API, que trae quién reportó la conciliación (`terminal:<id>` o `user:<id>`) y la hora de la conciliación.
     </ResponseField>
     <ResponseField name="withdrawals" type="object[]">
       Retiros del turno, con la misma forma que `shifts[].withdrawals[]`: `amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) y `notes`. `[]` si no hubo.
@@ -211,7 +225,7 @@ async function onRegisterClosed(data) {
       expected: cash.systemCash,
       counted: cash.declaredCash,
       difference: cash.discrepancy,
-      changeOutsideDrawer: cash.changeOutsideDrawer.amount,
+      changeOutsideDrawer: cash.changeOutsideDrawer?.amount ?? 0, // null si no hubo
     },
   });
 }
@@ -220,8 +234,7 @@ async function onRegisterClosed(data) {
 ## Errores comunes
 
 - **`businessDayDate` es el día en que se abrió la caja, no el día en que cerró.** Una caja cerrada después de medianoche pertenece al día anterior. Si ese día ya estaba cerrado, `postClose` es `true`.
-- **`expectedCashSales` no incluye el vuelto entregado fuera de caja.** Suma `changeOutsideDrawer.amount` — o lee directamente `systemCash`, que ya lo trae.
-- **`changeOutsideDrawer` nunca es `null` acá.** Sin vuelto fuera de caja llega con `amount: 0` y `byProcessor: []`. En [Cierre de día](/es/api-reference/business-day-close) el mismo campo es `null` en ese caso.
+- **`expectedCashSales` no incluye el vuelto entregado fuera de caja.** Suma `changeOutsideDrawer.amount` cuando no es `null` — o lee directamente `systemCash`, que ya lo trae.
 - **Los montos son decimales en `cash.currency`.** No vienen escalados ×100 ni ×10000 como otros montos de Fire.
 
 ## Relacionados

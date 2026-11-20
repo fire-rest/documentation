@@ -52,7 +52,7 @@ All `cash` amounts are **decimals in the store's currency** (`cash.currency`): `
     "postClose": false,
     "closedBy": { "type": "cashier", "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
     "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
-    "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "K000-POS-01" },
+    "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "VE-K000-POS-01" },
     "cash": {
       "currency": "USD",
       "openingBalance": 50.00,
@@ -96,6 +96,20 @@ All `cash` amounts are **decimals in the store's currency** (`cash.currency`): `
 ```
 
 The `event` envelope is the same as on every other event — see [Events overview](/en/events/overview).
+
+## Event vs. Business day close
+
+`cash` and a `cash.shifts[]` entry of [Business day close](/en/api-reference/business-day-close) share their names, and these identifiers are the same register:
+
+| Event | API (`shifts[]`) |
+|---|---|
+| `registerSessionId` | `sessionExternalId` |
+| `terminal.uid` | `terminalUid` |
+| `openedAt` / `closedAt` | `shiftStart` / `shiftEnd` |
+
+<Note>
+  **Some values can differ between the two.** In the event, `systemCash` and `expectedCashSales` are the values pinned when the register closed — what whoever closed it saw. In the API they are the ones the reconciliation recalculated. `postClose` is computed when the event is emitted; in the API, when the reconciliation is recorded. And `authorization` means something different in each one (see the field below).
+</Note>
 
 ## `data.*` reference
 
@@ -150,8 +164,8 @@ The `event` envelope is the same as on every other event — see [Events overvie
     <ResponseField name="openingBalance" type="number">Float the register was opened with.</ResponseField>
     <ResponseField name="expectedCashSales" type="number">Cash sales of the shift according to Fire, net of the change.</ResponseField>
     <ResponseField name="withdrawalsTotal" type="number">Sum of `withdrawals[].amount`.</ResponseField>
-    <ResponseField name="changeOutsideDrawer" type="object">
-      Change handed to customers **through a payment method outside the drawer** — for example, Pago Móvil — instead of bills from the drawer. Fire records the cash sale net of the change, but that cash stayed in the drawer, so it is added to `systemCash`. Always present: `amount: 0`, `count: 0` and `byProcessor: []` when there was none.
+    <ResponseField name="changeOutsideDrawer" type="object | null">
+      Change handed to customers **through a payment method outside the drawer** — for example, Pago Móvil — instead of bills from the drawer. Fire records the cash sale net of the change, but that cash stayed in the drawer, so it is added to `systemCash`. `null` when there was none, as in `shifts[].changeOutsideDrawer` of the API.
 
       Which methods count is set per processor in your account's payment method catalog, with the **"Used for change"** checkbox.
 
@@ -164,7 +178,7 @@ The `event` envelope is the same as on every other event — see [Events overvie
       </Expandable>
     </ResponseField>
     <ResponseField name="systemCash" type="number">
-      What should be in the drawer: `openingBalance + expectedCashSales + changeOutsideDrawer.amount − withdrawalsTotal`.
+      What should be in the drawer: `openingBalance + expectedCashSales + changeOutsideDrawer.amount − withdrawalsTotal` (`0` when `changeOutsideDrawer` is `null`), as pinned when the register closed.
     </ResponseField>
     <ResponseField name="declaredCash" type="number">What was counted in the drawer, float included.</ResponseField>
     <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negative = shortage.</ResponseField>
@@ -172,9 +186,9 @@ The `event` envelope is the same as on every other event — see [Events overvie
     <ResponseField name="reason" type="string | null">
       Reason for the difference: `WRONG_CHANGE_GIVEN`, `COUNTING_ERROR`, `INCOMPLETE_CUSTOMER_PAYMENT`, `MINOR_UNIDENTIFIED_DIFFERENCE`, `THEFT_SUSPECTED`, `UNRECORDED_PAYMENT` or `OTHER`. On the POS it comes from the authorization code that approved the shortage, and is `OTHER` when there was none. On the Backoffice it is the one chosen by whoever closed it.
     </ResponseField>
-    <ResponseField name="notes" type="string | null">Notes of the close. `null` when there are none.</ResponseField>
+    <ResponseField name="notes" type="string | null">Notes of the close, as entered — it can be `""` (for example, an authorization code without notes). `null` only when there is nothing to read them from. Same rule as `shifts[].notes` in the API.</ResponseField>
     <ResponseField name="authorization" type="object | null">
-      `approvedBy` (user id of who generated the code that authorized the shortage) and `approvedAt`. `null` when there was no authorization — always on Backoffice closes.
+      `approvedBy` (user id of who **generated the code** that authorized the shortage) and `approvedAt` (when the code **was used**). `null` when there was no authorization — always on Backoffice closes. **Not the same as `shifts[].authorization`** in the API, which carries who reported the reconciliation (`terminal:<id>` or `user:<id>`) and the reconciliation's time.
     </ResponseField>
     <ResponseField name="withdrawals" type="object[]">
       Withdrawals of the shift, same shape as `shifts[].withdrawals[]`: `amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) and `notes`. `[]` when there were none.
@@ -211,7 +225,7 @@ async function onRegisterClosed(data) {
       expected: cash.systemCash,
       counted: cash.declaredCash,
       difference: cash.discrepancy,
-      changeOutsideDrawer: cash.changeOutsideDrawer.amount,
+      changeOutsideDrawer: cash.changeOutsideDrawer?.amount ?? 0, // null when there was none
     },
   });
 }
@@ -220,8 +234,7 @@ async function onRegisterClosed(data) {
 ## Common pitfalls
 
 - **`businessDayDate` is the day the register was opened, not the day it closed.** A register closed after midnight belongs to the previous day. If that day was already closed, `postClose` is `true`.
-- **`expectedCashSales` does not include the change given outside the drawer.** Add `changeOutsideDrawer.amount` — or just read `systemCash`, which already has it.
-- **`changeOutsideDrawer` is never `null` here.** With no change outside the drawer it comes with `amount: 0` and `byProcessor: []`. In [Business day close](/en/api-reference/business-day-close) the same field is `null` in that case.
+- **`expectedCashSales` does not include the change given outside the drawer.** Add `changeOutsideDrawer.amount` when it is not `null` — or just read `systemCash`, which already has it.
 - **Amounts are decimals in `cash.currency`.** They are not scaled ×100 or ×10000 like other Fire amounts.
 
 ## Related
