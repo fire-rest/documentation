@@ -22,7 +22,7 @@ Uma só coisa, e não é um campo novo: **muda quem faz a conta**.
 |  | v1 | v2 |
 |---|---|---|
 | `declaredCash` | **líquido** — o PDV subtrai o fundo antes de enviar | **bruto** — o dinheiro contado na gaveta, fundo incluído |
-| `systemCash` | vendas em dinheiro | fundo + vendas em dinheiro − sangrias |
+| `systemCash` | vendas em dinheiro | fundo + vendas em dinheiro + troco fora do caixa − sangrias |
 | Sangrias do turno | não há onde declará-las | `withdrawals[]`, com categoria e autorizador |
 
 `discrepancy` é a mesma subtração nas duas versões: `declaredCash − systemCash`. Na v2 o fundo está dos dois lados, então a diferença significa exatamente o mesmo e uma linha v1 e uma v2 se comparam sem conversão nenhuma.
@@ -124,6 +124,26 @@ E a outra, que é a que surpreende: **um turno fecha uma única vez**, não impo
     </ParamField>
     <ParamField body="notes" type="string">
       Até 500 caracteres. **Obrigatório quando `category` é `OTHER`.**
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="changeOutsideDrawer" type="object | null">
+  Troco que o operador deu ao cliente durante o turno **por um meio fora do caixa** — por exemplo, Pago Móvil — em vez de cédulas da gaveta. Opcional: não envie (ou envie `null`) se não houve.
+
+  O Fire registra a venda em dinheiro líquida do troco, mas esse dinheiro ficou na gaveta, então este valor é **somado** a `systemCash`. Sem ele, cada turno que deu troco assim mostra uma sobra falsa de exatamente esse troco.
+
+  O Fire POS preenche sozinho; envie-o se o seu POS dá troco por outro meio de pagamento. O detalhe do turno fica em `details.change_outside_drawer` e volta em [Fechamento do dia](/pt/api-reference/business-day-close) como `shifts[].changeOutsideDrawer`.
+
+  <Expandable title="campos de changeOutsideDrawer">
+    <ParamField body="amount" type="number" required>
+      Total do troco dado fora do caixa. Não negativo, com no máximo 2 decimais. Quando `byProcessor` traz entradas, o Fire usa a soma delas.
+    </ParamField>
+    <ParamField body="count" type="integer" required>
+      Vendas com troco fora do caixa.
+    </ParamField>
+    <ParamField body="byProcessor" type="array">
+      Detalhe por meio e processador, até 50 entradas. Cada uma: `method` (ex. `DIGITAL`), `processor` (ex. `pago_movil`), `name` (ex. `Pago Móvil`), `amount` (não negativo, no máximo 2 decimais) e `count`. Entradas com `amount: 0` são descartadas.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -259,7 +279,7 @@ Os mesmos da v1, mais estes:
 </ResponseField>
 
 <ResponseField name="systemCash" type="number">
-  O que o Fire calculou que deveria haver na gaveta: `openingBalance + vendas em dinheiro − withdrawalsTotal`.
+  O que o Fire calculou que deveria haver na gaveta: `openingBalance + vendas em dinheiro + changeOutsideDrawer.amount − withdrawalsTotal`.
 </ResponseField>
 
 <ResponseField name="discrepancy" type="number">

@@ -22,7 +22,7 @@ One thing only, and it isn't a new field: **who does the arithmetic changes**.
 |  | v1 | v2 |
 |---|---|---|
 | `declaredCash` | **net** — the POS subtracts the float before sending | **gross** — the cash counted in the drawer, float included |
-| `systemCash` | cash sales | float + cash sales − withdrawals |
+| `systemCash` | cash sales | float + cash sales + change outside the drawer − withdrawals |
 | Shift withdrawals | nowhere to declare them | `withdrawals[]`, with category and authorizer |
 
 `discrepancy` is the same subtraction in both versions: `declaredCash − systemCash`. Under v2 the float sits on both sides, so the difference means exactly the same thing and a v1 row and a v2 row compare with no conversion.
@@ -124,6 +124,26 @@ And the other one, which is the surprising one: **a shift closes once**, regardl
     </ParamField>
     <ParamField body="notes" type="string">
       Up to 500 characters. **Required when `category` is `OTHER`.**
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ParamField body="changeOutsideDrawer" type="object | null">
+  Change the cashier handed to customers during the shift **through a payment method outside the drawer** — for example, Pago Móvil — instead of bills from the drawer. Optional: leave it out (or send `null`) when there was none.
+
+  Fire records the cash sale net of the change, but that cash stayed in the drawer, so this amount is **added** to `systemCash`. Without it, every shift that gave change this way shows a false overage of exactly that change.
+
+  Fire POS fills it in by itself; send it if your POS handles change through another payment method. The shift's detail is stored in `details.change_outside_drawer` and returned in [Business day close](/en/api-reference/business-day-close) as `shifts[].changeOutsideDrawer`.
+
+  <Expandable title="changeOutsideDrawer fields">
+    <ParamField body="amount" type="number" required>
+      Total change given outside the drawer. Non-negative, at most 2 decimals. When `byProcessor` comes with entries, Fire uses their sum instead.
+    </ParamField>
+    <ParamField body="count" type="integer" required>
+      Sales with change given outside the drawer.
+    </ParamField>
+    <ParamField body="byProcessor" type="array">
+      Detail per method and processor, up to 50 entries. Each one: `method` (e.g. `DIGITAL`), `processor` (e.g. `pago_movil`), `name` (e.g. `Pago Móvil`), `amount` (non-negative, at most 2 decimals) and `count`. Entries with `amount: 0` are dropped.
     </ParamField>
   </Expandable>
 </ParamField>
@@ -259,7 +279,7 @@ The same ones as v1, plus these:
 </ResponseField>
 
 <ResponseField name="systemCash" type="number">
-  What Fire computed should be in the drawer: `openingBalance + cash sales − withdrawalsTotal`.
+  What Fire computed should be in the drawer: `openingBalance + cash sales + changeOutsideDrawer.amount − withdrawalsTotal`.
 </ResponseField>
 
 <ResponseField name="discrepancy" type="number">
