@@ -1,0 +1,248 @@
+---
+title: "store.register_close_corrected"
+description: "Se corrigió el efectivo contado de un cierre de caja — el cuadre vigente del turno, con lo contado y la diferencia corregidos, y lo que la corrección reemplazó."
+---
+
+`store.register_close_corrected` dispara cada vez que el cajero corrige el efectivo contado de un cierre de caja de Fire POS que ya emitió [`store.register_closed`](/es/events/store-register-closed). Igual que ese evento, **no** es thin: lleva el **cuadre completo vigente** —con lo contado y la diferencia ya corregidos— y además el bloque `correction` con lo que la corrección reemplazó. `store.register_closed` no se vuelve a emitir.
+
+Es un evento **a nivel tienda**: uno por corrección. Un mismo cierre se puede corregir varias veces mientras su día de negocio siga abierto, y cada corrección emite su propio evento. Como el cierre, no lleva canal.
+
+## Condición de disparo
+
+Fire emite `store.register_close_corrected` cuando el cajero que cerró una caja corrige lo contado desde el POS, con un código de autorización del encargado, mientras el día de negocio de la tienda siga abierto. La caja no se reabre: cambian lo contado y la diferencia; lo esperado (`systemCash`) no.
+
+| Quién corrige | Dónde | `closedBy.type` |
+|---|---|---|
+| El cajero que cerró la caja | Desde el POS: **Cierres de caja › Corregir conteo** | `cashier` |
+
+**Solo se corrigen cierres hechos desde el POS.** Los cierres desde el Backoffice y los forzados no se corrigen, y cuando el día de negocio cierra, ningún cierre de ese día se puede corregir.
+
+| | |
+|---|---|
+| Cobertura | **Universal** — todos los países con Fire POS. |
+| Llave de idempotencia | `data.correction.id` — ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado). **No** uses `registerSessionId`: lo comparten el `store.register_closed` de esa caja y todas sus correcciones. |
+| Dispara más de una vez | Una vez por corrección, salvo reintentos. Un cierre puede tener varias correcciones: `correction.sequence` las numera. |
+| Latencia respecto a la corrección | Se encola apenas se guarda la corrección. La corrección nunca espera al evento ni falla por él. |
+
+## Qué hay en `data`
+
+Los mismos campos que [`store.register_closed`](/es/events/store-register-closed) —la sesión de caja, el día de negocio, el timing, quién la cerró, el cajero y la terminal, el cuadre `cash` y una ref mínima de `store`— con los valores **vigentes** después de la corrección, más el bloque `correction`:
+
+- **`cash` trae los valores vigentes.** `declaredCash`, `discrepancy` y `discrepancyType` ya están corregidos. `openingBalance`, `expectedCashSales`, `withdrawalsTotal`, `changeOutsideDrawer`, `systemCash` y `withdrawals` son los del cierre: la corrección no cambia lo esperado.
+- **`correction.previous` trae lo reemplazado**: `declaredCash`, `discrepancy` y `discrepancyType` antes de **esta** corrección.
+
+Si guardas solo el último cuadre de cada caja, reemplázalo por `registerSessionId`. Si llevas un libro, `correction.previous` te da el ajuste: `cash.declaredCash − correction.previous.declaredCash`.
+
+Todos los montos van **en decimales, en la moneda de la tienda** (`cash.currency`), igual que en `store.register_closed`.
+
+## Ejemplo — payload
+
+El cajero contó 700.00 en una caja que esperaba 725.50. Al recontar con el encargado aparecieron los 25.50: el cuadre vigente queda en cero y `correction.previous` guarda el faltante que reemplazó.
+
+```json
+{
+  "event": {
+    "id": "2c7e9b14-5d3a-4f8e-b6a1-9e0d4c3b2a18",
+    "type": "store.register_close_corrected",
+    "emittedAt": "2026-11-19T20:42:10.377Z",
+    "createdAt": "2026-11-19T20:42:10.954Z"
+  },
+  "data": {
+    "registerSessionId": "5b0e8a3c-7d21-4f6a-9c1e-2a7b9d3e4f50",
+    "businessDayDate": "2026-11-19",
+    "timezone": "America/Caracas",
+    "openedAt": "2026-11-19T12:00:00.000Z",
+    "closedAt": "2026-11-19T20:05:31.204Z",
+    "postClose": false,
+    "closedBy": { "type": "cashier", "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "VE-K000-POS-01" },
+    "cash": {
+      "currency": "USD",
+      "openingBalance": 50.00,
+      "expectedCashSales": 840.00,
+      "withdrawalsTotal": 200.00,
+      "changeOutsideDrawer": {
+        "amount": 35.50,
+        "count": 4,
+        "byProcessor": [
+          { "method": "DIGITAL", "processor": "pago_movil", "name": "Pago Móvil", "amount": 35.50, "count": 4 }
+        ]
+      },
+      "systemCash": 725.50,
+      "declaredCash": 725.50,
+      "discrepancy": 0.00,
+      "discrepancyType": "MATCH",
+      "reason": "OTHER",
+      "notes": "Corrección 1: billetes de 10 contados como de 1",
+      "authorization": { "approvedBy": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "approvedAt": "2026-11-19T20:41:02.512Z" },
+      "withdrawals": [
+        {
+          "amount": 200.00,
+          "category": "BANK_DEPOSIT",
+          "withdrawnAt": "2026-11-19T16:30:00.000Z",
+          "authorizer": { "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "name": "Luis Gómez" },
+          "notes": null
+        }
+      ]
+    },
+    "store": {
+      "uid": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+      "code": "K000",
+      "externalId": null,
+      "countryCode": "VE",
+      "timezone": "America/Caracas",
+      "currencyCode": "USD"
+    },
+    "correction": {
+      "id": "8f1e2d3c-4b5a-4968-8776-655443322110",
+      "sequence": 1,
+      "correctedAt": "2026-11-19T20:42:10.031Z",
+      "reason": "billetes de 10 contados como de 1",
+      "correctedBy": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+      "authorization": { "approvedBy": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "approvedAt": "2026-11-19T20:41:02.512Z" },
+      "previous": { "declaredCash": 700.00, "discrepancy": -25.50, "discrepancyType": "SHORTAGE" }
+    }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "flowName": "...", "attempt": 0, "triggerEntityId": "8f1e2d3c-4b5a-4968-8776-655443322110" }
+}
+```
+
+El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de eventos](/es/events/overview).
+
+## Evento vs. `store.register_closed`
+
+Los dos describen la misma caja (`registerSessionId`) con la misma forma. Cambia esto:
+
+| | `store.register_closed` | `store.register_close_corrected` |
+|---|---|---|
+| Cuándo dispara | Al cerrar la caja | Cada vez que se corrige lo contado de ese cierre |
+| Cuántos por caja | Uno | Uno por corrección: cero o más |
+| Llave de idempotencia | `registerSessionId` | `correction.id` |
+| `cash.declaredCash`, `discrepancy`, `discrepancyType` | Lo contado al cerrar | Lo vigente, ya corregido |
+| `cash.systemCash` y las ventas | Lo que quedó al cerrar | Lo mismo: la corrección no cambia lo esperado |
+| `cash.authorization` | El código que aprobó el faltante del cierre | El código de la corrección |
+| `postClose` | Puede ser `true` | Siempre `false` |
+
+<Note>
+  **[Cierre de día](/es/api-reference/business-day-close) lee la conciliación en vivo.** Cuando la corrección llega a la conciliación, `shifts[]` ya trae lo contado y la diferencia corregidos. Si la conciliación de la caja no se pudo actualizar, la API sigue con el valor anterior mientras este evento trae el corregido.
+</Note>
+
+## Referencia de `data.*`
+
+`businessDayDate`, `timezone`, `openedAt`, `closedAt`, `operator`, `terminal` y `store` son iguales que en [`store.register_closed`](/es/events/store-register-closed). Abajo, lo que cambia y el bloque `correction`.
+
+### Identidad y temporal
+
+<ResponseField name="registerSessionId" type="string">
+  UUID de la sesión de caja corregida — el mismo de su `store.register_closed`. Úsalo para encontrar el cuadre que hay que reemplazar, **no** como llave de idempotencia: lo comparten todas las correcciones de esa caja.
+</ResponseField>
+<ResponseField name="postClose" type="boolean">
+  Siempre `false`: una caja solo se corrige mientras su día de negocio está abierto.
+</ResponseField>
+<ResponseField name="closedBy" type="object">
+  Siempre `type: "cashier"`, con el cajero que cerró: solo se corrigen cierres hechos desde el POS.
+</ResponseField>
+
+### `cash` — el cuadre vigente
+
+<ResponseField name="cash" type="object">
+  Los mismos campos que en [`store.register_closed`](/es/events/store-register-closed), con los valores vigentes. `currency`, `openingBalance`, `expectedCashSales`, `withdrawalsTotal`, `changeOutsideDrawer`, `systemCash` y `withdrawals` son los del cierre. Cambian estos:
+
+  <Expandable title="cash">
+    <ResponseField name="declaredCash" type="number">Lo contado vigente, con el fondo adentro: el de esta corrección.</ResponseField>
+    <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`, con lo contado corregido. Negativo = faltante.</ResponseField>
+    <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` u `OVERAGE`, según la diferencia corregida.</ResponseField>
+    <ResponseField name="reason" type="string | null">
+      `OTHER` si después de corregir la caja cuadra o sobra. Si queda faltante, el motivo del código que aprobó el faltante del cierre, si lo hubo; si no, `OTHER`. Es el mismo motivo que queda en la conciliación corregida.
+    </ResponseField>
+    <ResponseField name="notes" type="string | null">`Corrección N: <motivo>` — el número de la corrección y el motivo que escribió el cajero. Es el mismo texto que queda en la conciliación.</ResponseField>
+    <ResponseField name="authorization" type="object | null">
+      `approvedBy` (id del usuario que generó el **código de la corrección**) y `approvedAt` (cuándo se usó ese código). No es el código del faltante del cierre. `null` si no se pudo leer el código. Igual a `correction.authorization`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `correction` — qué se corrigió
+
+<ResponseField name="correction" type="object">
+  La corrección que disparó este evento.
+
+  <Expandable title="correction">
+    <ResponseField name="id" type="string">UUID de la corrección. También viene como `_meta.triggerEntityId`. Úsalo como llave de idempotencia de tu lado.</ResponseField>
+    <ResponseField name="sequence" type="integer">Número de la corrección en ese cierre: `1` es la primera. Con reintentos las correcciones pueden llegar desordenadas: la de `sequence` más alto es la vigente.</ResponseField>
+    <ResponseField name="correctedAt" type="string">Timestamp ISO 8601 UTC en que se guardó la corrección.</ResponseField>
+    <ResponseField name="reason" type="string">El motivo que escribió el cajero en el POS, tal cual (de 3 a 200 caracteres).</ResponseField>
+    <ResponseField name="correctedBy" type="object">El cajero que corrigió — siempre el que cerró la caja (`operator`): `uid` y `name` (`string | null`).</ResponseField>
+    <ResponseField name="authorization" type="object | null">`approvedBy` (id del usuario que generó el código de la corrección) y `approvedAt` (cuándo se usó). `null` si no se pudo leer el código.</ResponseField>
+    <ResponseField name="previous" type="object">
+      Lo que decía el cierre **antes de esta** corrección: lo del cierre en la primera, lo de la corrección anterior en las siguientes. En decimales de `cash.currency`.
+
+      <Expandable title="previous">
+        <ResponseField name="declaredCash" type="number">Lo contado antes.</ResponseField>
+        <ResponseField name="discrepancy" type="number">La diferencia antes. Negativo = faltante.</ResponseField>
+        <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` u `OVERAGE`.</ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Ejemplo de handler
+
+```js
+async function onRegisterCloseCorrected(data) {
+  const { registerSessionId, cash, correction, store } = data;
+
+  // 1. Idempotencia — saltar si ya aplicamos esta corrección
+  const seen = await db.registerCloseCorrections.findUnique({ where: { correctionId: correction.id } });
+  if (seen) return;
+
+  // 2. Guardar la corrección para el libro: antes, ahora y el ajuste
+  await db.registerCloseCorrections.create({
+    data: {
+      correctionId: correction.id,
+      registerSessionId,
+      sequence: correction.sequence,
+      reason: correction.reason,
+      countedBefore: correction.previous.declaredCash,
+      countedNow: cash.declaredCash,
+      adjustment: cash.declaredCash - correction.previous.declaredCash,
+    },
+  });
+
+  // 3. Reemplazar el cuadre vigente de esa caja, salvo que ya tengamos uno más nuevo
+  const current = await db.registerCloses.findUnique({ where: { registerSessionId } });
+  if (current && (current.correctionSequence ?? 0) >= correction.sequence) return;
+  await db.registerCloses.upsert({
+    where: { registerSessionId },
+    create: {
+      registerSessionId,
+      storeCode: store.code,
+      currency: cash.currency,
+      expected: cash.systemCash,
+      counted: cash.declaredCash,
+      difference: cash.discrepancy,
+      correctionSequence: correction.sequence,
+    },
+    update: { counted: cash.declaredCash, difference: cash.discrepancy, correctionSequence: correction.sequence },
+  });
+}
+```
+
+## Errores comunes
+
+- **Deduplicar por `registerSessionId`.** Es el mismo en `store.register_closed` y en todas las correcciones de esa caja: con esa llave, las correcciones se descartan como duplicadas. La llave de este evento es `correction.id`.
+- **Sumar la corrección como un cierre nuevo.** No es otra caja ni otro turno: `cash` reemplaza el cuadre de la misma `registerSessionId`.
+- **Aplicar una corrección vieja encima de una nueva.** Con reintentos pueden llegar desordenadas: compara `correction.sequence` antes de reemplazar.
+- **Esperar que cambie lo esperado.** `systemCash` y las ventas son las del cierre: solo cambian lo contado y la diferencia.
+
+## Relacionados
+
+<CardGroup cols={2}>
+  <Card title="store.register_closed" icon="cash-register" href="/es/events/store-register-closed">
+    El cuadre de la caja al cerrarse. Cada corrección lo reemplaza.
+  </Card>
+  <Card title="Cierre de día" icon="calendar-check" href="/es/api-reference/business-day-close">
+    Los cobros del día y el cuadre de cada turno, con los mismos nombres que `cash`.
+  </Card>
+</CardGroup>

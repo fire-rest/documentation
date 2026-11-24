@@ -1,0 +1,248 @@
+---
+title: "store.register_close_corrected"
+description: "The counted cash of a register close was corrected — the shift's current cash count, with the counted cash and the difference corrected, and what the correction replaced."
+---
+
+`store.register_close_corrected` fires every time the cashier corrects the counted cash of a Fire POS register close that already emitted [`store.register_closed`](/en/events/store-register-closed). Like that event, it is **not** thin: it carries the **whole current cash count** —with the counted cash and the difference already corrected— plus the `correction` block with what the correction replaced. `store.register_closed` is not emitted again.
+
+It is a **store-level** event: one per correction. The same close can be corrected several times while its business day is still open, and each correction emits its own event. Like the close, it carries no channel.
+
+## Trigger condition
+
+Fire emits `store.register_close_corrected` when the cashier who closed a register corrects the counted cash from the POS, with a manager's authorization code, while the store's business day is still open. The register is not reopened: the counted cash and the difference change; the expected amount (`systemCash`) does not.
+
+| Who corrects | Where | `closedBy.type` |
+|---|---|---|
+| The cashier who closed the register | From the POS: **Register closes › Correct count** | `cashier` |
+
+**Only closes done from the POS can be corrected.** Backoffice and forced closes cannot, and once the business day closes, no close of that day can be corrected.
+
+| | |
+|---|---|
+| Coverage | **Universal** — every country with Fire POS. |
+| Idempotency key | `data.correction.id` — see [Idempotency on your side](/en/events/delivery#idempotency-on-your-side). Do **not** use `registerSessionId`: the register's `store.register_closed` and all of its corrections share it. |
+| Fires more than once | Once per correction, unless retried. A close can have several corrections: `correction.sequence` numbers them. |
+| Latency relative to the correction | Enqueued right after the correction is saved. The correction never waits for the event and never fails because of it. |
+
+## What's in `data`
+
+The same fields as [`store.register_closed`](/en/events/store-register-closed) —the register session, the business day, timing, who closed it, the cashier and terminal, the `cash` count and a minimal `store` ref— with the **current** values after the correction, plus the `correction` block:
+
+- **`cash` carries the current values.** `declaredCash`, `discrepancy` and `discrepancyType` are already corrected. `openingBalance`, `expectedCashSales`, `withdrawalsTotal`, `changeOutsideDrawer`, `systemCash` and `withdrawals` are the ones from the close: a correction does not change the expected amount.
+- **`correction.previous` carries what was replaced**: `declaredCash`, `discrepancy` and `discrepancyType` before **this** correction.
+
+If you keep only the latest count of each register, replace it by `registerSessionId`. If you keep a ledger, `correction.previous` gives you the adjustment: `cash.declaredCash − correction.previous.declaredCash`.
+
+All amounts are **decimals in the store's currency** (`cash.currency`), as in `store.register_closed`.
+
+## Example — payload
+
+The cashier counted 700.00 in a register that expected 725.50. Recounting with the manager, the missing 25.50 turned up: the current count balances, and `correction.previous` keeps the shortage it replaced.
+
+```json
+{
+  "event": {
+    "id": "2c7e9b14-5d3a-4f8e-b6a1-9e0d4c3b2a18",
+    "type": "store.register_close_corrected",
+    "emittedAt": "2026-11-19T20:42:10.377Z",
+    "createdAt": "2026-11-19T20:42:10.954Z"
+  },
+  "data": {
+    "registerSessionId": "5b0e8a3c-7d21-4f6a-9c1e-2a7b9d3e4f50",
+    "businessDayDate": "2026-11-19",
+    "timezone": "America/Caracas",
+    "openedAt": "2026-11-19T12:00:00.000Z",
+    "closedAt": "2026-11-19T20:05:31.204Z",
+    "postClose": false,
+    "closedBy": { "type": "cashier", "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "VE-K000-POS-01" },
+    "cash": {
+      "currency": "USD",
+      "openingBalance": 50.00,
+      "expectedCashSales": 840.00,
+      "withdrawalsTotal": 200.00,
+      "changeOutsideDrawer": {
+        "amount": 35.50,
+        "count": 4,
+        "byProcessor": [
+          { "method": "DIGITAL", "processor": "pago_movil", "name": "Pago Móvil", "amount": 35.50, "count": 4 }
+        ]
+      },
+      "systemCash": 725.50,
+      "declaredCash": 725.50,
+      "discrepancy": 0.00,
+      "discrepancyType": "MATCH",
+      "reason": "OTHER",
+      "notes": "Corrección 1: billetes de 10 contados como de 1",
+      "authorization": { "approvedBy": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "approvedAt": "2026-11-19T20:41:02.512Z" },
+      "withdrawals": [
+        {
+          "amount": 200.00,
+          "category": "BANK_DEPOSIT",
+          "withdrawnAt": "2026-11-19T16:30:00.000Z",
+          "authorizer": { "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "name": "Luis Gómez" },
+          "notes": null
+        }
+      ]
+    },
+    "store": {
+      "uid": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+      "code": "K000",
+      "externalId": null,
+      "countryCode": "VE",
+      "timezone": "America/Caracas",
+      "currencyCode": "USD"
+    },
+    "correction": {
+      "id": "8f1e2d3c-4b5a-4968-8776-655443322110",
+      "sequence": 1,
+      "correctedAt": "2026-11-19T20:42:10.031Z",
+      "reason": "billetes de 10 contados como de 1",
+      "correctedBy": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+      "authorization": { "approvedBy": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "approvedAt": "2026-11-19T20:41:02.512Z" },
+      "previous": { "declaredCash": 700.00, "discrepancy": -25.50, "discrepancyType": "SHORTAGE" }
+    }
+  },
+  "_meta": { "executionId": "...", "flowId": "...", "flowName": "...", "attempt": 0, "triggerEntityId": "8f1e2d3c-4b5a-4968-8776-655443322110" }
+}
+```
+
+The `event` envelope is the same as on every other event — see [Events overview](/en/events/overview).
+
+## Event vs. `store.register_closed`
+
+Both describe the same register (`registerSessionId`) with the same shape. This is what changes:
+
+| | `store.register_closed` | `store.register_close_corrected` |
+|---|---|---|
+| When it fires | When the register closes | Every time the counted cash of that close is corrected |
+| How many per register | One | One per correction: zero or more |
+| Idempotency key | `registerSessionId` | `correction.id` |
+| `cash.declaredCash`, `discrepancy`, `discrepancyType` | What was counted at close | The current values, already corrected |
+| `cash.systemCash` and sales | As pinned at close | The same: a correction does not change the expected amount |
+| `cash.authorization` | The code that approved the close's shortage | The correction's code |
+| `postClose` | Can be `true` | Always `false` |
+
+<Note>
+  **[Business day close](/en/api-reference/business-day-close) reads the reconciliation live.** Once the correction reaches the reconciliation, `shifts[]` already carries the corrected counted cash and difference. If the register's reconciliation could not be updated, the API keeps the previous value while this event carries the corrected one.
+</Note>
+
+## `data.*` reference
+
+`businessDayDate`, `timezone`, `openedAt`, `closedAt`, `operator`, `terminal` and `store` are the same as in [`store.register_closed`](/en/events/store-register-closed). Below, what changes and the `correction` block.
+
+### Identity & temporal
+
+<ResponseField name="registerSessionId" type="string">
+  UUID of the corrected register session — the same as its `store.register_closed`. Use it to find the count to replace, **not** as the idempotency key: every correction of that register shares it.
+</ResponseField>
+<ResponseField name="postClose" type="boolean">
+  Always `false`: a register can only be corrected while its business day is open.
+</ResponseField>
+<ResponseField name="closedBy" type="object">
+  Always `type: "cashier"`, with the cashier who closed it: only closes done from the POS can be corrected.
+</ResponseField>
+
+### `cash` — the current cash count
+
+<ResponseField name="cash" type="object">
+  The same fields as in [`store.register_closed`](/en/events/store-register-closed), with the current values. `currency`, `openingBalance`, `expectedCashSales`, `withdrawalsTotal`, `changeOutsideDrawer`, `systemCash` and `withdrawals` are the ones from the close. These change:
+
+  <Expandable title="cash">
+    <ResponseField name="declaredCash" type="number">The current counted cash, float included: the one from this correction.</ResponseField>
+    <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`, with the corrected count. Negative = shortage.</ResponseField>
+    <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` or `OVERAGE`, from the corrected difference.</ResponseField>
+    <ResponseField name="reason" type="string | null">
+      `OTHER` when, after the correction, the register balances or is over. If a shortage remains, the reason of the code that approved the close's shortage, if there was one; otherwise `OTHER`. It is the same reason kept in the corrected reconciliation.
+    </ResponseField>
+    <ResponseField name="notes" type="string | null">`Corrección N: <reason>` — the correction number and the reason the cashier wrote. The `Corrección` prefix is always in Spanish. It is the same text kept in the reconciliation.</ResponseField>
+    <ResponseField name="authorization" type="object | null">
+      `approvedBy` (user id of who generated the **correction code**) and `approvedAt` (when that code was used). Not the code of the close's shortage. `null` when the code could not be read. Same as `correction.authorization`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### `correction` — what was corrected
+
+<ResponseField name="correction" type="object">
+  The correction that triggered this event.
+
+  <Expandable title="correction">
+    <ResponseField name="id" type="string">UUID of the correction. Also surfaced as `_meta.triggerEntityId`. Use it as the idempotency key on your side.</ResponseField>
+    <ResponseField name="sequence" type="integer">Number of the correction within that close: `1` is the first. With retries, corrections can arrive out of order: the one with the highest `sequence` is current.</ResponseField>
+    <ResponseField name="correctedAt" type="string">ISO 8601 UTC timestamp the correction was saved.</ResponseField>
+    <ResponseField name="reason" type="string">The reason the cashier wrote in the POS, as entered (3 to 200 characters).</ResponseField>
+    <ResponseField name="correctedBy" type="object">The cashier who corrected — always the one who closed the register (`operator`): `uid` and `name` (`string | null`).</ResponseField>
+    <ResponseField name="authorization" type="object | null">`approvedBy` (user id of who generated the correction code) and `approvedAt` (when it was used). `null` when the code could not be read.</ResponseField>
+    <ResponseField name="previous" type="object">
+      What the close said **before this** correction: the close's values on the first one, the previous correction's on the next ones. Decimals in `cash.currency`.
+
+      <Expandable title="previous">
+        <ResponseField name="declaredCash" type="number">Counted cash before.</ResponseField>
+        <ResponseField name="discrepancy" type="number">Difference before. Negative = shortage.</ResponseField>
+        <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` or `OVERAGE`.</ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Handler example
+
+```js
+async function onRegisterCloseCorrected(data) {
+  const { registerSessionId, cash, correction, store } = data;
+
+  // 1. Idempotency — skip if we already applied this correction
+  const seen = await db.registerCloseCorrections.findUnique({ where: { correctionId: correction.id } });
+  if (seen) return;
+
+  // 2. Keep the correction for the ledger: before, now and the adjustment
+  await db.registerCloseCorrections.create({
+    data: {
+      correctionId: correction.id,
+      registerSessionId,
+      sequence: correction.sequence,
+      reason: correction.reason,
+      countedBefore: correction.previous.declaredCash,
+      countedNow: cash.declaredCash,
+      adjustment: cash.declaredCash - correction.previous.declaredCash,
+    },
+  });
+
+  // 3. Replace the register's current count, unless we already have a newer one
+  const current = await db.registerCloses.findUnique({ where: { registerSessionId } });
+  if (current && (current.correctionSequence ?? 0) >= correction.sequence) return;
+  await db.registerCloses.upsert({
+    where: { registerSessionId },
+    create: {
+      registerSessionId,
+      storeCode: store.code,
+      currency: cash.currency,
+      expected: cash.systemCash,
+      counted: cash.declaredCash,
+      difference: cash.discrepancy,
+      correctionSequence: correction.sequence,
+    },
+    update: { counted: cash.declaredCash, difference: cash.discrepancy, correctionSequence: correction.sequence },
+  });
+}
+```
+
+## Common pitfalls
+
+- **Deduplicating by `registerSessionId`.** It is the same on `store.register_closed` and on every correction of that register: with that key, corrections are dropped as duplicates. This event's key is `correction.id`.
+- **Adding the correction up as a new close.** It is not another register or another shift: `cash` replaces the count of the same `registerSessionId`.
+- **Applying an old correction over a newer one.** With retries they can arrive out of order: compare `correction.sequence` before replacing.
+- **Expecting the expected amount to change.** `systemCash` and sales are the close's: only the counted cash and the difference change.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="store.register_closed" icon="cash-register" href="/en/events/store-register-closed">
+    The register's count when it closed. Each correction replaces it.
+  </Card>
+  <Card title="Business day close" icon="calendar-check" href="/en/api-reference/business-day-close">
+    The day's payments and the cash count of every shift, with the same names as `cash`.
+  </Card>
+</CardGroup>
