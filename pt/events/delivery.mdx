@@ -79,10 +79,11 @@ O mesmo fato pode chegar até você mais de uma vez, então **seu endpoint preci
 | `store.updated` | `data.publication.id` |
 | `store.business_day_closed` | `data.businessDayId` |
 | `store.register_closed` | `data.registerSessionId` |
+| `store.register_close_corrected` | `data.correction.id` (um fechamento pode ser corrigido mais de uma vez; ordene por `data.correction.sequence`) |
 | `menu.updated` | `data.groupId` + `data.menuSyncId` |
 | `product.updated` | `data.groupId` + `data.changes` + `data.targets[0].store.uid` (traz valores absolutos: aplicá-lo duas vezes deixa o mesmo resultado) |
 
-A chave dos eventos de pedido cobre as **recolocações automáticas na fila**, que mantêm `event.emittedAt`. Um **reprocessamento manual a partir do dead letter** chega como um evento novo, com `event.emittedAt` novo, então seu dedup o deixa passar: se você já processou esse fato, decida pelo estado do pedido no seu sistema. As chaves de `order.status_updated`, `store.updated`, `store.business_day_closed` e `store.register_closed` vêm de `data` e não mudam num reprocessamento. Em `order.status_updated` isso significa que o reprocessamento manual de um aviso que você já processou **é descartado como duplicado**: é o que você quer, desde que salve a chave só depois de processar o aviso com sucesso. Se a primeira tentativa falhou do seu lado, o reprocessamento precisa passar.
+A chave dos eventos de pedido cobre as **recolocações automáticas na fila**, que mantêm `event.emittedAt`. Um **reprocessamento manual a partir do dead letter** chega como um evento novo, com `event.emittedAt` novo, então seu dedup o deixa passar: se você já processou esse fato, decida pelo estado do pedido no seu sistema. As chaves de `order.status_updated`, `store.updated`, `store.business_day_closed`, `store.register_closed` e `store.register_close_corrected` vêm de `data` e não mudam num reprocessamento. Em `order.status_updated` isso significa que o reprocessamento manual de um aviso que você já processou **é descartado como duplicado**: é o que você quer, desde que salve a chave só depois de processar o aviso com sucesso. Se a primeira tentativa falhou do seu lado, o reprocessamento precisa passar.
 
 ```js
 const seen = new Map(); // Redis ou DB em produção
@@ -94,7 +95,7 @@ function statusKey(d) {
   return `${d.orderId}:fiscal:${d.fiscal.sequence}`;
 }
 
-const key = data.publication?.id ?? data.businessDayId ?? data.registerSessionId
+const key = data.publication?.id ?? data.businessDayId ?? data.correction?.id ?? data.registerSessionId
   ?? (event.type === "order.status_updated" ? statusKey(data)
       : `${data.orderId}:${event.type}:${event.emittedAt}`);
 if (seen.has(key)) return; // já tratado

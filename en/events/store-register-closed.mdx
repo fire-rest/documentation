@@ -18,16 +18,18 @@ Fire emits `store.register_closed` when a register is closed through either of t
 
 **Forced closes do not emit it.** When a terminal is revoked or deleted, Fire closes its open session without anyone counting the drawer: there is no cash count to report.
 
+**A close can be corrected later.** If the cashier miscounted, they can correct the counted cash from the POS with a manager code, or a user corrects it from the Backoffice. Each correction arrives as [`store.register_close_corrected`](/en/events/store-register-close-corrected), with the same `registerSessionId` and the whole cash count already corrected. See [Register close and correction](/en/events/register-close-and-correction).
+
 | | |
 |---|---|
 | Coverage | **Universal** — every country with Fire POS. |
 | Idempotency key | `data.registerSessionId` — see [Idempotency on your side](/en/events/delivery#idempotency-on-your-side) |
-| Fires more than once | No, unless retried. One event per register session. |
+| Fires more than once | No, unless retried. One event per register session. If the counted cash is corrected later, Fire emits [`store.register_close_corrected`](/en/events/store-register-close-corrected), not another `store.register_closed`. |
 | Latency relative to the close | Enqueued right after the close is saved. The close never waits for the event and never fails because of it. |
 
 ## What's in `data`
 
-The register session (`registerSessionId`), the business day it belongs to, timing, who closed it, the cashier and terminal, the `cash` count and a minimal `store` ref.
+The register session (`registerSessionId`), the business day it belongs to, timing, who closed it and which manager code they used to start the close (`closeAuthorization`), the cashier and terminal, the `cash` count and a minimal `store` ref.
 
 **`cash` uses the same names as `cash.shifts[]` of [Business day close](/en/api-reference/business-day-close)** — `openingBalance`, `expectedCashSales`, `withdrawalsTotal`, `changeOutsideDrawer`, `systemCash`, `declaredCash`, `discrepancy`, `discrepancyType`, `reason`, `notes`, `authorization`, `withdrawals` — so you can match the event and the API field by field. `registerSessionId` is the `shifts[].sessionExternalId` of that same register in the API.
 
@@ -51,6 +53,12 @@ All `cash` amounts are **decimals in the store's currency** (`cash.currency`): `
     "closedAt": "2026-11-19T20:05:31.204Z",
     "postClose": false,
     "closedBy": { "type": "cashier", "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "closeAuthorization": {
+      "tokenId": "c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f",
+      "type": "one_time",
+      "approvedBy": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+      "approvedAt": "2026-11-19T20:03:47.118Z"
+    },
     "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
     "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "VE-K000-POS-01" },
     "cash": {
@@ -108,7 +116,7 @@ The `event` envelope is the same as on every other event — see [Events overvie
 | `openedAt` / `closedAt` | `shiftStart` / `shiftEnd` |
 
 <Note>
-  **Some values can differ between the two.** In the event, `systemCash` and `expectedCashSales` are the values pinned when the register closed — what whoever closed it saw. In the API they are the ones the reconciliation recalculated. `postClose` is computed when the event is emitted; in the API, when the reconciliation is recorded. And `authorization` means something different in each one (see the field below).
+  **Some values can differ between the two.** In the event, `systemCash` and `expectedCashSales` are the values pinned when the register closed — what whoever closed it saw. In the API they are the ones the reconciliation recalculated. `postClose` is computed when the event is emitted, and a shift reported after the business day closed does not appear in the API, because the API reads the cash count saved when the day closed. `authorization` means something different in each one (see the field below). And if the close was corrected, the API already has the corrected count, while this event keeps the count from the close: the correction arrives in [`store.register_close_corrected`](/en/events/store-register-close-corrected).
 </Note>
 
 ## `data.*` reference
@@ -131,10 +139,10 @@ The `event` envelope is the same as on every other event — see [Events overvie
   ISO 8601 UTC timestamp the register was closed.
 </ResponseField>
 <ResponseField name="postClose" type="boolean">
-  `true` when the register closed after its `businessDayDate` had already been closed. Same rule as `shifts[].postClose` in [Business day close](/en/api-reference/business-day-close).
+  `true` when the register closed after its `businessDayDate` had already been closed. Such a shift **does not appear** in [Business day close](/en/api-reference/business-day-close): that API reads the cash count saved when the day closed, and this shift came in later.
 </ResponseField>
 
-### `closedBy`, `operator`, `terminal`
+### Who closed it, the cashier and the terminal
 
 <ResponseField name="closedBy" type="object">
   Who closed the register.
@@ -146,6 +154,9 @@ The `event` envelope is the same as on every other event — see [Events overvie
     <ResponseField name="uid" type="string | null">User id of whoever closed it.</ResponseField>
     <ResponseField name="name" type="string | null">Display name.</ResponseField>
   </Expandable>
+</ResponseField>
+<ResponseField name="closeAuthorization" type="object | null">
+  The **manager code the cashier used to start closing the register** on the POS, in the [authorization](#authorizations) shape: `tokenId`, `type`, `approvedBy` and `approvedAt`. Never the code itself. `null` when the register was closed from the Backoffice, when the store does not require a code to close, or when the code was not found.
 </ResponseField>
 <ResponseField name="operator" type="object">
   The session's cashier, whichever way it closed: `uid` and `name` (`string | null`).
@@ -188,13 +199,22 @@ The `event` envelope is the same as on every other event — see [Events overvie
     </ResponseField>
     <ResponseField name="notes" type="string | null">Notes of the close, as entered — it can be `""` (for example, an authorization code without notes). `null` only when there is nothing to read them from. Same rule as `shifts[].notes` in the API.</ResponseField>
     <ResponseField name="authorization" type="object | null">
-      `approvedBy` (user id of who **generated the code** that authorized the shortage) and `approvedAt` (when the code **was used**). `null` when there was no authorization — always on Backoffice closes. **Not the same as `shifts[].authorization`** in the API, which carries who reported the reconciliation (`terminal:<id>` or `user:<id>`) and the reconciliation's time.
+      The manager code that **authorized the shortage** at close, in the [authorization](#authorizations) shape: `tokenId`, `type`, `approvedBy` (who generated the code) and `approvedAt` (when it was used). `null` when there was no authorization — always on Backoffice closes. **Not the same as `shifts[].authorization`** in the API, which carries who reported the reconciliation (`terminal:<id>` or `user:<id>`) and the reconciliation's time.
     </ResponseField>
     <ResponseField name="withdrawals" type="object[]">
       Withdrawals of the shift, same shape as `shifts[].withdrawals[]`: `amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) and `notes`. `[]` when there were none.
     </ResponseField>
   </Expandable>
 </ResponseField>
+
+### Authorizations
+
+`closeAuthorization`, `cash.authorization` and, in [`store.register_close_corrected`](/en/events/store-register-close-corrected), `correction.authorization` share the same shape. They describe the **use** of a manager code, **never the code**: Fire does not store it, so it cannot send it.
+
+<ResponseField name="tokenId" type="string">The code's id in Fire. It identifies which code was used, who generated it and on which register.</ResponseField>
+<ResponseField name="type" type="string">`one_time` — a dynamic single-use code. `static` — the store's fixed code.</ResponseField>
+<ResponseField name="approvedBy" type="string">Id of the user who generated the code. For a `static` code, the user who last set or changed the fixed code.</ResponseField>
+<ResponseField name="approvedAt" type="string">ISO 8601 UTC timestamp when the code was used (or created, when its use is not recorded).</ResponseField>
 
 ### `store` — minimal store ref
 
@@ -236,6 +256,7 @@ async function onRegisterClosed(data) {
 - **`businessDayDate` is the day the register was opened, not the day it closed.** A register closed after midnight belongs to the previous day. If that day was already closed, `postClose` is `true`.
 - **`expectedCashSales` does not include the change given outside the drawer.** Add `changeOutsideDrawer.amount` when it is not `null` — or just read `systemCash`, which already has it.
 - **Amounts are decimals in `cash.currency`.** They are not scaled ×100 or ×10000 like other Fire amounts.
+- **Treating this event as final.** A close can be corrected later. If you care about the current counted cash, also listen to [`store.register_close_corrected`](/en/events/store-register-close-corrected), and don't overwrite a correction when a retry of this event reaches you.
 
 ## Related
 
@@ -245,5 +266,11 @@ async function onRegisterClosed(data) {
   </Card>
   <Card title="Business day close" icon="cash-register" href="/en/api-reference/business-day-close">
     The day's payments and the cash count of every shift, with the same names as `cash`.
+  </Card>
+  <Card title="store.register_close_corrected" icon="pen-to-square" href="/en/events/store-register-close-corrected">
+    Fires every time the counted cash of a close is corrected.
+  </Card>
+  <Card title="Register close and correction" icon="rotate" href="/en/events/register-close-and-correction">
+    The whole lifecycle and how it shows up in events and in the API.
   </Card>
 </CardGroup>

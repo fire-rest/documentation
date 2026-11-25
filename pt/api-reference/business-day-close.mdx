@@ -13,6 +13,13 @@ Devolve um dia de negócio já fechado de uma loja: **como foi pago** — agrupa
 
 O evento [`store.business_day_closed`](/pt/events/store-day-closed) é enxuto de propósito: diz qual dia fechou, quando e quem fechou. O detalhe é lido neste endpoint, com a loja e a data.
 
+<Info>
+  **Esta API lê só a foto do fechamento do dia.** Ao fechar o dia, o Fire guarda os pagamentos e a conferência de caixa de cada turno que já estava reportado, e esta API devolve isso. Duas consequências:
+
+  - **Os turnos reportados depois do fechamento do dia não aparecem**, nem em `shifts[]` nem nas contagens de `summary`, e quem reportou atrasado continua em `unreconciledOperators`. Esses fechamentos chegam a você por [`store.register_closed`](/pt/events/store-register-closed) com `postClose: true`.
+  - **As correções do fechamento de caixa aparecem**, mesmo quando feitas com o dia já fechado: o Fire atualiza o turno corrigido e as contagens de caixa da foto. Veja [Correções do fechamento de caixa](#correções-do-fechamento-de-caixa).
+</Info>
+
 ## Autenticação
 
 <ParamField header="x-api-key" type="string" required>
@@ -104,10 +111,10 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
         <ResponseField name="cash" type="object">
           <Expandable title="cash">
             <ResponseField name="summary" type="object">
-              `expectedCashSales` (dinheiro recebido no dia; `null` fora da moeda do dia), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` e `netDiscrepancy` (soma das diferenças dos turnos — negativo quer dizer que falta dinheiro).
+              `expectedCashSales` (dinheiro recebido no dia; `null` fora da moeda do dia), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` e `netDiscrepancy` (soma das diferenças dos turnos — negativo quer dizer que falta dinheiro). Contam os turnos que estavam no fechamento do dia, com seus valores vigentes: uma correção os recalcula. Se o fechamento não tem resumo de caixa, todos em `0`.
             </ResponseField>
             <ResponseField name="shifts" type="object[]">
-              Um por fechamento de turno reportado com [Conciliações de caixa](/pt/api-reference/cash-reconciliations-v2), incluindo os reportados depois do fechamento do dia.
+              Um por fechamento de turno reportado com [Conciliações de caixa](/pt/api-reference/cash-reconciliations-v2) **antes** de fechar o dia. Os reportados depois não aparecem.
               <Expandable title="shift">
                 <ResponseField name="reconciliationId" type="string">Identificador do fechamento de turno.</ResponseField>
                 <ResponseField name="apiVersion" type="integer">`1` ou `2`: o contrato com que entrou. Muda como `declaredCash` é lido (veja abaixo).</ResponseField>
@@ -123,18 +130,34 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
                   Troco dado durante o turno **por um meio fora do caixa** (por exemplo, Pago Móvil): `{ amount, count, byProcessor: [{ method, processor, name, amount, count }] }`. O Fire registra a venda em dinheiro líquida do troco, mas esse dinheiro ficou na gaveta, então entra em `systemCash`. `null` se o turno não teve, em v1 e em turnos reportados antes deste campo.
                 </ResponseField>
                 <ResponseField name="systemCash" type="number">O que deveria haver na gaveta. v2: fundo + recebido + troco fora do caixa − sangrias. v1: recebido.</ResponseField>
-                <ResponseField name="declaredCash" type="number">O que foi contado. v2: a gaveta inteira, com o fundo. v1: líquido, sem o fundo.</ResponseField>
-                <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`. Negativo = falta.</ResponseField>
-                <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` ou `OVERAGE`.</ResponseField>
-                <ResponseField name="reason" type="string">Motivo declarado pelo POS.</ResponseField>
-                <ResponseField name="notes" type="string | null">Texto livre.</ResponseField>
+                <ResponseField name="declaredCash" type="number">O valor contado **vigente**: se o turno foi corrigido, o valor da última correção. v2: a gaveta inteira, com o fundo. v1: líquido, sem o fundo.</ResponseField>
+                <ResponseField name="discrepancy" type="number">`declaredCash − systemCash`, com o valor contado vigente. Negativo = falta.</ResponseField>
+                <ResponseField name="discrepancyType" type="string">`MATCH`, `SHORTAGE` ou `OVERAGE`, com o valor contado vigente.</ResponseField>
+                <ResponseField name="reason" type="string">Motivo da diferença. Num turno corrigido, o que a última correção deixou: `OTHER` se já não há falta.</ResponseField>
+                <ResponseField name="notes" type="string | null">Texto livre. Num turno corrigido, `Corrección N: <motivo>` da última correção.</ResponseField>
                 <ResponseField name="withdrawals" type="object[]">`amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) e `notes`.</ResponseField>
                 <ResponseField name="authorization" type="object | null">`approvedBy` e `approvedAt` da conciliação: quem reportou o turno (`terminal:<id>` pelo POS, `user:<id>` pelo Backoffice) e a hora da conciliação. Não é o mesmo que `cash.authorization` de [`store.register_closed`](/pt/events/store-register-closed), que traz o usuário que gerou o código de autorização e quando foi usado.</ResponseField>
-                <ResponseField name="postClose" type="boolean">`true` quando o turno foi reportado depois do fechamento do dia.</ResponseField>
+                <ResponseField name="closeAuthorization" type="object | null">
+                  O código do gerente com que o operador **entrou para fechar** o caixa no Fire POS: `tokenId` (id do código, nunca o código), `type` (`one_time`, um código dinâmico, ou `static`, o fixo da loja), `approvedBy` (quem gerou o código) e `approvedAt` (quando foi usado). É o mesmo `closeAuthorization` de [`store.register_closed`](/pt/events/store-register-closed). `null` se não houve código, se o turno foi fechado pelo Backoffice, em v1 e em turnos reportados antes deste campo.
+                </ResponseField>
+                <ResponseField name="corrections" type="object[]">
+                  As correções do valor contado aplicadas ao turno, da primeira à última. `[]` se não foi corrigido. `declaredCash`, `discrepancy` e `discrepancyType` do turno já trazem o valor da última.
+                  <Expandable title="correction">
+                    <ResponseField name="id" type="string">Id da correção: o mesmo `correction.id` do evento [`store.register_close_corrected`](/pt/events/store-register-close-corrected).</ResponseField>
+                    <ResponseField name="correctedAt" type="string">ISO 8601. Quando a correção foi aplicada ao turno; pode não coincidir no milissegundo com `correction.correctedAt` do evento.</ResponseField>
+                    <ResponseField name="source" type="string | null">`pos` — o operador, com código do gerente. `backoffice` — um usuário do Backoffice. `null` em correções anteriores a este campo.</ResponseField>
+                    <ResponseField name="afterDayClose" type="boolean | null">`true` se foi corrigido com o dia já fechado. `null` em correções anteriores a este campo.</ResponseField>
+                    <ResponseField name="previousDeclaredCash" type="number">O valor contado antes desta correção.</ResponseField>
+                    <ResponseField name="declaredCash" type="number">O valor contado depois desta correção.</ResponseField>
+                    <ResponseField name="reason" type="string">Motivo da diferença que esta correção deixou (`OTHER` se não deixa falta).</ResponseField>
+                    <ResponseField name="notes" type="string | null">`Corrección N: <motivo>`, com o motivo que quem corrigiu escreveu.</ResponseField>
+                  </Expandable>
+                </ResponseField>
+                <ResponseField name="postClose" type="boolean">`true` quando o turno foi reportado depois do fechamento do dia. Como esta API lê a foto do fechamento e esses turnos não entram nela, na prática é sempre `false`.</ResponseField>
                 <ResponseField name="reportedAt" type="string">ISO 8601.</ResponseField>
               </Expandable>
             </ResponseField>
-            <ResponseField name="unreconciledOperators" type="object[] | null">Operadores que receberam dinheiro nesta moeda e não reportaram o fechamento do turno: `uid` e `name`. `[]` = todos fecharam. `null` = não se sabe: o fechamento não tem resumo de caixa (dias antigos, ou a leitura do caixa falhou ao fechar).</ResponseField>
+            <ResponseField name="unreconciledOperators" type="object[] | null">Operadores que receberam dinheiro nesta moeda e não tinham reportado o fechamento do turno ao fechar o dia: `uid` e `name`. É a lista como o fechamento do dia a deixou: quem reportou depois continua aqui. `[]` = todos fecharam. `null` = não se sabe: o fechamento não tem resumo de caixa (dias antigos, ou a leitura do caixa falhou ao fechar).</ResponseField>
           </Expandable>
         </ResponseField>
       </Expandable>
@@ -217,6 +240,8 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
                 { "amount": 1500.00, "category": "SAFE_DROP", "withdrawnAt": "2026-11-10T17:40:00Z", "authorizer": { "uid": "u-0007", "name": "Carlos Lima" }, "notes": null }
               ],
               "authorization": null,
+              "closeAuthorization": { "tokenId": "c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f", "type": "one_time", "approvedBy": "u-0007", "approvedAt": "2026-11-10T21:03:40Z" },
+              "corrections": [],
               "postClose": false,
               "reportedAt": "2026-11-10T21:06:12Z"
             }
@@ -265,6 +290,66 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
 
   `systemCash` = 50.00 + 840.00 + 35.50 − 200.00 = 725.50. No nível do dia, `changeGiven` é só o troco em dinheiro e o resto está em `payments.byMethod[CASH].cash.changeOutsideDrawer`.
 
+## Correções do fechamento de caixa
+
+Um fechamento de caixa pode ser corrigido depois —no POS com um código do gerente, ou no Backoffice—, também com o dia já fechado. Uma correção muda só o valor contado: `systemCash`, `expectedCashSales`, as sangrias e o troco dado fora do caixa ficam como o fechamento deixou. O ciclo completo está em [Fechamento e correção de caixa](/pt/events/register-close-and-correction).
+
+- **Corrigido antes do fechamento do dia:** o turno entra na foto já corrigido.
+- **Corrigido depois do fechamento do dia:** o Fire atualiza esse turno na foto e recalcula as contagens e valores de `summary`. As vendas, os pagamentos e `unreconciledOperators` não mudam, e `store.business_day_closed` não é reemitido. Cada correção chega a você como [`store.register_close_corrected`](/pt/events/store-register-close-corrected) com `correction.afterDayClose: true`: se você já tinha lido o dia, consulte de novo.
+
+### Um turno corrigido
+
+A operadora declarou `700.00` quando se esperavam `725.50`, e corrigiu no POS ao recontar. O turno já traz o valor contado vigente, e `corrections[]` guarda o que tinha antes:
+
+```json
+{
+  "reconciliationId": "e2a4b6c8-0000-4000-8000-000000000002",
+  "apiVersion": 2,
+  "sessionExternalId": "5b0e8a3c-7d21-4f6a-9c1e-2a7b9d3e4f50",
+  "terminalUid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f",
+  "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+  "shiftStart": "2026-11-19T12:00:00.000Z",
+  "shiftEnd": "2026-11-19T20:05:31.204Z",
+  "openingBalance": 50.00,
+  "expectedCashSales": 840.00,
+  "withdrawalsTotal": 200.00,
+  "changeOutsideDrawer": {
+    "amount": 35.50,
+    "count": 4,
+    "byProcessor": [
+      { "method": "DIGITAL", "processor": "pago_movil", "name": "Pago Móvil", "amount": 35.50, "count": 4 }
+    ]
+  },
+  "systemCash": 725.50,
+  "declaredCash": 725.50,
+  "discrepancy": 0.00,
+  "discrepancyType": "MATCH",
+  "reason": "OTHER",
+  "notes": "Corrección 1: billetes de 10 contados como de 1",
+  "withdrawals": [
+    { "amount": 200.00, "category": "BANK_DEPOSIT", "withdrawnAt": "2026-11-19T16:30:00.000Z", "authorizer": { "uid": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "name": "Luis Gómez" }, "notes": null }
+  ],
+  "authorization": { "approvedBy": "terminal:0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "approvedAt": "2026-11-19T20:05:33.020Z" },
+  "closeAuthorization": { "tokenId": "c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f", "type": "one_time", "approvedBy": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "approvedAt": "2026-11-19T20:03:47.118Z" },
+  "corrections": [
+    {
+      "id": "8f1e2d3c-4b5a-4968-8776-655443322110",
+      "correctedAt": "2026-11-19T20:42:10.402Z",
+      "source": "pos",
+      "afterDayClose": false,
+      "previousDeclaredCash": 700.00,
+      "declaredCash": 725.50,
+      "reason": "OTHER",
+      "notes": "Corrección 1: billetes de 10 contados como de 1"
+    }
+  ],
+  "postClose": false,
+  "reportedAt": "2026-11-19T20:05:33.020Z"
+}
+```
+
+Para saber se um turno foi corrigido, veja se `corrections` tem elementos. O valor contado no fechamento é o `previousDeclaredCash` da primeira correção.
+
 ## Dias fechados antes deste contrato
 
 O que um fechamento não guardou, não aparece depois. O Fire **não** reconstrói a partir dos pedidos.
@@ -272,7 +357,9 @@ O que um fechamento não guardou, não aparece depois. O Fire **não** reconstr�
 - Os dias agrupados só por processador voltam com `processors: null`, e `method` traz o código pelo qual se agrupavam.
 - Os dias fechados antes de se guardarem as bandeiras e o dinheiro entregue voltam com `brands: null` e `cash: null`.
 - Os turnos v1 voltam com `withdrawalsTotal: 0`, e `openingBalance` só se o POS o enviou (informativo).
-- Os dias sem resumo de caixa voltam com `unreconciledOperators: null`.
+- Os dias sem resumo de caixa voltam com `unreconciledOperators: null`, `shifts: []` e as contagens de `summary` em `0`.
+- Nos dias fechados antes de a foto guardar o turno completo, `shifts` pode vir vazio (`[]`) mesmo com `summary` e `unreconciledOperators` completos.
+- Os turnos reportados antes de existir `closeAuthorization` voltam com `closeAuthorization: null`, e as correções anteriores a `source` e `afterDayClose`, com esses campos em `null`.
 - Os turnos reportados antes de existir o troco fora do caixa voltam com `changeOutsideDrawer: null`. Os dias fechados antes voltam com `payments.byMethod[CASH].cash.changeOutsideDrawer: null`, e seu `changeGiven` é o troco total dos pedidos.
 
 ## Erros
@@ -292,3 +379,5 @@ O que um fechamento não guardou, não aparece depois. O Fire **não** reconstr�
 - [Conciliações de caixa (v2)](/pt/api-reference/cash-reconciliations-v2) — como entra cada fechamento de turno.
 - [`store.business_day_closed`](/pt/events/store-day-closed) — o evento que avisa que um dia fechou.
 - [`store.register_closed`](/pt/events/store-register-closed) — o evento com a conferência de cada caixa ao fechar, com os mesmos nomes que `shifts[]`.
+- [`store.register_close_corrected`](/pt/events/store-register-close-corrected) — o evento de cada correção; seu `correction.id` é o `id` de `shifts[].corrections[]`.
+- [Fechamento e correção de caixa](/pt/events/register-close-and-correction) — o ciclo completo de um caixa.
