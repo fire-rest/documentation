@@ -17,7 +17,7 @@ The [`store.business_day_closed`](/en/events/store-day-closed) event is lean on 
   **This API reads only the business day close snapshot.** When the day closes, Fire saves the payments and the cash count of every shift already reported, and this API returns that. Two consequences:
 
   - **Shifts reported after the day closed do not appear**, neither in `shifts[]` nor in the `summary` counts, and whoever reported late is still in `unreconciledOperators`. Those closes reach you through [`store.register_closed`](/en/events/store-register-closed) with `postClose: true`.
-  - **Register close corrections are reflected**, even when made after the day closed: Fire updates the corrected shift and the snapshot's cash counts. See [Register close corrections](#register-close-corrections).
+  - **Register close corrections are reflected**, even when made after the day closed: Fire updates the corrected shift and the snapshot's cash counts. See [Register close corrections](#register-close-corrections). If the shift isn't in the business day close (it was reported later), the correction reaches you only through the event.
 </Info>
 
 ## Authentication
@@ -111,7 +111,7 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
         <ResponseField name="cash" type="object">
           <Expandable title="cash">
             <ResponseField name="summary" type="object">
-              `expectedCashSales` (cash charged in the day; `null` outside the day's currency), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` and `netDiscrepancy` (sum of the shifts' differences — negative means money is missing). They count the shifts that were in the business day close, with their current values: a correction recomputes them. When the close has no cash summary, all `0`.
+              `expectedCashSales` (cash charged in the day; `null` outside the day's currency), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` and `netDiscrepancy` (sum of the shifts' differences — negative means money is missing). They count the shifts that were in the business day close, with their current values: a correction recomputes them. When the close has no cash summary, the shift counts and amounts are `0` (`expectedCashSales` still comes from the payments).
             </ResponseField>
             <ResponseField name="shifts" type="object[]">
               One per shift close reported with [Cash reconciliations](/en/api-reference/cash-reconciliations-v2) **before** the day closed. Those reported later do not appear.
@@ -141,7 +141,7 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
                   The manager code the cashier used to **start closing** the register on Fire POS: `tokenId` (the code's id, never the code), `type` (`one_time`, a dynamic code, or `static`, the store's fixed code), `approvedBy` (who generated the code) and `approvedAt` (when it was used). It is the same `closeAuthorization` as in [`store.register_closed`](/en/events/store-register-closed). `null` when there was no code, when the shift was closed from the Backoffice, on v1 and on shifts reported before this field.
                 </ResponseField>
                 <ResponseField name="corrections" type="object[]">
-                  The corrections of the counted cash applied to the shift, first to last. `[]` when it was not corrected. The shift's `declaredCash`, `discrepancy` and `discrepancyType` already carry the last one's value.
+                  The corrections of the counted cash applied to the shift, first to last. `[]` when it was not corrected. It includes those that changed the counted total: a correction that only changes the bill breakdown, or one superseded by another with a higher `sequence`, may be missing. The shift's `declaredCash`, `discrepancy` and `discrepancyType` already carry the last one's value.
                   <Expandable title="correction">
                     <ResponseField name="id" type="string">Id of the correction: the same `correction.id` as the [`store.register_close_corrected`](/en/events/store-register-close-corrected) event.</ResponseField>
                     <ResponseField name="correctedAt" type="string">ISO 8601. When the correction was applied to the shift; it may not match the event's `correction.correctedAt` to the millisecond.</ResponseField>
@@ -295,7 +295,7 @@ All amounts are in **decimal units of the currency** (`22.90`, not `229000`).
 A register close can be corrected later —from the POS with a manager code, or from the Backoffice—, even after the day closed. A correction only changes the counted cash: `systemCash`, `expectedCashSales`, withdrawals and change given outside the drawer stay as the close left them. The whole lifecycle is in [Register close and correction](/en/events/register-close-and-correction).
 
 - **Corrected before the business day closed:** the shift enters the snapshot already corrected.
-- **Corrected after the business day closed:** Fire updates that shift in the snapshot and recomputes the `summary` counts and amounts. Sales, payments and `unreconciledOperators` don't change, and `store.business_day_closed` is not emitted again. Every correction reaches you as [`store.register_close_corrected`](/en/events/store-register-close-corrected) with `correction.afterDayClose: true`: if you had already read the day, read it again.
+- **Corrected after the business day closed:** Fire updates that shift in the snapshot and recomputes the `summary` counts and amounts. Sales, payments and `unreconciledOperators` don't change, and `store.business_day_closed` is not emitted again. Every correction reaches you as [`store.register_close_corrected`](/en/events/store-register-close-corrected) with `correction.afterDayClose: true`: if you had already read the day, read it again. If the shift isn't in the business day close (it was reported later), the correction reaches you only through the event.
 
 ### A corrected shift
 
@@ -357,7 +357,7 @@ What a close did not store, it does not show later. Fire does **not** rebuild it
 - Days grouped only by processor come back with `processors: null`, and `method` holds the code they were grouped by.
 - Days closed before card brands and cash handed over were recorded come back with `brands: null` and `cash: null`.
 - v1 shifts come back with `withdrawalsTotal: 0`, and `openingBalance` only when the POS sent it (informational).
-- Days without a cash summary come back with `unreconciledOperators: null`, `shifts: []` and the `summary` counts at `0`.
+- Days without a cash summary come back with `unreconciledOperators: null`, `shifts: []` and the shift counts and amounts of `summary` at `0` (`expectedCashSales` still comes from the payments).
 - On days closed before the snapshot saved the whole shift, `shifts` may come back empty (`[]`) even though `summary` and `unreconciledOperators` are complete.
 - Shifts reported before `closeAuthorization` existed come back with `closeAuthorization: null`, and corrections made before `source` and `afterDayClose`, with those fields as `null`.
 - Shifts reported before change outside the drawer existed come back with `changeOutsideDrawer: null`. Days closed before it come back with `payments.byMethod[CASH].cash.changeOutsideDrawer: null`, and their `changeGiven` is the orders' total change.
@@ -379,5 +379,5 @@ What a close did not store, it does not show later. Fire does **not** rebuild it
 - [Cash reconciliations (v2)](/en/api-reference/cash-reconciliations-v2) — how each shift close gets in.
 - [`store.business_day_closed`](/en/events/store-day-closed) — the event that tells you a day closed.
 - [`store.register_closed`](/en/events/store-register-closed) — the event with each register's cash count as it closes, with the same names as `shifts[]`.
-- [`store.register_close_corrected`](/en/events/store-register-close-corrected) — the event for each correction; its `correction.id` is the `id` in `shifts[].corrections[]`.
+- [`store.register_close_corrected`](/en/events/store-register-close-corrected) — the event for each correction; when the correction changed the shift's counted total, its `correction.id` is the `id` in `shifts[].corrections[]`. A correction that only changes the bill breakdown, or one superseded by another with a higher `sequence`, may not be listed.
 - [Register close and correction](/en/events/register-close-and-correction) — a register's whole lifecycle.

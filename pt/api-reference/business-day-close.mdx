@@ -17,7 +17,7 @@ O evento [`store.business_day_closed`](/pt/events/store-day-closed) é enxuto de
   **Esta API lê só a foto do fechamento do dia.** Ao fechar o dia, o Fire guarda os pagamentos e a conferência de caixa de cada turno que já estava reportado, e esta API devolve isso. Duas consequências:
 
   - **Os turnos reportados depois do fechamento do dia não aparecem**, nem em `shifts[]` nem nas contagens de `summary`, e quem reportou atrasado continua em `unreconciledOperators`. Esses fechamentos chegam a você por [`store.register_closed`](/pt/events/store-register-closed) com `postClose: true`.
-  - **As correções do fechamento de caixa aparecem**, mesmo quando feitas com o dia já fechado: o Fire atualiza o turno corrigido e as contagens de caixa da foto. Veja [Correções do fechamento de caixa](#correções-do-fechamento-de-caixa).
+  - **As correções do fechamento de caixa aparecem**, mesmo quando feitas com o dia já fechado: o Fire atualiza o turno corrigido e as contagens de caixa da foto. Veja [Correções do fechamento de caixa](#correções-do-fechamento-de-caixa). Se o turno não está no fechamento do dia (foi reportado depois), a correção só chega a você pelo evento.
 </Info>
 
 ## Autenticação
@@ -111,7 +111,7 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
         <ResponseField name="cash" type="object">
           <Expandable title="cash">
             <ResponseField name="summary" type="object">
-              `expectedCashSales` (dinheiro recebido no dia; `null` fora da moeda do dia), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` e `netDiscrepancy` (soma das diferenças dos turnos — negativo quer dizer que falta dinheiro). Contam os turnos que estavam no fechamento do dia, com seus valores vigentes: uma correção os recalcula. Se o fechamento não tem resumo de caixa, todos em `0`.
+              `expectedCashSales` (dinheiro recebido no dia; `null` fora da moeda do dia), `shiftsReported`, `match`, `shortage`, `overage`, `shortageAmount`, `overageAmount` e `netDiscrepancy` (soma das diferenças dos turnos — negativo quer dizer que falta dinheiro). Contam os turnos que estavam no fechamento do dia, com seus valores vigentes: uma correção os recalcula. Se o fechamento não tem resumo de caixa, as contagens e valores de turnos vêm em `0` (`expectedCashSales` continua saindo dos pagamentos).
             </ResponseField>
             <ResponseField name="shifts" type="object[]">
               Um por fechamento de turno reportado com [Conciliações de caixa](/pt/api-reference/cash-reconciliations-v2) **antes** de fechar o dia. Os reportados depois não aparecem.
@@ -141,7 +141,7 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
                   O código do gerente com que o operador **entrou para fechar** o caixa no Fire POS: `tokenId` (id do código, nunca o código), `type` (`one_time`, um código dinâmico, ou `static`, o fixo da loja), `approvedBy` (quem gerou o código) e `approvedAt` (quando foi usado). É o mesmo `closeAuthorization` de [`store.register_closed`](/pt/events/store-register-closed). `null` se não houve código, se o turno foi fechado pelo Backoffice, em v1 e em turnos reportados antes deste campo.
                 </ResponseField>
                 <ResponseField name="corrections" type="object[]">
-                  As correções do valor contado aplicadas ao turno, da primeira à última. `[]` se não foi corrigido. `declaredCash`, `discrepancy` e `discrepancyType` do turno já trazem o valor da última.
+                  As correções do valor contado aplicadas ao turno, da primeira à última. `[]` se não foi corrigido. Entram as que mudaram o total contado: uma correção que só muda o detalhe por nota, ou uma superada por outra de `sequence` maior, pode não estar. `declaredCash`, `discrepancy` e `discrepancyType` do turno já trazem o valor da última.
                   <Expandable title="correction">
                     <ResponseField name="id" type="string">Id da correção: o mesmo `correction.id` do evento [`store.register_close_corrected`](/pt/events/store-register-close-corrected).</ResponseField>
                     <ResponseField name="correctedAt" type="string">ISO 8601. Quando a correção foi aplicada ao turno; pode não coincidir no milissegundo com `correction.correctedAt` do evento.</ResponseField>
@@ -295,7 +295,7 @@ Todos os valores vão em **decimais da moeda** (`22.90`, não `229000`).
 Um fechamento de caixa pode ser corrigido depois —no POS com um código do gerente, ou no Backoffice—, também com o dia já fechado. Uma correção muda só o valor contado: `systemCash`, `expectedCashSales`, as sangrias e o troco dado fora do caixa ficam como o fechamento deixou. O ciclo completo está em [Fechamento e correção de caixa](/pt/events/register-close-and-correction).
 
 - **Corrigido antes do fechamento do dia:** o turno entra na foto já corrigido.
-- **Corrigido depois do fechamento do dia:** o Fire atualiza esse turno na foto e recalcula as contagens e valores de `summary`. As vendas, os pagamentos e `unreconciledOperators` não mudam, e `store.business_day_closed` não é reemitido. Cada correção chega a você como [`store.register_close_corrected`](/pt/events/store-register-close-corrected) com `correction.afterDayClose: true`: se você já tinha lido o dia, consulte de novo.
+- **Corrigido depois do fechamento do dia:** o Fire atualiza esse turno na foto e recalcula as contagens e valores de `summary`. As vendas, os pagamentos e `unreconciledOperators` não mudam, e `store.business_day_closed` não é reemitido. Cada correção chega a você como [`store.register_close_corrected`](/pt/events/store-register-close-corrected) com `correction.afterDayClose: true`: se você já tinha lido o dia, consulte de novo. Se o turno não está no fechamento do dia (foi reportado depois), a correção só chega a você pelo evento.
 
 ### Um turno corrigido
 
@@ -357,7 +357,7 @@ O que um fechamento não guardou, não aparece depois. O Fire **não** reconstr�
 - Os dias agrupados só por processador voltam com `processors: null`, e `method` traz o código pelo qual se agrupavam.
 - Os dias fechados antes de se guardarem as bandeiras e o dinheiro entregue voltam com `brands: null` e `cash: null`.
 - Os turnos v1 voltam com `withdrawalsTotal: 0`, e `openingBalance` só se o POS o enviou (informativo).
-- Os dias sem resumo de caixa voltam com `unreconciledOperators: null`, `shifts: []` e as contagens de `summary` em `0`.
+- Os dias sem resumo de caixa voltam com `unreconciledOperators: null`, `shifts: []` e as contagens e valores de turnos de `summary` em `0` (`expectedCashSales` continua saindo dos pagamentos).
 - Nos dias fechados antes de a foto guardar o turno completo, `shifts` pode vir vazio (`[]`) mesmo com `summary` e `unreconciledOperators` completos.
 - Os turnos reportados antes de existir `closeAuthorization` voltam com `closeAuthorization: null`, e as correções anteriores a `source` e `afterDayClose`, com esses campos em `null`.
 - Os turnos reportados antes de existir o troco fora do caixa voltam com `changeOutsideDrawer: null`. Os dias fechados antes voltam com `payments.byMethod[CASH].cash.changeOutsideDrawer: null`, e seu `changeGiven` é o troco total dos pedidos.
@@ -379,5 +379,5 @@ O que um fechamento não guardou, não aparece depois. O Fire **não** reconstr�
 - [Conciliações de caixa (v2)](/pt/api-reference/cash-reconciliations-v2) — como entra cada fechamento de turno.
 - [`store.business_day_closed`](/pt/events/store-day-closed) — o evento que avisa que um dia fechou.
 - [`store.register_closed`](/pt/events/store-register-closed) — o evento com a conferência de cada caixa ao fechar, com os mesmos nomes que `shifts[]`.
-- [`store.register_close_corrected`](/pt/events/store-register-close-corrected) — o evento de cada correção; seu `correction.id` é o `id` de `shifts[].corrections[]`.
+- [`store.register_close_corrected`](/pt/events/store-register-close-corrected) — o evento de cada correção; quando a correção mudou o total contado do turno, seu `correction.id` é o `id` de `shifts[].corrections[]`. Uma correção que só muda o detalhe por nota, ou uma superada por outra de `sequence` maior, pode não estar na lista.
 - [Fechamento e correção de caixa](/pt/events/register-close-and-correction) — o ciclo completo de um caixa.

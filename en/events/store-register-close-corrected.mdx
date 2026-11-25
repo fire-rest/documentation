@@ -191,7 +191,7 @@ Fields shared with the close are documented in [`store.register_closed`](/en/eve
   The correction that produced this event.
 
   <Expandable title="correction">
-    <ResponseField name="id" type="string">UUID of the correction. This event's idempotency key; it also comes as `_meta.triggerEntityId`. It is the same `id` the correction has in `shifts[].corrections[]` of [Business day close](/en/api-reference/business-day-close).</ResponseField>
+    <ResponseField name="id" type="string">UUID of the correction. This event's idempotency key; it also comes as `_meta.triggerEntityId`. When the correction changed the shift's counted total, it is the same `id` it has in `shifts[].corrections[]` of [Business day close](/en/api-reference/business-day-close). A correction that only changes the bill breakdown, or one superseded by another with a higher `sequence`, may not appear there.</ResponseField>
     <ResponseField name="sequence" type="integer">Number of the correction within that close: `1` is the first. It counts both POS and Backoffice corrections. Use it to order the corrections of the same `registerSessionId`.</ResponseField>
     <ResponseField name="correctedAt" type="string">ISO 8601 UTC timestamp when the correction was saved.</ResponseField>
     <ResponseField name="reason" type="string">The reason typed by whoever corrected it, as entered (3 to 200 characters).</ResponseField>
@@ -208,7 +208,7 @@ Fields shared with the close are documented in [`store.register_closed`](/en/eve
       The manager code that enabled the correction on the POS: `{ tokenId, type, approvedBy, approvedAt }`, with the same shape as the other authorizations (see [Authorizations](/en/events/store-register-closed#authorizations)). `null` on Backoffice corrections, where the user is accountable, and when the code could not be read.
     </ResponseField>
     <ResponseField name="afterDayClose" type="boolean">
-      `true` when the register's business day (`businessDayDate`) was already closed at the time of the correction. In that case Fire updates that day's cash count in [Business day close](/en/api-reference/business-day-close); the day's sales and payments don't change and `store.business_day_closed` is not emitted again.
+      `true` when the register's business day (`businessDayDate`) was already closed at the time of the correction. In that case Fire updates that day's cash count in [Business day close](/en/api-reference/business-day-close); the day's sales and payments don't change and `store.business_day_closed` is not emitted again. If the shift isn't in the business day close (it was reported later), the correction reaches you only through the event.
     </ResponseField>
     <ResponseField name="previous" type="object">
       What the close said **before this** correction —not necessarily the original close: on the second correction it is what the first one left—: `declaredCash`, `discrepancy` and `discrepancyType`.
@@ -239,18 +239,29 @@ async function onRegisterCloseCorrected(data) {
     },
   });
 
-  // 3. Update the current count only if this correction is newer than the one you have
+  // 3. Current count: create it if the correction arrived before the close,
+  //    or update it only if this correction is newer than the one you have
   const close = await db.registerCloses.findUnique({ where: { registerSessionId } });
-  if (close && correction.sequence > (close.lastCorrectionSequence ?? 0)) {
-    await db.registerCloses.update({
-      where: { registerSessionId },
+  const current = {
+    counted: cash.declaredCash,
+    difference: cash.discrepancy,
+    lastCorrectionSequence: correction.sequence,
+  };
+  if (!close) {
+    await db.registerCloses.create({
       data: {
-        counted: cash.declaredCash,
-        difference: cash.discrepancy,
-        lastCorrectionSequence: correction.sequence,
+        registerSessionId,
+        storeCode: data.store.code,
+        businessDayDate: data.businessDayDate,
+        currency: cash.currency,
+        expected: cash.systemCash,
+        ...current,
       },
     });
+  } else if (correction.sequence > (close.lastCorrectionSequence ?? 0)) {
+    await db.registerCloses.update({ where: { registerSessionId }, data: current });
   }
+  // When store.register_closed arrives, don't overwrite a record with lastCorrectionSequence > 0.
 }
 ```
 

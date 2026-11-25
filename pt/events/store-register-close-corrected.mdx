@@ -191,7 +191,7 @@ Os campos em comum com o fechamento estão documentados em [`store.register_clos
   A correção que gerou este evento.
 
   <Expandable title="correction">
-    <ResponseField name="id" type="string">UUID da correção. Chave de idempotência deste evento; também vem como `_meta.triggerEntityId`. É o mesmo `id` que a correção tem em `shifts[].corrections[]` de [Fechamento do dia](/pt/api-reference/business-day-close).</ResponseField>
+    <ResponseField name="id" type="string">UUID da correção. Chave de idempotência deste evento; também vem como `_meta.triggerEntityId`. Quando a correção mudou o total contado do turno, é o mesmo `id` que ela tem em `shifts[].corrections[]` de [Fechamento do dia](/pt/api-reference/business-day-close). Uma correção que só muda o detalhe por nota, ou uma superada por outra de `sequence` maior, pode não aparecer ali.</ResponseField>
     <ResponseField name="sequence" type="integer">Número da correção dentro desse fechamento: `1` é a primeira. Conta as do POS e as do Backoffice. Use-o para ordenar as correções de um mesmo `registerSessionId`.</ResponseField>
     <ResponseField name="correctedAt" type="string">Timestamp ISO 8601 UTC em que a correção foi salva.</ResponseField>
     <ResponseField name="reason" type="string">O motivo que quem corrigiu escreveu, tal como está (de 3 a 200 caracteres).</ResponseField>
@@ -208,7 +208,7 @@ Os campos em comum com o fechamento estão documentados em [`store.register_clos
       O código do gerente que habilitou a correção no POS: `{ tokenId, type, approvedBy, approvedAt }`, no mesmo formato das demais autorizações (veja [Autorizações](/pt/events/store-register-closed#autorizações)). `null` nas correções pelo Backoffice, onde quem responde é o usuário, e se não foi possível ler o código.
     </ResponseField>
     <ResponseField name="afterDayClose" type="boolean">
-      `true` se o dia de negócio do caixa (`businessDayDate`) já estava fechado quando foi corrigido. Nesse caso o Fire atualiza a conferência de caixa desse dia em [Fechamento do dia](/pt/api-reference/business-day-close); as vendas e os pagamentos do dia não mudam e `store.business_day_closed` não é reemitido.
+      `true` se o dia de negócio do caixa (`businessDayDate`) já estava fechado quando foi corrigido. Nesse caso o Fire atualiza a conferência de caixa desse dia em [Fechamento do dia](/pt/api-reference/business-day-close); as vendas e os pagamentos do dia não mudam e `store.business_day_closed` não é reemitido. Se o turno não está no fechamento do dia (foi reportado depois), a correção só chega a você pelo evento.
     </ResponseField>
     <ResponseField name="previous" type="object">
       O que o fechamento dizia **antes desta** correção —não necessariamente o fechamento original: na segunda correção é o que a primeira deixou—: `declaredCash`, `discrepancy` e `discrepancyType`.
@@ -239,18 +239,29 @@ async function onRegisterCloseCorrected(data) {
     },
   });
 
-  // 3. Atualizar a conferência vigente só se esta correção for mais nova que a que você tem
+  // 3. Conferência vigente: criá-la se a correção chegou antes do fechamento,
+  //    ou atualizá-la só se esta correção for mais nova que a que você tem
   const close = await db.registerCloses.findUnique({ where: { registerSessionId } });
-  if (close && correction.sequence > (close.lastCorrectionSequence ?? 0)) {
-    await db.registerCloses.update({
-      where: { registerSessionId },
+  const current = {
+    counted: cash.declaredCash,
+    difference: cash.discrepancy,
+    lastCorrectionSequence: correction.sequence,
+  };
+  if (!close) {
+    await db.registerCloses.create({
       data: {
-        counted: cash.declaredCash,
-        difference: cash.discrepancy,
-        lastCorrectionSequence: correction.sequence,
+        registerSessionId,
+        storeCode: data.store.code,
+        businessDayDate: data.businessDayDate,
+        currency: cash.currency,
+        expected: cash.systemCash,
+        ...current,
       },
     });
+  } else if (correction.sequence > (close.lastCorrectionSequence ?? 0)) {
+    await db.registerCloses.update({ where: { registerSessionId }, data: current });
   }
+  // Ao receber store.register_closed, não sobrescreva um registro com lastCorrectionSequence > 0.
 }
 ```
 
