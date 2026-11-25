@@ -18,16 +18,18 @@ Fire emite `store.register_closed` cuando se cierra una caja por cualquiera de l
 
 **Los cierres forzados no lo emiten.** Cuando se revoca o se borra una terminal, Fire cierra su sesión abierta sin que nadie cuente el cajón: no hay cuadre que reportar.
 
+**Un cierre se puede corregir después.** Si el cajero contó mal, puede corregir lo contado desde el POS con un código del encargado, o lo corrige un usuario desde el Backoffice. Cada corrección llega como [`store.register_close_corrected`](/es/events/store-register-close-corrected), con el mismo `registerSessionId` y el cuadre completo ya corregido. Ver [Cierre y corrección de caja](/es/events/register-close-and-correction).
+
 | | |
 |---|---|
 | Cobertura | **Universal** — todos los países con Fire POS. |
 | Llave de idempotencia | `data.registerSessionId` — ver [Idempotencia de tu lado](/es/events/delivery#idempotencia-de-tu-lado) |
-| Dispara más de una vez | No, salvo reintentos. Un evento por sesión de caja. |
+| Dispara más de una vez | No, salvo reintentos. Un evento por sesión de caja. Si después se corrige lo contado, Fire emite [`store.register_close_corrected`](/es/events/store-register-close-corrected), no otro `store.register_closed`. |
 | Latencia respecto al cierre | Se encola apenas se guarda el cierre. El cierre nunca espera al evento ni falla por él. |
 
 ## Qué hay en `data`
 
-La sesión de caja (`registerSessionId`), el día de negocio al que pertenece, el timing, quién la cerró, el cajero y la terminal, el cuadre `cash` y una ref mínima de `store`.
+La sesión de caja (`registerSessionId`), el día de negocio al que pertenece, el timing, quién la cerró y con qué código del encargado entró a cerrarla (`closeAuthorization`), el cajero y la terminal, el cuadre `cash` y una ref mínima de `store`.
 
 **`cash` usa los mismos nombres que `cash.shifts[]` de [Cierre de día](/es/api-reference/business-day-close)** — `openingBalance`, `expectedCashSales`, `withdrawalsTotal`, `changeOutsideDrawer`, `systemCash`, `declaredCash`, `discrepancy`, `discrepancyType`, `reason`, `notes`, `authorization`, `withdrawals` — así cruzas el evento y la API campo por campo. `registerSessionId` es el `shifts[].sessionExternalId` de esa misma caja en la API.
 
@@ -51,6 +53,12 @@ Todos los montos de `cash` van **en decimales, en la moneda de la tienda** (`cas
     "closedAt": "2026-11-19T20:05:31.204Z",
     "postClose": false,
     "closedBy": { "type": "cashier", "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
+    "closeAuthorization": {
+      "tokenId": "c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f",
+      "type": "one_time",
+      "approvedBy": "7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d",
+      "approvedAt": "2026-11-19T20:03:47.118Z"
+    },
     "operator": { "uid": "3e4f5a6b-7c8d-4e9f-a0b1-c2d3e4f5a6b7", "name": "María Pérez" },
     "terminal": { "uid": "0c9d8e7f-6a5b-4c3d-8e2f-1a0b9c8d7e6f", "name": "VE-K000-POS-01" },
     "cash": {
@@ -108,7 +116,7 @@ El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de
 | `openedAt` / `closedAt` | `shiftStart` / `shiftEnd` |
 
 <Note>
-  **Algunos valores pueden diferir entre los dos.** En el evento, `systemCash` y `expectedCashSales` son los valores que quedaron al cerrar la caja — lo que vio quien cerró. En la API son los que recalculó la conciliación. `postClose` se calcula al emitir el evento; en la API, al registrar la conciliación. Y `authorization` significa algo distinto en cada uno (ver el campo más abajo).
+  **Algunos valores pueden diferir entre los dos.** En el evento, `systemCash` y `expectedCashSales` son los valores que quedaron al cerrar la caja — lo que vio quien cerró. En la API son los que recalculó la conciliación. `postClose` se calcula al emitir el evento; y un turno reportado después de cerrado el día no aparece en la API, porque la API lee el cuadre que quedó al cerrar el día. `authorization` significa algo distinto en cada uno (ver el campo más abajo). Y si el cierre se corrigió, la API ya trae lo contado corregido, mientras que este evento conserva lo contado al cerrar: lo corregido llega en [`store.register_close_corrected`](/es/events/store-register-close-corrected).
 </Note>
 
 ## Referencia de `data.*`
@@ -131,10 +139,10 @@ El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de
   Timestamp ISO 8601 UTC en que se cerró la caja.
 </ResponseField>
 <ResponseField name="postClose" type="boolean">
-  `true` cuando la caja cerró con su `businessDayDate` ya cerrado. La misma regla que `shifts[].postClose` en [Cierre de día](/es/api-reference/business-day-close).
+  `true` cuando la caja cerró con su `businessDayDate` ya cerrado. Un turno así **no aparece** en [Cierre de día](/es/api-reference/business-day-close): esa API lee el cuadre de caja que quedó al cerrar el día, y este turno llegó después.
 </ResponseField>
 
-### `closedBy`, `operator`, `terminal`
+### Quién cerró, el cajero y la terminal
 
 <ResponseField name="closedBy" type="object">
   Quién cerró la caja.
@@ -146,6 +154,9 @@ El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de
     <ResponseField name="uid" type="string | null">Id del usuario que la cerró.</ResponseField>
     <ResponseField name="name" type="string | null">Nombre para mostrar.</ResponseField>
   </Expandable>
+</ResponseField>
+<ResponseField name="closeAuthorization" type="object | null">
+  El **código del encargado con que el cajero entró a cerrar la caja** en el POS, en la forma de [autorización](#autorizaciones): `tokenId`, `type`, `approvedBy` y `approvedAt`. Nunca el código en sí. `null` si la caja se cerró desde el Backoffice, si la tienda no pide código para cerrar, o si no se encontró el código.
 </ResponseField>
 <ResponseField name="operator" type="object">
   El cajero de la sesión, sea cual sea la vía de cierre: `uid` y `name` (`string | null`).
@@ -188,13 +199,22 @@ El sobre `event` es el mismo que en todos los demás eventos — ver [Resumen de
     </ResponseField>
     <ResponseField name="notes" type="string | null">Notas del cierre, tal cual — pueden ser `""` (por ejemplo, un código de autorización sin notas). `null` solo si no hay de dónde sacarlas. La misma regla que `shifts[].notes` en la API.</ResponseField>
     <ResponseField name="authorization" type="object | null">
-      `approvedBy` (id del usuario que **generó el código** que autorizó el faltante) y `approvedAt` (cuándo **se usó** el código). `null` si no hubo autorización — siempre en los cierres desde el Backoffice. **No es lo mismo que `shifts[].authorization`** de la API, que trae quién reportó la conciliación (`terminal:<id>` o `user:<id>`) y la hora de la conciliación.
+      El código del encargado que **autorizó el faltante** al cerrar, en la forma de [autorización](#autorizaciones): `tokenId`, `type`, `approvedBy` (quién generó el código) y `approvedAt` (cuándo se usó). `null` si no hubo autorización — siempre en los cierres desde el Backoffice. **No es lo mismo que `shifts[].authorization`** de la API, que trae quién reportó la conciliación (`terminal:<id>` o `user:<id>`) y la hora de la conciliación.
     </ResponseField>
     <ResponseField name="withdrawals" type="object[]">
       Retiros del turno, con la misma forma que `shifts[].withdrawals[]`: `amount`, `category` (`SAFE_DROP`, `BANK_DEPOSIT`, `PAID_OUT`, `TIP_OUT`, `SHIFT_HANDOVER`, `OTHER`), `withdrawnAt`, `authorizer` (`uid`, `name`) y `notes`. `[]` si no hubo.
     </ResponseField>
   </Expandable>
 </ResponseField>
+
+### Autorizaciones
+
+`closeAuthorization`, `cash.authorization` y, en [`store.register_close_corrected`](/es/events/store-register-close-corrected), `correction.authorization` tienen la misma forma. Describen el **uso** de un código del encargado, **nunca el código**: Fire no lo guarda, así que no lo puede enviar.
+
+<ResponseField name="tokenId" type="string">Id del código en Fire. Identifica qué código se usó, quién lo generó y en qué caja.</ResponseField>
+<ResponseField name="type" type="string">`one_time` — un código dinámico de un solo uso. `static` — el código fijo de la tienda.</ResponseField>
+<ResponseField name="approvedBy" type="string">Id del usuario que generó el código. En un código `static`, el usuario que configuró o cambió por última vez el código fijo.</ResponseField>
+<ResponseField name="approvedAt" type="string">Timestamp ISO 8601 UTC en que se usó el código (o en que se creó, si no consta el uso).</ResponseField>
 
 ### `store` — ref mínima de tienda
 
@@ -236,6 +256,7 @@ async function onRegisterClosed(data) {
 - **`businessDayDate` es el día en que se abrió la caja, no el día en que cerró.** Una caja cerrada después de medianoche pertenece al día anterior. Si ese día ya estaba cerrado, `postClose` es `true`.
 - **`expectedCashSales` no incluye el vuelto entregado fuera de caja.** Suma `changeOutsideDrawer.amount` cuando no es `null` — o lee directamente `systemCash`, que ya lo trae.
 - **Los montos son decimales en `cash.currency`.** No vienen escalados ×100 ni ×10000 como otros montos de Fire.
+- **Tratar este evento como definitivo.** Un cierre se puede corregir después. Si te importa lo contado vigente, escucha también [`store.register_close_corrected`](/es/events/store-register-close-corrected) y no pises una corrección cuando te llegue un reintento de este evento.
 
 ## Relacionados
 
@@ -245,5 +266,11 @@ async function onRegisterClosed(data) {
   </Card>
   <Card title="Cierre de día" icon="cash-register" href="/es/api-reference/business-day-close">
     Los cobros del día y el cuadre de cada turno, con los mismos nombres que `cash`.
+  </Card>
+  <Card title="store.register_close_corrected" icon="pen-to-square" href="/es/events/store-register-close-corrected">
+    Dispara cada vez que se corrige lo contado de un cierre.
+  </Card>
+  <Card title="Cierre y corrección de caja" icon="rotate" href="/es/events/register-close-and-correction">
+    El ciclo completo y cómo se refleja en eventos y en la API.
   </Card>
 </CardGroup>

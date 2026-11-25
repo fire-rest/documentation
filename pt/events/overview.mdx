@@ -6,7 +6,7 @@ description: "O Fire é event-driven. Quando algo significativo acontece dentro 
 O Fire emite **eventos** sempre que ocorre uma transição de negócio relevante — um pedido é completado, um pedido é cancelado, um documento fiscal é autorizado pela autoridade tributária, a cozinha avança um pedido. Cada evento é entregue ao seu endpoint por um **Integration Flow** que você configura no dashboard do Fire.
 
 <Note>
-  O Fire emite hoje **seis** tipos de evento de pedido, **três** de loja e **dois** de catálogo: [`order.opened`](/pt/events/order-opened), [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status_updated`](/pt/events/order-status-updated), mais o evento agendado [`store.business_day_closed`](/pt/events/store-day-closed) no fechamento do dia, [`store.register_closed`](/pt/events/store-register-closed) toda vez que um caixa é fechado, [`store.updated`](/pt/events/store-updated) sempre que a configuração de uma loja é publicada, e os de catálogo [`menu.updated`](/pt/events/menu-updated) (o cardápio de uma terna foi sincronizado) e [`product.updated`](/pt/events/product-updated) (mudou a disponibilidade ou o preço de produtos).
+  O Fire emite hoje **seis** tipos de evento de pedido, **quatro** de loja e **dois** de catálogo: [`order.opened`](/pt/events/order-opened), [`order.completed`](/pt/events/order-completed), [`order.cancelled`](/pt/events/order-cancelled), [`order.invoiced`](/pt/events/order-invoiced), [`order.reversed`](/pt/events/order-reversed) e [`order.status_updated`](/pt/events/order-status-updated), mais o evento agendado [`store.business_day_closed`](/pt/events/store-day-closed) no fechamento do dia, [`store.register_closed`](/pt/events/store-register-closed) toda vez que um caixa é fechado, [`store.register_close_corrected`](/pt/events/store-register-close-corrected) toda vez que o valor contado de um fechamento de caixa é corrigido, [`store.updated`](/pt/events/store-updated) sempre que a configuração de uma loja é publicada, e os de catálogo [`menu.updated`](/pt/events/menu-updated) (o cardápio de uma terna foi sincronizado) e [`product.updated`](/pt/events/product-updated) (mudou a disponibilidade ou o preço de produtos).
 </Note>
 
 ## O Fire é a fonte da verdade do ciclo de vida
@@ -55,6 +55,9 @@ sequenceDiagram
 
     Note over F: fechamento de caixa (POS ou Backoffice)
     F->>Y: store.register_closed
+
+    Note over F: correção do fechamento de caixa (POS ou Backoffice)
+    F->>Y: store.register_close_corrected
 
     Note over F: fechamento do dia (agendado)
     F->>Y: store.business_day_closed
@@ -146,10 +149,10 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 
   <Expandable title="event">
     <ResponseField name="id" type="string">
-      Identificador desta **execução do flow**. É o mesmo nas retentativas do próprio nó HTTP, mas é **novo** quando o Fire recoloca a entrega na fila ou alguém a reprocessa manualmente — então não identifica o fato. Para deduplicar use uma chave de domínio: `data.orderId` + `event.type` + `event.emittedAt` nos eventos de pedido, `data.publication.id` em `store.updated`, `data.businessDayId` em `store.business_day_closed`, `data.registerSessionId` em `store.register_closed`. A chave de pedido cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo. Veja [Idempotência do seu lado](/pt/events/delivery#idempotência-do-seu-lado).
+      Identificador desta **execução do flow**. É o mesmo nas retentativas do próprio nó HTTP, mas é **novo** quando o Fire recoloca a entrega na fila ou alguém a reprocessa manualmente — então não identifica o fato. Para deduplicar use uma chave de domínio: `data.orderId` + `event.type` + `event.emittedAt` nos eventos de pedido, `data.publication.id` em `store.updated`, `data.businessDayId` em `store.business_day_closed`, `data.registerSessionId` em `store.register_closed`, `data.correction.id` em `store.register_close_corrected`. A chave de pedido cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo. Veja [Idempotência do seu lado](/pt/events/delivery#idempotência-do-seu-lado).
     </ResponseField>
     <ResponseField name="type" type="string">
-      Tipo de evento. Um de: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.register_closed`, `store.updated`, `menu.updated`, `product.updated`.
+      Tipo de evento. Um de: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.register_closed`, `store.register_close_corrected`, `store.updated`, `menu.updated`, `product.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
       Timestamp ISO 8601 UTC do momento em que o Fire **emitiu o fato** — quando o evento entrou na fila. **É estável entre retentativas**: todas as entregas recolocadas na fila do mesmo evento trazem o mesmo valor; um reprocessamento manual a partir do dead letter traz um novo. **Ordene os eventos por este campo**: as entregas podem chegar atrasadas ou fora de ordem, então nem a ordem de chegada nem `createdAt` dizem qual fato aconteceu primeiro. Só chega até você se o body do seu flow o incluir: se o seu flow foi criado antes de este campo existir, adicione `"emittedAt": "{{trigger.event.emittedAt}}"` ao bloco `event` do body do nó HTTP — o path já está disponível.
@@ -176,11 +179,12 @@ Quando um flow dispara, seu endpoint recebe um `POST` HTTP. O body tem **três c
 | [`order.status_updated`](/pt/events/order-status-updated) | Aviso leve de acompanhamento, **não** o snapshot V4 completo: identidade do pedido (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), uma loja mínima (`code`, `name`, `account`, `vendor`), `fulfillment.service.code`, `source` (`kds` / `order` / `fiscal`) e só o bloco da sua trilha: `kitchen`, `lifecycle` ou `fiscal` (os outros dois `null`) |
 | [`store.business_day_closed`](/pt/events/store-day-closed) | Um aviso thin de que o dia fechou: `businessDayId`, `businessDayDate`, `timezone`, `status`, `openedAt`, `closedAt`, `closedBy` e uma loja mínima |
 | [`store.register_closed`](/pt/events/store-register-closed) | A conferência completa de um caixa: `registerSessionId`, `businessDayDate`, `postClose`, `closedBy` (`cashier` / `admin`), `operator`, `terminal`, `cash` — os mesmos nomes que `cash.shifts[]` de [Fechamento do dia](/pt/api-reference/business-day-close), em decimais de `cash.currency`, com `changeOutsideDrawer` — e uma loja mínima |
+| [`store.register_close_corrected`](/pt/events/store-register-close-corrected) | A mesma forma que `store.register_closed`, com a conferência já corrigida em `cash`, mais o bloco `correction` (`id`, `sequence`, `correctedAt`, `reason`, `correctedBy`, `authorization`, `afterDayClose`, `previous`) |
 | [`store.updated`](/pt/events/store-updated) | A loja completa: bloco `store` V4 + `metadata`, `channels[]` com horários resolvidos, `operationSchedule`, `salesSchedule` e o bloco `publication` (`id`, `sequence`, `reason`, …) |
 | [`menu.updated`](/pt/events/menu-updated) | O cardápio completo de uma terna (loja × canal × tipo de serviço): contexto (`store`, `channel`, `fulfillment`, `menuSyncId`, `groupId`) e `menu` com produtos, categorias, grupos de opções e horários |
 | [`product.updated`](/pt/events/product-updated) | Um patch: `changes`, `targets[]` com a loja e suas ternas afetadas, e `products[]` com apenas o bloco que mudou (`availability` ou `pricing`) |
 
-O bloco `store` completo —com `email`, `metadata` e `locationInfo.country.phoneCode`— viaja nos eventos que levam o snapshot completo do pedido (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) e em `store.updated`. `order.status_updated`, `store.business_day_closed` e `store.register_closed` levam uma referência mínima da loja.
+O bloco `store` completo —com `email`, `metadata` e `locationInfo.country.phoneCode`— viaja nos eventos que levam o snapshot completo do pedido (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) e em `store.updated`. `order.status_updated`, `store.business_day_closed`, `store.register_closed` e `store.register_close_corrected` levam uma referência mínima da loja.
 
 ### `_meta`
 
@@ -242,7 +246,7 @@ app.post("/fire/events", express.json(), async (req, res) => {
   res.status(200).end();
 
   // 2. Deduplique por uma chave de domínio — event.id muda quando o Fire recoloca uma entrega na fila
-  const key = data?.publication?.id ?? data?.businessDayId ?? data?.registerSessionId
+  const key = data?.publication?.id ?? data?.businessDayId ?? data?.correction?.id ?? data?.registerSessionId
     ?? (event.type === "order.status_updated" ? statusKey(data)
         : `${data?.orderId}:${event.type}:${event.emittedAt}`);
   if (seen.has(key)) return;
@@ -290,7 +294,7 @@ app.listen(8080);
     Valide a credencial de auth que o flow envia (Bearer token, API key ou OAuth2 access token). Rejeite qualquer requisição que não bata.
   </Step>
   <Step title="Deduplique">
-    Procure uma **chave de domínio** em um store — `data.orderId` + `event.type` + `event.emittedAt` em eventos de pedido, `data.publication.id` em `store.updated`, `data.businessDayId` em `store.business_day_closed`, `data.registerSessionId` em `store.register_closed`. Se já processou, pule. A chave de pedido cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo — se você já processou esse fato, decida pelo estado do pedido no seu sistema. Não use `event.id`: ele muda quando o Fire recoloca uma entrega na fila.
+    Procure uma **chave de domínio** em um store — `data.orderId` + `event.type` + `event.emittedAt` em eventos de pedido, `data.publication.id` em `store.updated`, `data.businessDayId` em `store.business_day_closed`, `data.registerSessionId` em `store.register_closed`, `data.correction.id` em `store.register_close_corrected`. Se já processou, pule. A chave de pedido cobre as recolocações automáticas; um reprocessamento manual a partir do dead letter chega como evento novo — se você já processou esse fato, decida pelo estado do pedido no seu sistema. Não use `event.id`: ele muda quando o Fire recoloca uma entrega na fila.
   </Step>
   <Step title="Valide o payload">
     Verifique que `event.type` é o que você espera e que o bloco `data` tem os campos esperados. Retorne `400` para entradas malformadas para que não entrem na sua fila de retry pelo Fire.

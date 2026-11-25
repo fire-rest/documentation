@@ -6,7 +6,7 @@ description: "Fire is event-driven. When something meaningful happens inside Fir
 Fire emits **events** whenever a meaningful business transition happens — an order is completed, an order is cancelled, a fiscal document is authorized by the tax authority, the kitchen advances an order. Each event is delivered to your endpoint by an **Integration Flow** you configure in the Fire dashboard.
 
 <Note>
-  Fire emits **six** order event types, **three** store event types and **two** catalog event types today: [`order.opened`](/en/events/order-opened), [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close, [`store.register_closed`](/en/events/store-register-closed) every time a cash register is closed, [`store.updated`](/en/events/store-updated) whenever a store's configuration is published, and the catalog events [`menu.updated`](/en/events/menu-updated) (a terna's menu was synchronized) and [`product.updated`](/en/events/product-updated) (product availability or prices changed).
+  Fire emits **six** order event types, **four** store event types and **two** catalog event types today: [`order.opened`](/en/events/order-opened), [`order.completed`](/en/events/order-completed), [`order.cancelled`](/en/events/order-cancelled), [`order.invoiced`](/en/events/order-invoiced), [`order.reversed`](/en/events/order-reversed) and [`order.status_updated`](/en/events/order-status-updated), plus the scheduled [`store.business_day_closed`](/en/events/store-day-closed) event at business-day close, [`store.register_closed`](/en/events/store-register-closed) every time a cash register is closed, [`store.register_close_corrected`](/en/events/store-register-close-corrected) every time the counted cash of a register close is corrected, [`store.updated`](/en/events/store-updated) whenever a store's configuration is published, and the catalog events [`menu.updated`](/en/events/menu-updated) (a terna's menu was synchronized) and [`product.updated`](/en/events/product-updated) (product availability or prices changed).
 </Note>
 
 ## Fire is the source of truth for the lifecycle
@@ -55,6 +55,9 @@ sequenceDiagram
 
     Note over F: register close (POS or Backoffice)
     F->>Y: store.register_closed
+
+    Note over F: register close correction (POS or Backoffice)
+    F->>Y: store.register_close_corrected
 
     Note over F: business-day close (scheduled)
     F->>Y: store.business_day_closed
@@ -146,10 +149,10 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 
   <Expandable title="event">
     <ResponseField name="id" type="string">
-      Identifier of this **flow execution**. It stays the same across the HTTP node's own retries, but it is **new** when Fire re-queues the delivery or someone replays it by hand — so it does not identify the fact. To deduplicate, use a domain key: `data.orderId` + `event.type` + `event.emittedAt` on order events, `data.publication.id` on `store.updated`, `data.businessDayId` on `store.business_day_closed`, `data.registerSessionId` on `store.register_closed`. The order key covers automatic re-queues; a manual replay from the dead letter arrives as a new event. See [Idempotency on your side](/en/events/delivery#idempotency-on-your-side).
+      Identifier of this **flow execution**. It stays the same across the HTTP node's own retries, but it is **new** when Fire re-queues the delivery or someone replays it by hand — so it does not identify the fact. To deduplicate, use a domain key: `data.orderId` + `event.type` + `event.emittedAt` on order events, `data.publication.id` on `store.updated`, `data.businessDayId` on `store.business_day_closed`, `data.registerSessionId` on `store.register_closed`, `data.correction.id` on `store.register_close_corrected`. The order key covers automatic re-queues; a manual replay from the dead letter arrives as a new event. See [Idempotency on your side](/en/events/delivery#idempotency-on-your-side).
     </ResponseField>
     <ResponseField name="type" type="string">
-      Event type. One of: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.register_closed`, `store.updated`, `menu.updated`, `product.updated`.
+      Event type. One of: `order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`, `order.status_updated`, `store.business_day_closed`, `store.register_closed`, `store.register_close_corrected`, `store.updated`, `menu.updated`, `product.updated`.
     </ResponseField>
     <ResponseField name="emittedAt" type="string">
       ISO 8601 UTC timestamp of when Fire **emitted the fact** — the moment the event was queued. **Stable across retries**: every re-queued delivery of the same event carries the same value; a manual replay from the dead letter carries a new one. **Order events by this field**: deliveries can arrive late or out of order, so neither arrival order nor `createdAt` tells you which fact came first. It only reaches you if your flow's body includes it: if your flow was created before this field existed, add `"emittedAt": "{{trigger.event.emittedAt}}"` to the `event` block of the HTTP node's body — the path is already available.
@@ -176,11 +179,12 @@ When a flow fires, your endpoint receives an HTTP `POST`. The body has **three t
 | [`order.status_updated`](/en/events/order-status-updated) | A light tracking notice, **not** the full V4 snapshot: order identity (`orderId`, `orderCode`, `externalOrderId`, `businessDayDate`, `status`), `channel` (`code`, `uid`), a minimal store (`code`, `name`, `account`, `vendor`), `fulfillment.service.code`, `source` (`kds` / `order` / `fiscal`) and only its lane's block: `kitchen`, `lifecycle` or `fiscal` (the other two `null`) |
 | [`store.business_day_closed`](/en/events/store-day-closed) | A thin notice that the day closed: `businessDayId`, `businessDayDate`, `timezone`, `status`, `openedAt`, `closedAt`, `closedBy` and a minimal store |
 | [`store.register_closed`](/en/events/store-register-closed) | The whole cash count of one register: `registerSessionId`, `businessDayDate`, `postClose`, `closedBy` (`cashier` / `admin`), `operator`, `terminal`, `cash` — same names as `cash.shifts[]` of [Business day close](/en/api-reference/business-day-close), decimals in `cash.currency`, with `changeOutsideDrawer` — and a minimal store |
+| [`store.register_close_corrected`](/en/events/store-register-close-corrected) | The same shape as `store.register_closed`, with the corrected count in `cash`, plus the `correction` block (`id`, `sequence`, `correctedAt`, `reason`, `correctedBy`, `authorization`, `afterDayClose`, `previous`) |
 | [`store.updated`](/en/events/store-updated) | The whole store: V4 `store` block + `metadata`, `channels[]` with resolved schedules, `operationSchedule`, `salesSchedule` and the `publication` block (`id`, `sequence`, `reason`, …) |
 | [`menu.updated`](/en/events/menu-updated) | The whole menu of a terna (store × channel × fulfillment type): context (`store`, `channel`, `fulfillment`, `menuSyncId`, `groupId`) and `menu` with products, categories, option groups and schedules |
 | [`product.updated`](/en/events/product-updated) | A patch: `changes`, `targets[]` with the store and its affected ternas, and `products[]` with only the block that changed (`availability` or `pricing`) |
 
-The full `store` block —with `email`, `metadata` and `locationInfo.country.phoneCode`— travels on the events that carry the full order snapshot (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) and on `store.updated`. `order.status_updated`, `store.business_day_closed` and `store.register_closed` carry a minimal store reference.
+The full `store` block —with `email`, `metadata` and `locationInfo.country.phoneCode`— travels on the events that carry the full order snapshot (`order.opened`, `order.completed`, `order.cancelled`, `order.invoiced`, `order.reversed`) and on `store.updated`. `order.status_updated`, `store.business_day_closed`, `store.register_closed` and `store.register_close_corrected` carry a minimal store reference.
 
 ### `_meta`
 
@@ -242,7 +246,7 @@ app.post("/fire/events", express.json(), async (req, res) => {
   res.status(200).end();
 
   // 2. Deduplicate by a domain key — event.id changes when Fire re-queues a delivery
-  const key = data?.publication?.id ?? data?.businessDayId ?? data?.registerSessionId
+  const key = data?.publication?.id ?? data?.businessDayId ?? data?.correction?.id ?? data?.registerSessionId
     ?? (event.type === "order.status_updated" ? statusKey(data)
         : `${data?.orderId}:${event.type}:${event.emittedAt}`);
   if (seen.has(key)) return;
@@ -290,7 +294,7 @@ app.listen(8080);
     Validate the auth credential the flow sends (Bearer token, API key, or OAuth2 access token). Reject any request that doesn't match.
   </Step>
   <Step title="Deduplicate">
-    Look up a **domain key** in a store — `data.orderId` + `event.type` + `event.emittedAt` for order events, `data.publication.id` for `store.updated`, `data.businessDayId` for `store.business_day_closed`, `data.registerSessionId` for `store.register_closed`. If you've already processed it, skip. The order key covers automatic re-queues; a manual replay from the dead letter arrives as a new event — if you already processed that fact, decide based on the order's state in your system. Not `event.id`: it changes when Fire re-queues a delivery.
+    Look up a **domain key** in a store — `data.orderId` + `event.type` + `event.emittedAt` for order events, `data.publication.id` for `store.updated`, `data.businessDayId` for `store.business_day_closed`, `data.registerSessionId` for `store.register_closed`, `data.correction.id` for `store.register_close_corrected`. If you've already processed it, skip. The order key covers automatic re-queues; a manual replay from the dead letter arrives as a new event — if you already processed that fact, decide based on the order's state in your system. Not `event.id`: it changes when Fire re-queues a delivery.
   </Step>
   <Step title="Validate the payload">
     Check `event.type` matches your handler and the `data` block has the fields you expect. Return `400` for malformed inputs so they don't enter your retry queue from Fire.
