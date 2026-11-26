@@ -1,0 +1,165 @@
+---
+title: "Exchange rates"
+api: "GET https://app.fire.rest/api/v2/exchange-rates"
+description: "Today's official rate against the US dollar, the same for every channel of the account."
+authMethod: "key"
+---
+
+Your channel (POS, kiosk, web, app or your own system) asks here **which rate applies today**. You get the currency pairs your account has enabled, each with **the day's official rate**: the same for every channel of the account and for the whole day, even if the central bank publishes a new one later.
+
+<Info>
+  **For information only.** The sale is still charged and sent in the store's currency, as always. Use the rate to show the customer the amount in another currency or to convert what they pay you in cash.
+</Info>
+
+## Authentication
+
+<ParamField header="x-api-key" type="string" required>
+  Your Fire API key with the `exchange-rates:read` scope. `Authorization: Bearer <your_api_key>` is also accepted.
+
+  The key **must be bound to an account**: without one, `403`. The account always comes from the key, never from a parameter.
+</ParamField>
+
+## Parameters
+
+<ParamField query="date" type="string">
+  Your channel's business day, `YYYY-MM-DD`, **in the store's time zone**. From 31 days ago up to tomorrow. Without it, today in Colombia time (`America/Bogota`) is used.
+
+  Always send it: a store in Venezuela that is already in the next day at 11 p.m. Colombia time needs the rate for its own day.
+</ParamField>
+
+<ParamField query="currencies" type="string">
+  The currencies you want, comma-separated: `VES`, `EUR`, `COP`… Each one brings its pair:
+
+  | You ask for | You get |
+  |---|---|
+  | `VES` (bolívars) | `USD → VES` |
+  | `EUR` (euros) | `EUR → VES` |
+  | `COP` (pesos) | `COP → VES` |
+
+  That is: the pair whose source currency is the one you ask for or, if it is the local currency, the dollar's. Without it you get every pair your account has enabled. A currency your account does not have enabled responds `400` with `code: "EXCHANGE_RATE_CURRENCY_NOT_ENABLED"`.
+</ParamField>
+
+<RequestExample>
+```bash
+curl "https://app.fire.rest/api/v2/exchange-rates?date=2026-11-26&currencies=VES,EUR" \
+  -H "x-api-key: <your_api_key>"
+```
+</RequestExample>
+
+## Response
+
+It comes in the standard envelope: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="date" type="string">
+  The day requested, or the one used if you did not send `date`.
+</ResponseField>
+
+<ResponseField name="rates" type="array">
+  One item per enabled pair that has a rate that day.
+
+  <Expandable title="fields">
+    <ResponseField name="from" type="string">
+      Source currency, ISO 4217 (`USD`, `EUR`, `COP`).
+    </ResponseField>
+    <ResponseField name="to" type="string">
+      Target currency, ISO 4217 (`VES`, `COP`, `BRL`).
+    </ResponseField>
+    <ResponseField name="rate" type="number">
+      **1 `from` = `rate` `to`.** Up to 10 decimals. In the example, 1 USD = 925.1234 Bs.
+    </ResponseField>
+    <ResponseField name="rateDate" type="string">
+      The date of the official publication used (the bank's value date). On weekends or holidays it is the last business day's, so it can be earlier than `date`.
+    </ResponseField>
+    <ResponseField name="source" type="string">
+      The source name, for display. If the central bank did not publish and Fire entered the rate by hand, it reads `Tasa manual (USD → VES)` (or the pair it applies to).
+    </ResponseField>
+    <ResponseField name="pinnedAt" type="string">
+      When that day's rate was fixed for your account (ISO 8601, UTC).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="missing" type="array">
+  Enabled pairs that **have no rate that day**. Each one has `from`, `to` and `reason`:
+
+  | `reason` | When |
+  |---|---|
+  | `NO_RATE` | No source has a rate for that pair |
+  | `STALE` | The latest rate is old and is not fixed as the day's rate |
+
+  A pair in `missing` is not an error: the response is `200`. Ask again later.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "date": "2026-11-26",
+    "rates": [
+      {
+        "from": "USD",
+        "to": "VES",
+        "rate": 925.1234,
+        "rateDate": "2026-11-26",
+        "source": "Banco Central de Venezuela — Excel de referencia (USD)",
+        "pinnedAt": "2026-11-26T11:02:14.120Z"
+      },
+      {
+        "from": "EUR",
+        "to": "VES",
+        "rate": 1071.4405,
+        "rateDate": "2026-11-26",
+        "source": "Banco Central de Venezuela — Excel de referencia (EUR)",
+        "pinnedAt": "2026-11-26T11:02:14.120Z"
+      }
+    ],
+    "missing": []
+  }
+}
+```
+
+```json 200 — no rate for the day
+{
+  "success": true,
+  "data": {
+    "date": "2026-11-26",
+    "rates": [],
+    "missing": [{ "from": "USD", "to": "VES", "reason": "STALE" }]
+  }
+}
+```
+</ResponseExample>
+
+## How it behaves
+
+- **The day's rate is fixed.** The first request of the day fixes it for your account, and from then on every channel gets the same one until the next day.
+- **If the day's rate has not arrived yet**, Fire fetches it from the source right then (it can take a few seconds). If it still has not arrived, the pair goes in `missing` and is not fixed: the next request tries again.
+- **How often to ask:** once when the day opens and then every 15 minutes is enough. There is no need to ask on every sale.
+- **Your account chooses the pairs.** If you need another one, ask your Fire contact. With no pairs enabled, `rates` and `missing` come back empty.
+
+## Where the rates come from
+
+They are each country's official rates. For Venezuela, the BCV also publishes the euro and the Colombian peso in bolívars (`EUR → VES`, `COP → VES`):
+
+| Currency | Source |
+|---|---|
+| `VES` | Banco Central de Venezuela |
+| `COP` | Banco de la República (TRM) |
+| `BRL` | Banco Central do Brasil (PTAX, selling) |
+
+Central banks publish the rate for the **next business day**. Fire stores it with its value date and only uses it from that day on.
+
+If the central bank does not publish or cannot be read, Fire can enter the official rate by hand. It arrives like any other, with `source` = `Tasa manual (<from> → <to>)`.
+
+## Errors
+
+Format: `{ "success": false, "error": "<type>", "code": "<code>", "message": "..." }`. `code` comes with business errors.
+
+| HTTP | `error` · `code` | When |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | `date` has an invalid format or does not exist |
+| `400` | `BUSINESS_ERROR` · `EXCHANGE_RATE_DATE_OUT_OF_RANGE` | `date` out of range (more than 31 days ago or after tomorrow) |
+| `400` | `BUSINESS_ERROR` · `EXCHANGE_RATE_CURRENCY_NOT_ENABLED` | A currency in `currencies` that your account does not have enabled |
+| `401` | `UNAUTHORIZED` | Invalid, expired or revoked API key |
+| `403` | `FORBIDDEN` | API key without the `exchange-rates:read` scope or without an account |
