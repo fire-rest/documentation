@@ -27,9 +27,21 @@ Your channel (POS, kiosk, web, app or your own system) asks here **which rate ap
   Always send it: a store in Venezuela that is already in the next day at 11 p.m. Colombia time needs the rate for its own day.
 </ParamField>
 
+<ParamField query="currencies" type="string">
+  The currencies you want, comma-separated: `VES`, `EUR`, `COP`… Each one brings its pair:
+
+  | You ask for | You get |
+  |---|---|
+  | `VES` (bolívars) | `USD → VES` |
+  | `EUR` (euros) | `EUR → VES` |
+  | `COP` (pesos) | `COP → VES` |
+
+  That is: the pair whose source currency is the one you ask for or, if it is the local currency, the dollar's. Without it you get every pair your account has enabled. A currency your account does not have enabled responds `400` with `code: "EXCHANGE_RATE_CURRENCY_NOT_ENABLED"`.
+</ParamField>
+
 <RequestExample>
 ```bash
-curl "https://app.fire.rest/api/v2/exchange-rates?date=2026-11-26" \
+curl "https://app.fire.rest/api/v2/exchange-rates?date=2026-11-26&currencies=VES,EUR" \
   -H "x-api-key: <your_api_key>"
 ```
 </RequestExample>
@@ -47,7 +59,7 @@ It comes in the standard envelope: `{ "success": true, "data": { ... } }`.
 
   <Expandable title="fields">
     <ResponseField name="from" type="string">
-      Source currency, ISO 4217. Usually `USD`.
+      Source currency, ISO 4217 (`USD`, `EUR`, `COP`).
     </ResponseField>
     <ResponseField name="to" type="string">
       Target currency, ISO 4217 (`VES`, `COP`, `BRL`).
@@ -59,7 +71,7 @@ It comes in the standard envelope: `{ "success": true, "data": { ... } }`.
       The date of the official publication used (the bank's value date). On weekends or holidays it is the last business day's, so it can be earlier than `date`.
     </ResponseField>
     <ResponseField name="source" type="string">
-      The source name, for display. If the central bank did not publish and Fire entered the rate by hand, it reads `Tasa manual (USD → VES)`.
+      The source name, for display. If the central bank did not publish and Fire entered the rate by hand, it reads `Tasa manual (USD → VES)` (or the pair it applies to).
     </ResponseField>
     <ResponseField name="pinnedAt" type="string">
       When that day's rate was fixed for your account (ISO 8601, UTC).
@@ -92,6 +104,14 @@ It comes in the standard envelope: `{ "success": true, "data": { ... } }`.
         "rateDate": "2026-11-26",
         "source": "Banco Central de Venezuela — Excel de referencia (USD)",
         "pinnedAt": "2026-11-26T11:02:14.120Z"
+      },
+      {
+        "from": "EUR",
+        "to": "VES",
+        "rate": 1071.4405,
+        "rateDate": "2026-11-26",
+        "source": "Banco Central de Venezuela — Excel de referencia (EUR)",
+        "pinnedAt": "2026-11-26T11:02:14.120Z"
       }
     ],
     "missing": []
@@ -120,7 +140,7 @@ It comes in the standard envelope: `{ "success": true, "data": { ... } }`.
 
 ## Where the rates come from
 
-They are each country's official rates, against the US dollar:
+They are each country's official rates. For Venezuela, the BCV also publishes the euro and the Colombian peso in bolívars (`EUR → VES`, `COP → VES`):
 
 | Currency | Source |
 |---|---|
@@ -130,15 +150,16 @@ They are each country's official rates, against the US dollar:
 
 Central banks publish the rate for the **next business day**. Fire stores it with its value date and only uses it from that day on.
 
-If the central bank does not publish or cannot be read, Fire can enter the official rate by hand. It arrives like any other, with `source` = `Tasa manual (USD → <currency>)`.
+If the central bank does not publish or cannot be read, Fire can enter the official rate by hand. It arrives like any other, with `source` = `Tasa manual (<from> → <to>)`.
 
 ## Errors
 
-Format: `{ "success": false, "error": "<code>", "message": "..." }`.
+Format: `{ "success": false, "error": "<type>", "code": "<code>", "message": "..." }`. `code` comes with business errors.
 
-| HTTP | `error` | When |
+| HTTP | `error` · `code` | When |
 |---|---|---|
 | `400` | `VALIDATION_ERROR` | `date` has an invalid format or does not exist |
-| `400` | `BUSINESS_ERROR` | `date` out of range (more than 31 days ago or after tomorrow) |
+| `400` | `BUSINESS_ERROR` · `EXCHANGE_RATE_DATE_OUT_OF_RANGE` | `date` out of range (more than 31 days ago or after tomorrow) |
+| `400` | `BUSINESS_ERROR` · `EXCHANGE_RATE_CURRENCY_NOT_ENABLED` | A currency in `currencies` that your account does not have enabled |
 | `401` | `UNAUTHORIZED` | Invalid, expired or revoked API key |
 | `403` | `FORBIDDEN` | API key without the `exchange-rates:read` scope or without an account |
