@@ -211,7 +211,8 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
         "subtotalWithoutTaxes": "50000", "subtotalIncludeDiscounts": "50000" }
     ],
     "extraCharges": [
-      { "total": "15000", "taxValue": "0", "description": "Taxa de serviço", "currencyCode": "BRL",
+      { "type": "SERVICE_FEE", "code": null, "rate": null,
+        "total": "15000", "taxValue": "0", "description": "Taxa de serviço", "currencyCode": "BRL",
         "subtotalWithoutTaxes": "15000", "subtotalIncludeDiscounts": "15000" }
     ],
     "discounts": [
@@ -563,7 +564,18 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
     </ResponseField>
 
     <ResponseField name="shippingCost" type="object[]">Shipping cost as PriceBlock rows (same shape as `totals[]`: `total`, `taxValue`, `currencyCode`, `subtotalWithoutTaxes`, `subtotalIncludeDiscounts`, …, ×10000 strings). Empty for in-store orders.</ResponseField>
-    <ResponseField name="extraCharges" type="object[]">Service charge ("Taxa de serviço"), tips, packing fees and other add-ons — same PriceBlock shape, plus an optional `description`.</ResponseField>
+    <ResponseField name="extraCharges" type="object[]">
+      Charges collected on top of the total: service fee, tip, payment tax (IGTF) and others. They do not add to `totals[].total`; they do add to the payments. Same PriceBlock shape as `shippingCost[]` (`total`, `taxValue`, `currencyCode`, `subtotalWithoutTaxes`, `subtotalIncludeDiscounts`, ×10000 strings), plus `description` and the three keys that say what the charge is. `totals[0].extraCharges[]` carries the same charges. See [Extra charges](#extra-charges).
+
+      <Expandable title="extraCharges[n]">
+        <ResponseField name="type" type="string">What the charge is: `SERVICE_FEE` (service fee), `TIP` (tip), `PAYMENT_TAX` (tax on the payment, e.g. IGTF) or `OTHER`. Always present; never `null`.</ResponseField>
+        <ResponseField name="code" type="string | null">Stable code of the charge (`IGTF`, `IFOOD_SERVICE_FEE`, `KEETA_TIP`…). `null` when nobody defined one.</ResponseField>
+        <ResponseField name="rate" type="string | null">Rate as a fraction in decimal text, same as `taxes[].rate`: `"0.03"` = 3 %. `null` when the charge is not a percentage. Never a number.</ResponseField>
+        <ResponseField name="description" type="string">Free text, as the channel or the till sent it (`Taxa de serviço`, `IGTF 3%`). May be missing. Do not decide on it: use `type` and `code`.</ResponseField>
+        <ResponseField name="total" type="string">Charge amount (×10000).</ResponseField>
+        <ResponseField name="currencyCode" type="string">Currency of the charge.</ResponseField>
+      </Expandable>
+    </ResponseField>
     <ResponseField name="discounts" type="object[]">
       <Tip>Added in **v1**.</Tip>
       Order-level discount entries. Each entry is a **Discount** object:
@@ -594,6 +606,8 @@ The example below is taken from a real event (Brazilian sandbox tenant, `KIOSK` 
       - **`customerCashAmount`** (`number | null`) — Cash the customer handed over, in decimals: for a `22.9` bill paid with a `50` note, `50`. `0` on methods that are not cash. Orders injected before 24 September 2026 carry the string `"0"` here — read it as a number. `null` when it was not sent.
       - **`changeAmount`** (`number | null`) — Change the till gave back, in decimals. The real change on cash payments, `0` on other methods, `null` when it was not sent.
       - **`acquirerConfigured`** (`object | null`) — Who acquires this payment according to your account's configuration in Fire: `code`, `name`, `documentType`, `documentNumber`, `level`. It is not fiscal data — that is still `acquirer`. See [Configured acquirer](#configured-acquirer).
+
+      **`metadata`** (`object`) — Additional payment data, almost always `{}`. In Venezuela, the cash payment in foreign currency carries the IGTF here, in camelCase: `tenderedCurrency`, `tenderedAmount`, `exchangeRate`, `exchangeRateDate` and `paymentTax`. See [IGTF in Venezuela](#igtf-in-venezuela).
     </ResponseField>
 
     <ResponseField name="metadata" type="object">
@@ -666,6 +680,88 @@ inject is overwritten.
 `document_number`, `level`.
 
 <Note>**Compatibility.** `acquirerConfigured` is a new key in each payment. If your consumer validates the payload strictly, it must accept keys it does not know.</Note>
+
+### Extra charges
+
+`payments.extraCharges[]` carries what is charged **on top of** the sale total: the channel's
+service fee, the tip, the tax on the payment (IGTF in Venezuela) or another charge. Charges do not
+add to `payments.totals[].total`; they do add to what is collected in `paymentMethods[]`.
+`payments.totals[0].extraCharges[]` carries the same charges, with the same keys.
+
+Each charge keeps its amounts (×10000, like the rest of the block) and its `description`, and always
+carries three keys that say what it is: `type`, `code` and `rate` (reference in
+[`data.payments`](#data-payments)). **Decide on `type` and `code`, never on `description`**: it is
+free text from the channel or the till and can change without notice.
+
+**Where `type` comes from**, in this order:
+
+1. If whoever injects the order sends a `type` from the list, Fire keeps it.
+2. If not, Fire looks up the charge's text (`description`) in the charges configured for the
+   order's channel in your account (Backoffice: **Settings › Channels**, **Charges** section of each
+   channel). The match ignores upper/lower case and extra spaces; accents count.
+3. If there is no rule, the charge goes out as `OTHER`.
+
+`code` and `rate` are the ones whoever injects the order sent; if they were not sent and the charge
+was classified by the channel configuration, the ones from that rule; otherwise `null`.
+`PAYMENT_TAX` is only declared by whoever charges the payment: the channel configuration never
+produces it.
+
+**When a new rule applies.** To new orders, within a minute. An order that came in before picks up
+the classification in its next event, so the `type` of the same charge can go from `OTHER` to
+`SERVICE_FEE` between two events of the same order.
+
+```json payments.extraCharges[n] — service fee (Keeta)
+{
+  "type": "SERVICE_FEE",
+  "code": "KEETA_SERVICE_FEE",
+  "rate": null,
+  "description": "SERVICE_FEE - MARKETPLACE",
+  "total": "9900",
+  "currencyCode": "BRL",
+  "taxValue": "0",
+  "subtotalWithoutTaxes": "9900",
+  "subtotalIncludeDiscounts": "9900"
+}
+```
+
+#### IGTF in Venezuela
+
+A cash payment in foreign currency carries the IGTF. The charge goes out with
+`type: "PAYMENT_TAX"`, `code: "IGTF"` and `rate: "0.03"` (excerpt):
+
+```json payments.extraCharges[n] — IGTF
+{
+  "type": "PAYMENT_TAX",
+  "code": "IGTF",
+  "rate": "0.03",
+  "description": "IGTF 3%",
+  "total": "1800",
+  "currencyCode": "REF"
+}
+```
+
+And the cash payment that produced it carries in `metadata`, in camelCase:
+
+```json payments.paymentMethods[n].metadata
+{
+  "tenderedCurrency": "USD",
+  "tenderedAmount": 10,
+  "exchangeRate": 1,
+  "exchangeRateDate": "2026-11-26",
+  "paymentTax": { "code": "IGTF", "rate": "0.03", "base": 6, "amount": 0.18 }
+}
+```
+
+- `tenderedCurrency` — the currency the customer handed over (`USD`, `EUR`, `COP`). The payment's
+  `currencyCode` is still the order's currency.
+- `tenderedAmount` — what they handed over in that currency.
+- `exchangeRate` and `exchangeRateDate` — the exchange rate the till used and its date.
+- `paymentTax` — `code`, `rate` (text, as in the charge), `base` (the taxed amount) and `amount`
+  (the tax). `base` and `amount` are numbers in decimals, **without** the ×10000.
+
+The rest of the payment's `metadata` goes out as is.
+
+<Note>**Compatibility.** `type`, `code` and `rate` are new keys on each charge. If your consumer validates the payload strictly, it must accept keys it does not know. Events from before this change do not have them.</Note>
 
 ### `data.fulfillment`
 
