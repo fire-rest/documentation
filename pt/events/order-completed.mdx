@@ -211,7 +211,8 @@ O exemplo abaixo vem de um evento real (tenant sandbox brasileiro, canal `KIOSK`
         "subtotalWithoutTaxes": "50000", "subtotalIncludeDiscounts": "50000" }
     ],
     "extraCharges": [
-      { "total": "15000", "taxValue": "0", "description": "Taxa de serviço", "currencyCode": "BRL",
+      { "type": "SERVICE_FEE", "code": null, "rate": null,
+        "total": "15000", "taxValue": "0", "description": "Taxa de serviço", "currencyCode": "BRL",
         "subtotalWithoutTaxes": "15000", "subtotalIncludeDiscounts": "15000" }
     ],
     "discounts": [
@@ -563,7 +564,18 @@ O exemplo abaixo vem de um evento real (tenant sandbox brasileiro, canal `KIOSK`
     </ResponseField>
 
     <ResponseField name="shippingCost" type="object[]">Linhas de custo de envio. Vazio para pedidos na loja.</ResponseField>
-    <ResponseField name="extraCharges" type="object[]">Gorjetas, taxas de embalagem e outros add-ons.</ResponseField>
+    <ResponseField name="extraCharges" type="object[]">
+      Cobranças feitas acima do total: taxa de serviço, gorjeta, imposto sobre o pagamento (IGTF) e outras. Não somam a `totals[].total`; somam aos pagamentos. Mesmo formato de `shippingCost[]` (`total`, `taxValue`, `currencyCode`, `subtotalWithoutTaxes`, `subtotalIncludeDiscounts`, ×10000), mais `description` e as três chaves que dizem o que é a cobrança. `totals[0].extraCharges[]` traz as mesmas cobranças. Veja [Cobranças extras](#cobranças-extras).
+
+      <Expandable title="extraCharges[n]">
+        <ResponseField name="type" type="string">O que é a cobrança: `SERVICE_FEE` (taxa de serviço), `TIP` (gorjeta), `PAYMENT_TAX` (imposto sobre o pagamento, p. ex. IGTF) ou `OTHER`. Sempre vem; nunca `null`.</ResponseField>
+        <ResponseField name="code" type="string | null">Código estável da cobrança (`IGTF`, `IFOOD_SERVICE_FEE`, `KEETA_TIP`…). `null` se ninguém o definiu.</ResponseField>
+        <ResponseField name="rate" type="string | null">Taxa como fração em texto decimal, igual a `taxes[].rate`: `"0.03"` = 3 %. `null` se a cobrança não é um percentual. Nunca é número.</ResponseField>
+        <ResponseField name="description" type="string">Texto livre, tal como o canal ou o caixa enviou (`Taxa de serviço`, `IGTF 3%`). Pode faltar. Não decida por ele: use `type` e `code`.</ResponseField>
+        <ResponseField name="total" type="string">Valor da cobrança (×10000).</ResponseField>
+        <ResponseField name="currencyCode" type="string">Moeda da cobrança.</ResponseField>
+      </Expandable>
+    </ResponseField>
     <ResponseField name="discounts" type="object[]">
       <Tip>Adicionado na **v1**.</Tip> Descontos a nível de pedido. Cada entrada é um objeto **Discount**:
       <Expandable title="Discount">
@@ -591,6 +603,8 @@ O exemplo abaixo vem de um evento real (tenant sandbox brasileiro, canal `KIOSK`
       - **`customerCashAmount`** (`number | null`) — Dinheiro entregue pelo cliente, em decimais: para uma conta de `22.9` paga com uma nota de `50`, `50`. `0` nos meios que não são dinheiro. Os pedidos injetados antes de 24 de setembro de 2026 trazem aqui o texto `"0"` — leia como número. `null` quando não foi enviado.
       - **`changeAmount`** (`number | null`) — Troco entregue pelo caixa, em decimais. O troco real em dinheiro, `0` nos demais meios, `null` quando não foi enviado.
       - **`acquirerConfigured`** (`object | null`) — Quem credencia este pagamento segundo a configuração da sua conta na Fire: `code`, `name`, `documentType`, `documentNumber`, `level`. Não é um dado fiscal — esse continua sendo `acquirer`. Veja [Credenciadora configurada](#credenciadora-configurada).
+
+      **`metadata`** (`object`) — Dados adicionais do pagamento, quase sempre `{}`. Na Venezuela, o pagamento em dinheiro em moeda estrangeira traz aqui o IGTF, em camelCase: `tenderedCurrency`, `tenderedAmount`, `exchangeRate`, `exchangeRateDate` e `paymentTax`. Veja [IGTF na Venezuela](#igtf-na-venezuela).
     </ResponseField>
 
     <ResponseField name="metadata" type="object">
@@ -663,6 +677,87 @@ você injeta é sobrescrito.
 `document_number`, `level`.
 
 <Note>**Compatibilidade.** `acquirerConfigured` é uma chave nova em cada pagamento. Se o seu consumidor valida o payload de forma estrita, ele deve aceitar chaves que não conhece.</Note>
+
+### Cobranças extras
+
+`payments.extraCharges[]` traz o que é cobrado **acima** do total da venda: a taxa de serviço do
+canal, a gorjeta, o imposto sobre o pagamento (o IGTF na Venezuela) ou outra cobrança. As
+cobranças não somam a `payments.totals[].total`; somam ao que é cobrado em `paymentMethods[]`.
+`payments.totals[0].extraCharges[]` traz as mesmas cobranças, com as mesmas chaves.
+
+Cada cobrança mantém seus valores (×10000, como o resto do bloco) e sua `description`, e traz
+sempre três chaves que dizem o que ela é: `type`, `code` e `rate` (referência em
+[`data.payments`](#data-payments)). **Decida por `type` e `code`, nunca por `description`**: é texto
+livre do canal ou do caixa e pode mudar sem aviso.
+
+**De onde vem `type`**, nesta ordem:
+
+1. Se quem injeta o pedido envia um `type` da lista, a Fire o respeita.
+2. Se não, a Fire procura o texto da cobrança (`description`) nas cobranças configuradas para o
+   canal do pedido na sua conta (Backoffice: **Configurações › Canais**, seção **Cobranças** de
+   cada canal). A comparação não distingue maiúsculas nem espaços a mais; os acentos contam.
+3. Se não há regra, a cobrança sai como `OTHER`.
+
+`code` e `rate` são os que quem injeta o pedido enviou; se não os enviou e a cobrança foi
+classificada pela configuração do canal, os dessa regra; se não, `null`. `PAYMENT_TAX` só é
+declarado por quem cobra: a configuração do canal nunca o produz.
+
+**Quando uma regra nova vale.** Para os pedidos novos, em até um minuto. Um pedido que entrou antes
+recebe a classificação no próximo evento, então o `type` de uma mesma cobrança pode passar de
+`OTHER` para `SERVICE_FEE` entre dois eventos do mesmo pedido.
+
+```json payments.extraCharges[n] — taxa de serviço (Keeta)
+{
+  "type": "SERVICE_FEE",
+  "code": "KEETA_SERVICE_FEE",
+  "rate": null,
+  "description": "SERVICE_FEE - MARKETPLACE",
+  "total": "9900",
+  "currencyCode": "BRL",
+  "taxValue": "0",
+  "subtotalWithoutTaxes": "9900",
+  "subtotalIncludeDiscounts": "9900"
+}
+```
+
+#### IGTF na Venezuela
+
+O pagamento em dinheiro em moeda estrangeira traz o IGTF. A cobrança sai com
+`type: "PAYMENT_TAX"`, `code: "IGTF"` e `rate: "0.03"` (trecho):
+
+```json payments.extraCharges[n] — IGTF
+{
+  "type": "PAYMENT_TAX",
+  "code": "IGTF",
+  "rate": "0.03",
+  "description": "IGTF 3%",
+  "total": "1800",
+  "currencyCode": "REF"
+}
+```
+
+E o pagamento em dinheiro que o gerou traz em `metadata`, em camelCase:
+
+```json payments.paymentMethods[n].metadata
+{
+  "tenderedCurrency": "USD",
+  "tenderedAmount": 10,
+  "exchangeRate": 1,
+  "exchangeRateDate": "2026-11-26",
+  "paymentTax": { "code": "IGTF", "rate": "0.03", "base": 6, "amount": 0.18 }
+}
+```
+
+- `tenderedCurrency` — a moeda estrangeira que o cliente entregou (`USD`, `EUR`, `COP`). O
+  `currencyCode` do pagamento continua sendo a moeda do pedido.
+- `tenderedAmount` — o que ele entregou nessa moeda.
+- `exchangeRate` e `exchangeRateDate` — a taxa de câmbio que o caixa usou e a data dela.
+- `paymentTax` — `code`, `rate` (texto, como na cobrança), `base` (o valor tributado) e `amount` (o
+  imposto). `base` e `amount` são números em decimais, **sem** o ×10000.
+
+O resto da `metadata` do pagamento sai como está.
+
+<Note>**Compatibilidade.** `type`, `code` e `rate` são chaves novas em cada cobrança. Se o seu consumidor valida o payload de forma estrita, ele precisa aceitar chaves que não conhece. Em eventos anteriores a esta mudança elas não vêm.</Note>
 
 ### `data.fulfillment`
 
