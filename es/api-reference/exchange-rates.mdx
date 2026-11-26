@@ -1,0 +1,144 @@
+---
+title: "Tasas de cambio"
+api: "GET https://app.fire.rest/api/v2/exchange-rates"
+description: "La tasa oficial del día contra el dólar, la misma para todos los canales de la cuenta."
+authMethod: "key"
+---
+
+Tu canal (POS, kiosco, web, app o un sistema propio) pregunta aquí **con qué tasa se trabaja hoy**. Recibes los pares de monedas que tu cuenta tiene habilitados, cada uno con la **tasa oficial del día**: la misma para todos los canales de la cuenta y para todo el día, aunque el banco central publique otra después.
+
+<Info>
+  **Solo informativa.** La venta se sigue cobrando y enviando en la moneda de la tienda, igual que siempre. La tasa sirve para mostrarle al cliente cuánto es en otra moneda o para convertir lo que te paga en efectivo.
+</Info>
+
+## Autenticación
+
+<ParamField header="x-api-key" type="string" required>
+  Tu API key de Fire con el scope `exchange-rates:read`. También se acepta `Authorization: Bearer <tu_api_key>`.
+
+  La key **tiene que estar ligada a una cuenta**: sin cuenta, `403`. La cuenta sale siempre de la key, nunca de un parámetro.
+</ParamField>
+
+## Parámetros
+
+<ParamField query="date" type="string">
+  El día operativo de tu canal, `YYYY-MM-DD`, **en la zona horaria de la tienda**. Desde 31 días atrás hasta mañana. Sin este parámetro se usa el día de hoy en hora de Colombia (`America/Bogota`).
+
+  Mándalo siempre: una tienda de Venezuela que a las 11 p. m. de Colombia ya está en el día siguiente necesita la tasa de su día.
+</ParamField>
+
+<RequestExample>
+```bash
+curl "https://app.fire.rest/api/v2/exchange-rates?date=2026-11-26" \
+  -H "x-api-key: <tu_api_key>"
+```
+</RequestExample>
+
+## Respuesta
+
+Llega en el sobre estándar: `{ "success": true, "data": { ... } }`.
+
+<ResponseField name="date" type="string">
+  El día pedido, o el que se usó si no mandaste `date`.
+</ResponseField>
+
+<ResponseField name="rates" type="array">
+  Un elemento por par habilitado que tiene tasa ese día.
+
+  <Expandable title="campos">
+    <ResponseField name="from" type="string">
+      Moneda de origen, ISO 4217. Normalmente `USD`.
+    </ResponseField>
+    <ResponseField name="to" type="string">
+      Moneda de destino, ISO 4217 (`VES`, `COP`, `BRL`).
+    </ResponseField>
+    <ResponseField name="rate" type="number">
+      **1 `from` = `rate` `to`.** Hasta 10 decimales. En el ejemplo, 1 USD = 925,1234 Bs.
+    </ResponseField>
+    <ResponseField name="rateDate" type="string">
+      La fecha de la publicación oficial que se usó (la "fecha valor" del banco). En fin de semana o feriado es la del último día hábil, así que puede ser anterior a `date`.
+    </ResponseField>
+    <ResponseField name="source" type="string">
+      El nombre de la fuente, para mostrarlo. Si el banco central no publicó y Fire cargó la tasa a mano, dice `Tasa manual (USD → VES)`.
+    </ResponseField>
+    <ResponseField name="pinnedAt" type="string">
+      Cuándo quedó fija la tasa de ese día para tu cuenta (ISO 8601, UTC).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="missing" type="array">
+  Pares habilitados que **ese día no tienen tasa**. Cada uno trae `from`, `to` y `reason`:
+
+  | `reason` | Cuándo |
+  |---|---|
+  | `NO_RATE` | Ninguna fuente tiene una tasa para ese par |
+  | `STALE` | La última tasa es vieja y no se fija como la del día |
+
+  Un par en `missing` no es un error: la respuesta es `200`. Consulta de nuevo más tarde.
+</ResponseField>
+
+<ResponseExample>
+```json 200
+{
+  "success": true,
+  "data": {
+    "date": "2026-11-26",
+    "rates": [
+      {
+        "from": "USD",
+        "to": "VES",
+        "rate": 925.1234,
+        "rateDate": "2026-11-26",
+        "source": "Banco Central de Venezuela — Excel de referencia (USD)",
+        "pinnedAt": "2026-11-26T11:02:14.120Z"
+      }
+    ],
+    "missing": []
+  }
+}
+```
+
+```json 200 — sin tasa del día
+{
+  "success": true,
+  "data": {
+    "date": "2026-11-26",
+    "rates": [],
+    "missing": [{ "from": "USD", "to": "VES", "reason": "STALE" }]
+  }
+}
+```
+</ResponseExample>
+
+## Cómo se comporta
+
+- **La tasa del día queda fija.** La primera consulta del día la fija para tu cuenta, y desde ahí todos los canales reciben la misma hasta el día siguiente.
+- **Si la tasa del día todavía no llegó**, Fire la busca en la fuente en ese momento (puede tardar unos segundos). Si sigue sin llegar, el par va en `missing` y no se fija: la próxima consulta lo vuelve a intentar.
+- **Cada cuánto consultar:** una vez al abrir el día y después cada 15 minutos alcanza. No hace falta consultar en cada venta.
+- **Los pares los elige tu cuenta.** Si necesitas otro, pídelo a tu contacto en Fire. Sin pares habilitados, `rates` y `missing` llegan vacíos.
+
+## De dónde salen las tasas
+
+Son las oficiales de cada país, contra el dólar:
+
+| Moneda | Fuente |
+|---|---|
+| `VES` | Banco Central de Venezuela |
+| `COP` | Banco de la República (TRM) |
+| `BRL` | Banco Central do Brasil (PTAX, venta) |
+
+Los bancos centrales publican la tasa del **siguiente día hábil**. Fire la guarda con su fecha valor y la usa recién desde ese día.
+
+Si el banco central no publica o no se puede leer, Fire puede cargar la tasa oficial a mano. Llega igual que cualquier otra, con `source` = `Tasa manual (USD → <moneda>)`.
+
+## Errores
+
+Formato: `{ "success": false, "error": "<código>", "message": "..." }`.
+
+| HTTP | `error` | Cuándo |
+|---|---|---|
+| `400` | `VALIDATION_ERROR` | `date` con formato inválido o una fecha que no existe |
+| `400` | `BUSINESS_ERROR` | `date` fuera de rango (más de 31 días atrás o después de mañana) |
+| `401` | `UNAUTHORIZED` | API key inválida, vencida o revocada |
+| `403` | `FORBIDDEN` | API key sin el scope `exchange-rates:read` o sin cuenta |
