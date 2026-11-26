@@ -98,6 +98,12 @@ atinge **exatamente** o total do pedido.
   quiosque que recebeu o pedido. Sem ele, o Fire numera com o dispositivo do pedido.
 </ParamField>
 
+<ParamField body="extra_charges" type="object[]">
+  Encargos desta cobrança. Hoje só o **imposto sobre o pagamento** (`type: "PAYMENT_TAX"`, por exemplo
+  o IGTF da Venezuela) quando o caixa quita um pedido aberto com dinheiro em moeda estrangeira.
+  Opcional: sem ele, a cobrança funciona como sempre. Veja [Imposto sobre o pagamento em um pedido aberto](#imposto-sobre-o-pagamento-em-um-pedido-aberto).
+</ParamField>
+
 ## Requisição
 
 <RequestExample>
@@ -272,6 +278,11 @@ código é contrato.
 | a soma das aprovadas é exatamente igual ao total do pedido (tudo ou nada) | `400 INCOMPLETE_CHARGE` |
 | a soma das aprovadas não supera o total do pedido | `400 AMOUNT_EXCEEDS_TOTAL` |
 | o total do pedido pode ser resolvido na moeda das peças | `400 TOTAL_NOT_RESOLVABLE` |
+| com `extra_charges`: o país da loja tem imposto sobre o pagamento | `400 PAYMENT_TAX_NOT_APPLICABLE` |
+| com `extra_charges`: valores positivos com no máximo 2 decimais, campos válidos | `400 EXTRA_CHARGE_INVALID` |
+| com `extra_charges`: o encargo na moeda das peças aprovadas | `400 EXTRA_CHARGE_CURRENCY_MISMATCH` |
+| com `extra_charges`: Σ encargos = Σ `payment_tax.amount` das peças aprovadas | `400 PAYMENT_TAX_MISMATCH` |
+| com `extra_charges`: o primeiro total do pedido está na moeda da cobrança (não em pontos) | `400 EXTRA_CHARGE_BLOCK_UNSUPPORTED` |
 | API key válida | `401` |
 | scope `orders:write` e key vendor-scoped | `403` |
 | o pedido existe dentro do seu vendor | `404` |
@@ -282,6 +293,35 @@ código é contrato.
 
 Campos que o Fire não conhece **são aceitos e guardados**: você pode enviar seu objeto de pagamento
 completo sem recortar. A moeda de uma peça recusada nunca invalida o envio, porque não soma.
+
+## Imposto sobre o pagamento em um pedido aberto
+
+Na Venezuela o dinheiro em moeda estrangeira paga IGTF. Quando um caixa quita em moeda estrangeira um
+pedido **aberto** (quiosque, diferido, app), envie o imposto em `extra_charges`, como numa venda:
+
+```json
+{
+  "payments": [{
+    "details": { "transaction_id": "…", "transaction_status": "APPROVED", "total_bill": 10.30, "currency_code": "REF" },
+    "metadata": { "tendered_currency": "USD", "tendered_amount": 20,
+                  "payment_tax": { "code": "IGTF", "rate": 0.03, "base": 10, "amount": 0.30 } }
+  }],
+  "extra_charges": [{ "type": "PAYMENT_TAX", "code": "IGTF", "description": "IGTF 3 %", "rate": 0.03,
+                      "currency_code": "REF", "total": "0.30" }]
+}
+```
+
+- Cada peça vai na moeda do pedido e **inclui** seu imposto; as aprovadas devem somar exatamente o
+  total do pedido **mais** os encargos.
+- Os encargos `PAYMENT_TAX` devem somar o mesmo que os `metadata.payment_tax.amount` das peças
+  aprovadas, ao centavo, com no máximo 2 decimais e na moeda da cobrança.
+- Só é aceito em lojas de um país com imposto sobre o pagamento (hoje a Venezuela).
+- Ao quitar, o encargo fica no pedido (`totals[0].extra_charges`) e viaja em
+  [`order.completed`](/pt/events/order-completed) como numa venda. Substitui o imposto sobre o
+  pagamento que o pedido já tivesse declarado. `settlement.total` passa a ser o total mais os encargos.
+- A resposta acrescenta `paymentTaxes` (`[{ code, total }]`) quando o pedido tem imposto sobre o
+  pagamento, também numa nova tentativa `duplicate`.
+- Outros tipos de encargo em `extra_charges` são ignorados, como até hoje.
 
 ## Numeração fiscal na cobrança
 

@@ -99,6 +99,12 @@ total de la orden.
   que tomó el pedido. Sin él, Fire numera con el dispositivo de la orden.
 </ParamField>
 
+<ParamField body="extra_charges" type="object[]">
+  Cargos de este cobro. Hoy solo el **impuesto sobre el pago** (`type: "PAYMENT_TAX"`, por ejemplo el
+  IGTF de Venezuela) cuando la caja salda una orden abierta con efectivo en divisa. Opcional: sin él,
+  el cobro funciona igual que siempre. Ver [Impuesto sobre el pago en una orden abierta](#impuesto-sobre-el-pago-en-una-orden-abierta).
+</ParamField>
+
 ## Petición
 
 <RequestExample>
@@ -273,6 +279,11 @@ código es contrato.
 | la suma de las aprobadas es igual al total de la orden, exacto (todo o nada) | `400 INCOMPLETE_CHARGE` |
 | la suma de las aprobadas no supera el total de la orden | `400 AMOUNT_EXCEEDS_TOTAL` |
 | el total de la orden se puede resolver en la moneda de las piezas | `400 TOTAL_NOT_RESOLVABLE` |
+| con `extra_charges`: el país de la tienda tiene impuesto sobre el pago | `400 PAYMENT_TAX_NOT_APPLICABLE` |
+| con `extra_charges`: montos positivos con 2 decimales como máximo, campos válidos | `400 EXTRA_CHARGE_INVALID` |
+| con `extra_charges`: el cargo en la moneda de las piezas aprobadas | `400 EXTRA_CHARGE_CURRENCY_MISMATCH` |
+| con `extra_charges`: Σ cargos = Σ `payment_tax.amount` de las piezas aprobadas | `400 PAYMENT_TAX_MISMATCH` |
+| con `extra_charges`: el primer total de la orden está en la moneda del cobro (no en puntos) | `400 EXTRA_CHARGE_BLOCK_UNSUPPORTED` |
 | API key válida | `401` |
 | scope `orders:write` y key vendor-scoped | `403` |
 | la orden existe dentro de tu vendor | `404` |
@@ -283,6 +294,35 @@ código es contrato.
 
 Los campos que Fire no conoce **se aceptan y se guardan**: puedes enviar tu objeto de pago completo
 sin recortarlo. La moneda de una pieza rechazada no invalida el envío, porque no suma.
+
+## Impuesto sobre el pago en una orden abierta
+
+En Venezuela el efectivo en divisa paga IGTF. Cuando una caja salda en divisa una orden **abierta**
+(kiosco, diferida, app), envía el impuesto en `extra_charges`, igual que en una venta:
+
+```json
+{
+  "payments": [{
+    "details": { "transaction_id": "…", "transaction_status": "APPROVED", "total_bill": 10.30, "currency_code": "REF" },
+    "metadata": { "tendered_currency": "USD", "tendered_amount": 20,
+                  "payment_tax": { "code": "IGTF", "rate": 0.03, "base": 10, "amount": 0.30 } }
+  }],
+  "extra_charges": [{ "type": "PAYMENT_TAX", "code": "IGTF", "description": "IGTF 3 %", "rate": 0.03,
+                      "currency_code": "REF", "total": "0.30" }]
+}
+```
+
+- Cada pieza va en la moneda de la orden e **incluye** su impuesto; las aprobadas tienen que sumar
+  exacto el total de la orden **más** los cargos.
+- Los cargos `PAYMENT_TAX` tienen que sumar lo mismo que los `metadata.payment_tax.amount` de las
+  piezas aprobadas, al centavo, con 2 decimales como máximo y en la moneda del cobro.
+- Solo se acepta en tiendas de un país con impuesto sobre el pago (hoy Venezuela).
+- Al saldar, el cargo queda en la orden (`totals[0].extra_charges`) y viaja en
+  [`order.completed`](/es/events/order-completed) como en una venta. Reemplaza el impuesto sobre el
+  pago que la orden ya tuviera declarado. `settlement.total` pasa a ser el total más los cargos.
+- La respuesta suma `paymentTaxes` (`[{ code, total }]`) cuando la orden tiene impuesto sobre el
+  pago, también en un reintento `duplicate`.
+- Otros tipos de cargo en `extra_charges` se ignoran, como hasta hoy.
 
 ## Numeración fiscal al cobrar
 

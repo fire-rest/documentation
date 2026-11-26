@@ -99,6 +99,12 @@ reaches the order total **exactly**.
   charges, not the kiosk that took the order. Without it, Fire numbers with the order's device.
 </ParamField>
 
+<ParamField body="extra_charges" type="object[]">
+  Charges of this payment. Today only the **payment tax** (`type: "PAYMENT_TAX"`, e.g. IGTF in
+  Venezuela) when the register settles an open order in foreign currency cash. Optional: without it
+  the charge works exactly as before. See [Payment tax on an open order](#payment-tax-on-an-open-order).
+</ParamField>
+
 ## Request
 
 <RequestExample>
@@ -272,6 +278,11 @@ is contract.
 | the approved sum equals the order total exactly (all or nothing) | `400 INCOMPLETE_CHARGE` |
 | the approved sum does not exceed the order total | `400 AMOUNT_EXCEEDS_TOTAL` |
 | the order total is resolvable in the tender currency | `400 TOTAL_NOT_RESOLVABLE` |
+| with `extra_charges`: the store's country has a payment tax | `400 PAYMENT_TAX_NOT_APPLICABLE` |
+| with `extra_charges`: positive amounts with at most 2 decimals, valid fields | `400 EXTRA_CHARGE_INVALID` |
+| with `extra_charges`: the charge in the currency of the approved tenders | `400 EXTRA_CHARGE_CURRENCY_MISMATCH` |
+| with `extra_charges`: Σ charges = Σ `payment_tax.amount` of the approved tenders | `400 PAYMENT_TAX_MISMATCH` |
+| with `extra_charges`: the order's first total is in the currency of the charge (not points) | `400 EXTRA_CHARGE_BLOCK_UNSUPPORTED` |
 | valid API key | `401` |
 | `orders:write` scope and vendor-scoped key | `403` |
 | the order exists within your vendor | `404` |
@@ -283,6 +294,35 @@ is contract.
 Fields Fire does not know about **are accepted and stored**: you can send your full payment object
 without trimming it. The currency of a declined tender never invalidates the batch, because it does
 not add up.
+
+## Payment tax on an open order
+
+In Venezuela, cash in foreign currency pays IGTF. When a register settles an **open** order (kiosk,
+deferred, app) in foreign currency, send the tax in `extra_charges`, the same way as in a sale:
+
+```json
+{
+  "payments": [{
+    "details": { "transaction_id": "…", "transaction_status": "APPROVED", "total_bill": 10.30, "currency_code": "REF" },
+    "metadata": { "tendered_currency": "USD", "tendered_amount": 20,
+                  "payment_tax": { "code": "IGTF", "rate": 0.03, "base": 10, "amount": 0.30 } }
+  }],
+  "extra_charges": [{ "type": "PAYMENT_TAX", "code": "IGTF", "description": "IGTF 3 %", "rate": 0.03,
+                      "currency_code": "REF", "total": "0.30" }]
+}
+```
+
+- Each tender goes in the order currency and **includes** its tax; the approved tenders must add up to
+  the order total **plus** the charges, exactly.
+- The `PAYMENT_TAX` charges must add up to the `metadata.payment_tax.amount` of the approved tenders,
+  to the cent, with at most 2 decimals, in the currency of the charge.
+- Accepted only for stores in a country with a payment tax (today Venezuela).
+- When the order settles, the charge is stored in the order (`totals[0].extra_charges`) and travels in
+  [`order.completed`](/en/events/order-completed) like in a sale. It replaces any payment tax the order
+  already declared. `settlement.total` is then the order total plus the charges.
+- The response adds `paymentTaxes` (`[{ code, total }]`) when the order has a payment tax, also on a
+  `duplicate` retry.
+- Other charge types in `extra_charges` are ignored, as before.
 
 ## Fiscal numbering on charge
 
